@@ -390,16 +390,23 @@ function initSparks() {
 }
 
 // ============================================================ BIG PANELS (reuse API)
+function stopAllPanelPolls() {
+  if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
+  if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
+}
 async function openBigPanel(which) {
+  stopAllPanelPolls();
   const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
   inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
+  inner.classList.toggle("wide", which === "missioncontrol");
   bp.classList.add("open");
   const body = $("#bp-body");
   if (which === "settings") return renderSettingsPanel(body);
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
+  if (which === "missioncontrol") return renderMissionControlPanel(body);
 }
-window.closeBigPanel = () => $("#bigpanel").classList.remove("open");
+window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); };
 
 async function renderChannelsPanel(body) {
   body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
@@ -511,6 +518,110 @@ async function renderJobDetail(body, jobId) {
   window.reopenJobs = () => { if (jobPoll) clearInterval(jobPoll); renderJobsPanel(body); };
 }
 
+// ============================================================ MISSION CONTROL
+// A dense ops-console view of the same data the orbital constellation shows,
+// for when you want a scan-it-fast list instead of flying through a starfield.
+function timeAgo(iso) {
+  if (!iso) return "";
+  const t = new Date(iso.endsWith("Z") ? iso : iso + "Z").getTime();
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+let mcPoll = null;
+async function renderMissionControlPanel(body) {
+  if (mcPoll) clearInterval(mcPoll);
+  body.innerHTML = `
+    <div class="msc-wrap">
+      <nav class="msc-nav">
+        <div class="msc-nav-brand">🛰️ MISSION<br/>CONTROL</div>
+        <button class="msc-nav-item active" data-nav="missioncontrol">Overview</button>
+        <button class="msc-nav-item" data-nav="channels">Channels</button>
+        <button class="msc-nav-item" data-nav="jobs">Video Library</button>
+        <button class="msc-nav-item" data-nav="settings">Control Panel</button>
+        <button class="msc-nav-item" id="msc-nav-orbit">← Back to Orbit</button>
+      </nav>
+      <div class="msc-main">
+        <h1 style="margin-bottom:2px">Mission Control</h1>
+        <div class="bp-sub">Real numbers, real agent activity — no theatrics.</div>
+        <div class="msc-stats" id="msc-stats"></div>
+        <div class="msc-cols">
+          <div class="msc-channels" id="msc-channels"><h2>Channels</h2><div id="msc-ch-list"></div></div>
+          <div class="msc-activity">
+            <h2>Live Activity Stream</h2>
+            <div id="msc-act-list" class="msc-act-list"></div>
+          </div>
+        </div>
+        <div class="msc-uplink" id="msc-uplink"><span class="hdot"></span> <span id="msc-uplink-text">Connecting…</span></div>
+      </div>
+    </div>`;
+  body.querySelectorAll(".msc-nav-item[data-nav]").forEach((btn) => {
+    btn.addEventListener("click", () => openBigPanel(btn.dataset.nav));
+  });
+  $("#msc-nav-orbit").addEventListener("click", () => closeBigPanel());
+
+  const draw = async () => {
+    let overview, act;
+    try {
+      [overview, act] = await Promise.all([
+        API("/api/missioncontrol/overview"),
+        API("/api/missioncontrol/activity?limit=30"),
+      ]);
+    } catch (e) { return; }
+
+    const stats = $("#msc-stats");
+    if (stats) stats.innerHTML = `
+      <div class="msc-tile"><div class="mt-val">${overview.totals.subscribers.toLocaleString()}</div><div class="mt-label">Total Subscribers</div></div>
+      <div class="msc-tile"><div class="mt-val">${overview.totals.views.toLocaleString()}</div><div class="mt-label">Total Views</div></div>
+      <div class="msc-tile"><div class="mt-val">${overview.totals.videos_today}</div><div class="mt-label">Videos Today</div></div>
+      <div class="msc-tile"><div class="mt-val">${overview.totals.videos_total}</div><div class="mt-label">Videos All-Time</div></div>
+      <div class="msc-tile ${overview.totals.agents_live ? "hot" : ""}"><div class="mt-val">${overview.totals.agents_live}</div><div class="mt-label">Agents Live Now</div></div>`;
+
+    const chList = $("#msc-ch-list");
+    if (chList) {
+      chList.innerHTML = "";
+      if (!overview.channels.length) chList.innerHTML = `<div class="msc-empty">No channels yet.</div>`;
+      overview.channels.forEach((c) => {
+        chList.appendChild(el(`<div class="msc-ch-card">
+          <div class="msc-ch-name">${c.name}</div>
+          <div class="msc-ch-meta">
+            <span class="dot ${c.youtube_connected ? "on" : ""}"></span>
+            ${c.youtube_connected ? (c.youtube_channel_title || "YouTube connected") : "YouTube not connected"}
+          </div>
+          ${c.youtube_connected ? `<div class="msc-ch-nums">
+            <span>${c.hidden_subs ? "hidden" : (c.subscribers ?? 0).toLocaleString()} subs</span>
+            <span>${(c.views ?? 0).toLocaleString()} views</span>
+          </div>` : ""}
+        </div>`));
+      });
+    }
+
+    const actList = $("#msc-act-list");
+    if (actList) {
+      actList.innerHTML = "";
+      if (!act.length) actList.innerHTML = `<div class="msc-empty">No agent activity yet. Ask AETHER to make a video and watch this fill up.</div>`;
+      act.forEach((ev) => {
+        actList.appendChild(el(`<div class="msc-act-row" style="--ac:${ev.agent_color}">
+          <span class="msc-act-tag">${ev.agent_icon}</span>
+          <div class="msc-act-body">
+            <div class="msc-act-top"><b>${ev.agent_name}</b><span class="msc-act-chan">${ev.channel}</span><span class="msc-act-time">${timeAgo(ev.ts)}</span></div>
+            <div class="msc-act-text">${ev.text}</div>
+          </div>
+        </div>`));
+      });
+    }
+
+    const uplinkText = $("#msc-uplink-text");
+    if (uplinkText) uplinkText.textContent = `AETHER CORE — ${overview.uplink}`;
+  };
+  await draw();
+  mcPoll = setInterval(draw, 6000);
+}
+
 async function renderSettingsPanel(body) {
   const s = await API("/api/settings");
   const field = (k, label, ph, type = "password") =>
@@ -603,6 +714,7 @@ async function init() {
   $("#tb-settings").addEventListener("click", () => openBigPanel("settings"));
   $("#tb-channels").addEventListener("click", () => openBigPanel("channels"));
   $("#tb-jobs").addEventListener("click", () => openBigPanel("jobs"));
+  $("#tb-missioncontrol").addEventListener("click", () => openBigPanel("missioncontrol"));
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   await refreshAgents();

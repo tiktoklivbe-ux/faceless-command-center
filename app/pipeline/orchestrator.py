@@ -8,6 +8,7 @@ running on a small box (individual stages still parallelize internally --
 see assemble_stage's Voice/Visual concurrency).
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -21,7 +22,12 @@ AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
 
 
 def _log(db: Session, job: models.VideoJob, message: str):
-    job.stage_log = (job.stage_log or "") + f"{message}\n"
+    # Each line gets an ISO-8601 UTC timestamp prefix in brackets so Mission
+    # Control's Live Activity Stream can show real relative times instead of
+    # guessing from job.created_at. The Jobs panel's plain progress-log view
+    # still reads fine with the prefix showing -- it's just a timestamp.
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    job.stage_log = (job.stage_log or "") + f"[{ts}] {message}\n"
     db.commit()
 
 

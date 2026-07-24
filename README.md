@@ -48,6 +48,7 @@ features to plug into.
 - **Live Activity** ticker — agents announce themselves as they engage.
 - **Telemetry** panel — sparklines for estimated views, watch-hours, and agents-live.
 - **Slide-in panels** for the real Control Panel (API keys), Channels (with YouTube/TikTok connect), and the Video Library (with live job progress + in-browser video preview + publish).
+- **Mission Control** (🛰️ in the toolbar, or say "open mission control") — a dense ops-console alternative to the orbital view: real per-channel YouTube subscriber/view counts, headline totals, and a merged Live Activity Stream built from every agent's actual log lines across every job (not a mockup — the same pipeline events that light up the constellation, shown as a scannable feed instead).
 
 Everything runs from one FastAPI app with a no-build-step frontend, so it
 hosts anywhere that runs Python + ffmpeg (Replit, Railway, Render, a VPS).

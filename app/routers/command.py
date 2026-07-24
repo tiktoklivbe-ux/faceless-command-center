@@ -72,6 +72,8 @@ def run_command(payload: CommandIn, background_tasks: BackgroundTasks, db: Sessi
     low = text.lower()
 
     # ---- navigation intents ----
+    if re.search(r"\b(mission control|ops|control room|dashboard)\b", low):
+        return {"action": "open_panel", "panel": "missioncontrol", "message": "Opening Mission Control."}
     if re.search(r"\b(settings|api key|keys|configure)\b", low):
         return {"action": "open_panel", "panel": "settings", "message": "Opening the control panel."}
     if re.search(r"\b(channel|channels)\b", low) and not MAKE_PATTERNS_MATCH(low):
@@ -80,8 +82,8 @@ def run_command(payload: CommandIn, background_tasks: BackgroundTasks, db: Sessi
         return {"action": "open_panel", "panel": "jobs", "message": "Opening the video library."}
     if re.search(r"\b(help|what can you do|commands)\b", low):
         return {"action": "help", "message":
-                "Try: 'make a video about black holes', 'open settings', 'show my channels', "
-                "'open the video library', or click any agent in the constellation."}
+                "Try: 'make a video about black holes', 'open mission control', 'open settings', "
+                "'show my channels', 'open the video library', or click any agent in the constellation."}
 
     # ---- make-a-video intent ----
     topic = None

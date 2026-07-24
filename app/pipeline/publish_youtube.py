@@ -94,6 +94,33 @@ def fetch_channel_title(access_token: str) -> str:
     return items[0]["snippet"]["title"] if items else "Connected channel"
 
 
+def fetch_channel_stats(access_token: str) -> dict:
+    """Real subscriber/view counts for the connected channel -- powers Mission
+    Control's stat tiles. Returns zeros if the API call fails for any reason
+    (expired token, channel has hidden its subscriber count, etc.) rather than
+    raising, since this is a nice-to-have display, not a pipeline-critical call."""
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/channels",
+            params={"part": "snippet,statistics", "mine": "true"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        if not items:
+            return {"subscribers": 0, "views": 0, "video_count": 0}
+        stats = items[0].get("statistics", {})
+        return {
+            "subscribers": int(stats.get("subscriberCount", 0)),
+            "views": int(stats.get("viewCount", 0)),
+            "video_count": int(stats.get("videoCount", 0)),
+            "hidden_subs": stats.get("hiddenSubscriberCount", False),
+        }
+    except Exception:
+        return {"subscribers": 0, "views": 0, "video_count": 0, "hidden_subs": False}
+
+
 def upload_video(access_token: str, video_path: Path, title: str, description: str,
                   privacy_status: str = "private") -> str:
     """Resumable upload: reserve an upload URL, then PUT the file bytes."""
