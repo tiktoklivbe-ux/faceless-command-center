@@ -2,6 +2,13 @@
 Central paths and constants for the Faceless Control Center.
 Everything runtime (db, encryption key, generated media) lives under DATA_DIR / STORAGE_DIR
 so the whole app is portable -- copy the folder, keep those two dirs out of git, done.
+
+On a host with an ephemeral filesystem (Render, Railway, etc.), set the
+PERSIST_DIR env var to the mount path of a single attached persistent disk
+(e.g. /var/data on Render) -- both the encrypted settings database and every
+generated video will then live under that one disk instead of resetting on
+every redeploy. Leave PERSIST_DIR unset for local/dev use; it defaults to
+living inside the app folder itself.
 """
 import os
 from pathlib import Path
@@ -9,8 +16,10 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
-DATA_DIR = BASE_DIR / "data"
-STORAGE_DIR = BASE_DIR / "storage"
+
+PERSIST_DIR = Path(os.environ.get("PERSIST_DIR", str(BASE_DIR)))
+DATA_DIR = PERSIST_DIR / "data"
+STORAGE_DIR = PERSIST_DIR / "storage"
 JOBS_DIR = STORAGE_DIR / "jobs"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)

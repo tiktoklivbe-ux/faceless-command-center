@@ -221,3 +221,19 @@ across every in-flight job right now, plus a same-day summary.
 If you lose it, every stored secret becomes unreadable and you'll need to
 re-enter all your API keys and reconnect YouTube/TikTok. Back up the whole
 `data/` folder if you move the app to a new host.
+
+### Persistent disk on Render (or any host with an ephemeral filesystem)
+
+Render (and most container hosts) wipe local disk on every redeploy unless
+you attach persistent storage. Render allows **one disk per service**, so
+both `data/` and `storage/` need to live under that single mount path:
+
+1. In your Render service, add a Disk with mount path `/var/data` (any size —
+   1-5 GB is overkill for this app).
+2. Add an environment variable: `PERSIST_DIR=/var/data`.
+3. Redeploy. From then on, your settings/API keys and generated videos
+   survive future deploys instead of resetting each time.
+
+You'll need to re-enter your API keys **one more time** right after this
+change takes effect — everything before it was living in the old ephemeral
+location. After that, it sticks.
