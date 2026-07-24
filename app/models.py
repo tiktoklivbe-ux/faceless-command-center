@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, Integer
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -34,6 +34,12 @@ class Channel(Base):
     style_notes = Column(Text, default="")      # extra instructions for the script writer
     voice_id = Column(String, default="")       # ElevenLabs voice ID
     visual_style = Column(Text, default="")     # image-gen style prompt suffix
+
+    # Chronos automation: when enabled, the scheduler creates ~auto_per_day
+    # videos for this channel, spaced evenly across each 24h day.
+    auto_enabled = Column(Boolean, default=False)
+    auto_per_day = Column(Integer, default=3)
+    auto_publish_scheduled = Column(Boolean, default=False)
 
     youtube_connected = Column(Boolean, default=False)
     youtube_channel_title = Column(String, default="")

@@ -52,6 +52,25 @@ features to plug into.
 Everything runs from one FastAPI app with a no-build-step frontend, so it
 hosts anywhere that runs Python + ffmpeg (Replit, Railway, Render, a VPS).
 
+## Automation ("N shorts a day")
+
+Chronos is fully wired now. In the Channels panel, toggle **Chronos
+automation** on a channel, set **videos per day**, and optionally
+**auto-publish when ready**. A background loop inside the app (see
+`app/scheduler.py`) checks every 5 minutes and creates a new video for that
+channel whenever it's "due" — spaced evenly across each 24h day (interval =
+24h / videos-per-day), catching up gracefully rather than bursting a pile of
+videos at once if the app was asleep for a while.
+
+**This only fires reliably on a host that stays running continuously.**
+Render's free tier sleeps the process after ~15 minutes idle, and Chronos's
+loop stops ticking while asleep — it'll pick back up whenever something wakes
+the app, but won't hit "3 videos a day" on a reliable schedule by itself. For
+genuinely unattended automation, either upgrade to a paid always-on tier
+(Render Starter, Railway, etc.), or point a free external uptime pinger
+(e.g. UptimeRobot) at your site every ~10 minutes to keep the free instance
+awake.
+
 ## How it's built
 
 ```

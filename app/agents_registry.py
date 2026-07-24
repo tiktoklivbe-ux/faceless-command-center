@@ -85,9 +85,11 @@ AGENTS = [
      "actions": ["Draft comment replies"]},
     {"id": "chronos", "name": "Chronos", "title": "Scheduling & Cadence", "stage": None,
      "icon": "⏳", "color": "#b26bff", "ring": 2,
-     "blurb": "Keeper of the calendar. Plans your posting cadence and queues videos to "
-              "drop at the times your audience is actually online.",
-     "actions": ["Plan this week", "Set a cadence"]},
+     "blurb": "Keeper of the calendar. Fully wired: turn on automation for a channel "
+              "in the Channels panel and Chronos will spin up new videos on its own, "
+              "spaced evenly across each day, catching up gracefully if the app was "
+              "asleep. Requires an always-on host to run unattended.",
+     "actions": ["Open channels to automate"]},
     {"id": "midas", "name": "Midas", "title": "Monetization", "stage": None,
      "icon": "💰", "color": "#ffd23d", "ring": 2,
      "blurb": "Tracks the money. Watches monetization eligibility and estimated "

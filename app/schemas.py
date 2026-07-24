@@ -9,6 +9,9 @@ class ChannelIn(BaseModel):
     style_notes: str = ""
     voice_id: str = ""
     visual_style: str = ""
+    auto_enabled: bool = False
+    auto_per_day: int = 3
+    auto_publish_scheduled: bool = False
 
 
 class ChannelOut(ChannelIn):

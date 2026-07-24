@@ -414,11 +414,41 @@ async function renderChannelsPanel(body) {
       <div class="pill-row" style="margin-top:12px">
         ${c.youtube_connected ? "" : `<a class="btn secondary" href="/auth/youtube/start?channel_id=${c.id}">Connect YouTube</a>`}
         ${c.tiktok_connected ? "" : `<a class="btn secondary" href="/auth/tiktok/start?channel_id=${c.id}">Connect TikTok</a>`}
-        <button class="btn danger" data-del="${c.id}">Delete</button>
-      </div></div>`);
+      </div>
+      <div style="border-top:1px solid var(--border-soft); margin:14px 0 12px; padding-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <input type="checkbox" id="auto-${c.id}" ${c.auto_enabled ? "checked" : ""} style="width:auto;margin:0"/>
+          <span style="color:var(--ink);text-transform:none;font-size:13px;letter-spacing:0">⏳ Chronos automation — auto-generate videos</span>
+        </label>
+        <div class="form-row">
+          <div><label>Videos per day</label><input type="number" min="1" max="24" id="perday-${c.id}" value="${c.auto_per_day || 3}"/></div>
+          <div><label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+            <input type="checkbox" id="autopub-${c.id}" ${c.auto_publish_scheduled ? "checked" : ""} style="width:auto;margin:0"/>
+            <span style="text-transform:none;font-size:12px;color:var(--muted)">Auto-publish when ready</span>
+          </label></div>
+        </div>
+        <button class="btn secondary" data-autosave="${c.id}">Save Automation</button>
+        ${c.auto_enabled ? `<div class="hint" style="margin-top:10px">🤖 Auto-generating ~${c.auto_per_day}/day. Needs the app running continuously to fire on schedule — see the README hosting note if it's on a host that sleeps when idle.</div>` : ""}
+      </div>
+      <div class="pill-row" style="margin-top:4px"><button class="btn danger" data-del="${c.id}">Delete Channel</button></div>
+      </div>`);
     card.querySelector("[data-del]").addEventListener("click", async () => {
       if (!confirm(`Delete "${c.name}"?`)) return;
       await API(`/api/channels/${c.id}`, { method: "DELETE" }); renderChannelsPanel(body);
+    });
+    card.querySelector(`[data-autosave="${c.id}"]`).addEventListener("click", async () => {
+      // PUT replaces the whole channel record, so we send every existing field
+      // back untouched plus the updated automation fields -- never just the diff.
+      const payload = {
+        name: c.name, niche: c.niche, style_notes: c.style_notes,
+        voice_id: c.voice_id, visual_style: c.visual_style,
+        auto_enabled: $(`#auto-${c.id}`).checked,
+        auto_per_day: parseInt($(`#perday-${c.id}`).value, 10) || 1,
+        auto_publish_scheduled: $(`#autopub-${c.id}`).checked,
+      };
+      await API(`/api/channels/${c.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      toast(`Automation saved for ${c.name}.`);
+      renderChannelsPanel(body);
     });
     list.appendChild(card);
   });
