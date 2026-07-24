@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <title>AETHER · Faceless Command Center</title>
+  <link rel="stylesheet" href="/assets/command-center.css"/>
+</head>
+<body>
+
+  <!-- boot intro -->
+  <div id="boot">
+    <div>
+      <div class="boot-orb"></div>
+      <div class="boot-title">AETHER</div>
+      <div class="boot-lines" id="boot-lines"></div>
+    </div>
+    <div class="boot-skip" id="boot-skip">skip ▸</div>
+  </div>
+
+  <!-- the universe -->
+  <div id="universe">
+    <canvas id="starfield"></canvas>
+    <div id="gridwash"></div>
+
+    <div id="world">
+      <!-- orbit rings -->
+      <div class="orbit glow" style="width:500px;height:500px"></div>
+      <div class="orbit" style="width:860px;height:860px"></div>
+      <!-- energy links -->
+      <svg id="linkLayer" width="1" height="1"></svg>
+      <!-- AETHER core -->
+      <div id="core">
+        <div class="core-ring r3"></div>
+        <div class="core-ring r1"></div>
+        <div class="core-ring r2"></div>
+        <div class="core-orb"></div>
+        <div class="core-label">AETHER</div>
+      </div>
+      <!-- agent nodes injected here -->
+    </div>
+  </div>
+
+  <!-- top HUD -->
+  <div class="hud" id="topbar">
+    <div class="brandmark">
+      <span class="bm-orb"></span>
+      <span class="bm-name">FACELESS <b>COMMAND</b></span>
+    </div>
+    <div class="stat-cluster">
+      <div class="stat-item"><div class="sv" id="stat-videos">0</div><div class="sl">Videos</div></div>
+      <div class="stat-item"><div class="sv" id="stat-progress">0</div><div class="sl">In Flight</div></div>
+      <div class="stat-item"><div class="sv" id="stat-published">0</div><div class="sl">Published</div></div>
+      <div class="stat-item"><div class="sv" id="stat-today">0</div><div class="sl">Today</div></div>
+      <div class="stat-item"><div class="sv" id="clock">--:--</div><div class="sl">Local</div></div>
+    </div>
+  </div>
+
+  <!-- right toolbar -->
+  <div id="toolbar">
+    <button class="icon-btn" id="tb-jobs" title="Video Library">🎬</button>
+    <button class="icon-btn" id="tb-channels" title="Channels">📺</button>
+    <button class="icon-btn" id="tb-settings" title="Control Panel">⚙️</button>
+  </div>
+
+  <!-- rituals panel -->
+  <div class="holo" id="panel-rituals">
+    <h3><span class="hdot"></span>Scheduled Rituals</h3>
+    <div id="ritual-list"></div>
+  </div>
+
+  <!-- activity ticker -->
+  <div class="holo" id="panel-activity">
+    <h3><span class="hdot"></span>Live Activity</h3>
+    <div id="activity-list"></div>
+  </div>
+
+  <!-- telemetry panel -->
+  <div class="holo" id="panel-telemetry">
+    <h3><span class="hdot"></span>Telemetry</h3>
+    <div class="spark-row">
+      <div><div class="spark-label">Est. Views</div><div class="spark-val" id="spark-views-val">0</div></div>
+      <div class="spark"><svg id="spark-views" width="90" height="28"></svg></div>
+    </div>
+    <div class="spark-row">
+      <div><div class="spark-label">Watch (hrs)</div><div class="spark-val" id="spark-watch-val">0</div></div>
+      <div class="spark"><svg id="spark-watch" width="90" height="28"></svg></div>
+    </div>
+    <div class="spark-row">
+      <div><div class="spark-label">Agents Live</div><div class="spark-val" id="spark-agents-val">0</div></div>
+      <div class="spark"><svg id="spark-agents" width="90" height="28"></svg></div>
+    </div>
+  </div>
+
+  <!-- command console -->
+  <div id="console">
+    <div id="console-shell">
+      <span class="console-orb"></span>
+      <input id="cmd" autocomplete="off" placeholder="Ask AETHER anything, or say &quot;make a video about black holes&quot;…"/>
+      <button id="cmd-send" title="Send">▸</button>
+    </div>
+    <div id="console-hint">press <b>/</b> to focus · <b>WASD</b> or drag to fly · scroll to zoom · click any agent</div>
+  </div>
+
+  <!-- agent detail flyout -->
+  <div id="agent-detail"></div>
+
+  <!-- big slide panel -->
+  <div id="bigpanel"><div id="bigpanel-inner"></div></div>
+
+  <!-- toasts -->
+  <div id="toasts"></div>
+
+  <script src="/assets/command-center.js"></script>
+</body>
+</html>
