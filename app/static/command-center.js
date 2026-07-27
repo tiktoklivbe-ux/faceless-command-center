@@ -710,7 +710,7 @@ function refreshAll() { refreshAgents(); refreshStats(); }
 function runBoot() {
   const lines = [
     "initializing AETHER core .............. <span class='ok'>online</span>",
-    "waking agent constellation ............ <span class='ok'>13 agents</span>",
+    "waking agent constellation ............ <span class='ok'>21 agents</span>",
     "calibrating orbital telemetry ......... <span class='ok'>locked</span>",
     "linking production pipeline ........... <span class='ok'>ready</span>",
     "opening command channel ............... <span class='ok'>live</span>",

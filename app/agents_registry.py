@@ -111,6 +111,31 @@ AGENTS = [
      "blurb": "Keeper of sources. Digs up the real fact or study behind a shower "
               "thought before Athena scripts it, so nothing shipped is just made up.",
      "actions": ["Fact-check last script", "Find a source"]},
+    {"id": "morpheus", "name": "Morpheus", "title": "Idea Incubator", "stage": None,
+     "icon": "🌙", "color": "#b26bff", "ring": 2,
+     "blurb": "Works the night shift. Lets half-formed ideas sit and mature between "
+              "sessions instead of forcing a topic before it's ready.",
+     "actions": ["Show incubating ideas"]},
+    {"id": "janus", "name": "Janus", "title": "A/B Testing", "stage": None,
+     "icon": "🎭", "color": "#ff8a3d", "ring": 2,
+     "blurb": "Two-faced on purpose. Runs two hooks, thumbnails, or titles against "
+              "each other and reports which one actually wins.",
+     "actions": ["Start an A/B test"]},
+    {"id": "calliope", "name": "Calliope", "title": "Sound & Music", "stage": None,
+     "icon": "🎼", "color": "#00e8ff", "ring": 2,
+     "blurb": "Picks the background bed and sound design for a video so narration "
+              "never has to carry the whole mood alone.",
+     "actions": ["Suggest a sound bed"]},
+    {"id": "nike", "name": "Nike", "title": "Milestones", "stage": None,
+     "icon": "🏆", "color": "#ffd23d", "ring": 2,
+     "blurb": "Marks the wins. Flags subscriber, view, and streak milestones the "
+              "moment they're hit, so progress doesn't slip by unnoticed.",
+     "actions": ["Show recent milestones"]},
+    {"id": "hestia", "name": "Hestia", "title": "Channel Health", "stage": None,
+     "icon": "🔥", "color": "#ff4f6a", "ring": 2,
+     "blurb": "Keeper of the hearth. Watches upload consistency and posting cadence "
+              "so a channel's momentum doesn't quietly go cold.",
+     "actions": ["Check posting streak"]},
 ]
 
 STAGE_TO_AGENT = {a["stage"]: a["id"] for a in AGENTS if a["stage"]}
