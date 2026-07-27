@@ -107,6 +107,7 @@
     const ctx = canvas.getContext("2d");
     const W = canvas.width, H = canvas.height;
     const cx = W / 2, cy = H / 2;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     let raf = null;
     let t = 0;
@@ -146,7 +147,7 @@
     }
 
     function draw() {
-      t += 0.02;
+      t += reducedMotion ? 0 : 0.02;
       ctx.clearRect(0, 0, W, H);
 
       let radius = 34;
@@ -154,8 +155,7 @@
       let color = "#00e8ff";
 
       if (speaking) {
-        // lively multi-wave wobble, faked amplitude since TTS gives none
-        const wobble = Math.sin(t * 9) * 6 + Math.sin(t * 5.3) * 4;
+        const wobble = reducedMotion ? 6 : Math.sin(t * 9) * 6 + Math.sin(t * 5.3) * 4;
         radius = 40 + wobble;
         glow = 46 + Math.abs(wobble) * 2;
         color = "#b26bff";
@@ -165,9 +165,9 @@
         glow = 26 + level * 60;
         color = "#ff2f9e";
       } else {
-        // idle ambient breathing
-        radius = 34 + Math.sin(t * 1.4) * 3;
-        glow = 22 + Math.sin(t * 1.4) * 6;
+        // idle: a static glow when reduced motion is on, gentle breathing otherwise
+        radius = reducedMotion ? 34 : 34 + Math.sin(t * 1.4) * 3;
+        glow = reducedMotion ? 22 : 22 + Math.sin(t * 1.4) * 6;
       }
 
       ctx.save();
