@@ -10,6 +10,7 @@ from . import models, crypto
 KNOWN_KEYS = {
     "llm_provider": False,          # "anthropic" | "openai"
     "anthropic_api_key": True,
+    "anthropic_model": False,       # "claude-sonnet-5" | "claude-haiku-4-5-20251001" | "claude-opus-4-8" etc
     "openai_api_key": True,
     "gemini_api_key": True,
     "elevenlabs_api_key": True,

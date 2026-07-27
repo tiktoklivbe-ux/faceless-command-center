@@ -61,7 +61,7 @@ def _extract_json(text: str) -> dict:
 
 def _call_anthropic(db: Session, prompt: str) -> dict:
     api_key = get_setting(db, "anthropic_api_key")
-    model = get_setting(db, "anthropic_model", "claude-sonnet-4-5")
+    model = get_setting(db, "anthropic_model", "claude-sonnet-5")
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={

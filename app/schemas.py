@@ -57,6 +57,7 @@ class JobOut(BaseModel):
 class SettingsIn(BaseModel):
     llm_provider: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    anthropic_model: Optional[str] = None
     openai_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     elevenlabs_api_key: Optional[str] = None

@@ -191,7 +191,7 @@ def run_jarvis_turn(db: Session, background_tasks: BackgroundTasks, messages: li
     api_key = get_setting(db, "anthropic_api_key")
     if not api_key:
         return "No Anthropic API key is configured yet -- add one in Settings."
-    model = get_setting(db, "anthropic_model", "claude-sonnet-4-5")
+    model = get_setting(db, "anthropic_model", "claude-sonnet-5")
 
     for _ in range(4):
         try:
