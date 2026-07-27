@@ -23,6 +23,14 @@
     <canvas id="starfield"></canvas>
     <div id="gridwash"></div>
 
+    <!-- HUD corner bracket frame -- purely decorative, sits above everything -->
+    <div class="hud-frame" aria-hidden="true">
+      <span class="hud-corner tl"></span>
+      <span class="hud-corner tr"></span>
+      <span class="hud-corner bl"></span>
+      <span class="hud-corner br"></span>
+    </div>
+
     <div id="world">
       <!-- orbit rings -->
       <div class="orbit glow" style="width:500px;height:500px"></div>
@@ -32,6 +40,7 @@
       <!-- AETHER core -->
       <div id="core">
         <div class="core-ring r3"></div>
+        <div class="core-sweep"></div>
         <div class="core-ring r1"></div>
         <div class="core-ring r2"></div>
         <div class="core-orb"></div>

@@ -115,6 +115,47 @@ html, body {
   text-shadow: 0 0 14px var(--cyan); white-space: nowrap;
 }
 
+/* ---------------- HUD corner bracket frame ---------------- */
+.hud-frame { position: fixed; inset: 0; z-index: 15; pointer-events: none; }
+.hud-corner {
+  position: absolute; width: 46px; height: 46px;
+  border-color: rgba(0, 232, 255, 0.55);
+  filter: drop-shadow(0 0 6px rgba(0,232,255,0.4));
+}
+.hud-corner.tl { top: 18px; left: 18px; border-top: 2px solid; border-left: 2px solid; }
+.hud-corner.tr { top: 18px; right: 18px; border-top: 2px solid; border-right: 2px solid; }
+.hud-corner.bl { bottom: 18px; left: 18px; border-bottom: 2px solid; border-left: 2px solid; }
+.hud-corner.br { bottom: 18px; right: 18px; border-bottom: 2px solid; border-right: 2px solid; }
+
+/* faint scanline that sweeps top to bottom every few seconds -- subtle by
+   design, meant to be felt more than consciously noticed */
+.hud-frame::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,232,255,0.35), transparent);
+  animation: scanSweep 7s linear infinite;
+}
+@keyframes scanSweep {
+  0% { top: -2px; opacity: 0; }
+  5% { opacity: 1; }
+  95% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-frame::after { display: none; }
+  .core-sweep { animation: none; opacity: 0.4; }
+}
+
+/* radar sweep on the core -- a rotating gradient wedge layered over r3 */
+.core-sweep {
+  position: absolute; left: 50%; top: 50%; width: 132px; height: 132px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(0,232,255,0.35), rgba(0,232,255,0) 22%, transparent 100%);
+  animation: spin 4s linear infinite;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
 /* ---------------- agent nodes ---------------- */
 .node {
   position: absolute; left: 50%; top: 50%;

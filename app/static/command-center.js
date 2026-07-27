@@ -742,9 +742,9 @@ async function renderSettingsPanel(body) {
       ${field("anthropic_api_key", "Anthropic (Claude) key", "sk-ant-…")}
       <label>Claude model</label>
       <select id="st-anthropic_model">
-        <option value="claude-sonnet-5" ${(!s.anthropic_model.value || s.anthropic_model.value === "claude-sonnet-5") ? "selected" : ""}>Sonnet 5 — recommended balance of quality/cost</option>
-        <option value="claude-haiku-4-5-20251001" ${s.anthropic_model.value === "claude-haiku-4-5-20251001" ? "selected" : ""}>Haiku 4.5 — fastest, cheapest</option>
-        <option value="claude-opus-4-8" ${s.anthropic_model.value === "claude-opus-4-8" ? "selected" : ""}>Opus 4.8 — most capable, slower/pricier</option>
+        <option value="claude-sonnet-5" ${(!(s.anthropic_model?.value) || s.anthropic_model.value === "claude-sonnet-5") ? "selected" : ""}>Sonnet 5 — recommended balance of quality/cost</option>
+        <option value="claude-haiku-4-5-20251001" ${s.anthropic_model?.value === "claude-haiku-4-5-20251001" ? "selected" : ""}>Haiku 4.5 — fastest, cheapest</option>
+        <option value="claude-opus-4-8" ${s.anthropic_model?.value === "claude-opus-4-8" ? "selected" : ""}>Opus 4.8 — most capable, slower/pricier</option>
       </select>
       <div class="hint">Affects both script generation (Athena) and Jarvis. Haiku is a good pick if you want snappier, cheaper responses and don't notice a quality drop.</div>
       ${field("gemini_api_key", "Gemini key", "AIza…")}
