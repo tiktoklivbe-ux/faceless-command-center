@@ -449,3 +449,38 @@ video { width: 100%; border-radius: 10px; background: #000; border: 1px solid va
   #panel-rituals, #panel-telemetry, #panel-activity { display: none; }
   .stat-cluster { display: none; }
 }
+
+/* ---------------- jarvis panel ---------------- */
+.jarvis-wrap { display: flex; flex-direction: column; height: 100%; min-height: 60vh; max-width: 640px; }
+.jarvis-log {
+  flex: 1; min-height: 280px; max-height: 50vh; overflow-y: auto;
+  border: 1px solid var(--border-soft); border-radius: 10px;
+  background: rgba(0,0,0,0.25); padding: 14px; margin: 16px 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.jarvis-msg { max-width: 80%; padding: 9px 13px; border-radius: 10px; font-size: 15px; line-height: 1.4; }
+.jarvis-user {
+  align-self: flex-end; background: rgba(0,232,255,0.12);
+  border: 1px solid rgba(0,232,255,0.3); color: var(--ink);
+}
+.jarvis-assistant {
+  align-self: flex-start; background: rgba(178,107,255,0.10);
+  border: 1px solid rgba(178,107,255,0.28); color: var(--ink);
+}
+.jarvis-thinking { opacity: 0.5; font-style: italic; }
+.jarvis-input-row { display: flex; gap: 10px; align-items: center; }
+.jarvis-input-row input {
+  flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 10px 14px; color: var(--ink); font-family: var(--font-body);
+  font-size: 15px; outline: none;
+}
+.jarvis-input-row input:focus { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,232,255,0.2); }
+#jarvis-mic.jarvis-mic-active {
+  border-color: var(--pink); color: var(--pink);
+  box-shadow: 0 0 18px rgba(255,47,158,0.5);
+  animation: jarvisMicPulse 1.1s ease-in-out infinite;
+}
+@keyframes jarvisMicPulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(255,47,158,0.4); }
+  50% { box-shadow: 0 0 26px rgba(255,47,158,0.7); }
+}

@@ -405,6 +405,7 @@ async function openBigPanel(which) {
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
   if (which === "missioncontrol") return renderMissionControlPanel(body);
+  if (which === "jarvis") return renderJarvisPanel(body);
 }
 window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); };
 
@@ -715,6 +716,7 @@ async function init() {
   $("#tb-channels").addEventListener("click", () => openBigPanel("channels"));
   $("#tb-jobs").addEventListener("click", () => openBigPanel("jobs"));
   $("#tb-missioncontrol").addEventListener("click", () => openBigPanel("missioncontrol"));
+  $("#tb-jarvis").addEventListener("click", () => openBigPanel("jarvis"));
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   await refreshAgents();
