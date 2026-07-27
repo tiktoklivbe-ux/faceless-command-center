@@ -20,7 +20,7 @@ import json
 import textwrap
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -113,7 +113,7 @@ def _tool_list_recent_jobs(db: Session, channel_name: str | None, limit: int | N
     }
 
 
-def _tool_start_video(db: Session, channel_name: str | None, topic: str | None) -> dict:
+def _tool_start_video(db: Session, background_tasks: BackgroundTasks, channel_name: str | None, topic: str | None) -> dict:
     channel = None
     if channel_name:
         channel = db.query(models.Channel).filter(
@@ -130,17 +130,21 @@ def _tool_start_video(db: Session, channel_name: str | None, topic: str | None) 
     db.add(job)
     db.commit()
     db.refresh(job)
-    orchestrator.run_job(job.id)
+    # Dispatched as a background task, same as /api/command does -- run_job
+    # is a long-running synchronous pipeline (script, voice, visuals,
+    # assembly), so calling it inline here would hang this HTTP request and
+    # the worker thread for however long the whole video takes.
+    background_tasks.add_task(orchestrator.run_job, job.id)
     return {"started": True, "channel": channel.name, "job_id": job.id, "topic": topic or "(agent's choice)"}
 
 
-def _run_tool(db: Session, name: str, tool_input: dict) -> dict:
+def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_input: dict) -> dict:
     if name == "list_channels":
         return _tool_list_channels(db)
     if name == "list_recent_jobs":
         return _tool_list_recent_jobs(db, tool_input.get("channel_name"), tool_input.get("limit"))
     if name == "start_video":
-        return _tool_start_video(db, tool_input.get("channel_name"), tool_input.get("topic"))
+        return _tool_start_video(db, background_tasks, tool_input.get("channel_name"), tool_input.get("topic"))
     return {"error": f"Unknown tool '{name}'"}
 
 
@@ -180,7 +184,7 @@ def _call_claude(api_key: str, model: str, messages: list[dict]) -> dict:
 
 
 @router.post("/chat", response_model=ChatOut)
-def chat(body: ChatIn, db: Session = Depends(get_db)):
+def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     api_key = get_setting(db, "anthropic_api_key")
     if not api_key:
         raise HTTPException(
@@ -192,11 +196,21 @@ def chat(body: ChatIn, db: Session = Depends(get_db)):
     messages = [{"role": t.role, "content": t.content} for t in body.history]
     messages.append({"role": "user", "content": body.message})
 
-    # Tool-use loop: Claude may ask to call a tool, we run it, feed the
-    # result back, and repeat until it gives a final plain-text answer.
-    # Hard cap of 4 rounds so a confused loop can't hang the request.
     for _ in range(4):
-        data = _call_claude(api_key, model, messages)
+        try:
+            data = _call_claude(api_key, model, messages)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "?"
+            if status == 401:
+                detail = "That Anthropic API key looks invalid — check it in Settings."
+            elif status == 429:
+                detail = "Anthropic's rate limit was hit — try again in a moment."
+            else:
+                detail = f"Anthropic API error ({status})."
+            raise HTTPException(status_code=502, detail=detail)
+        except requests.RequestException:
+            raise HTTPException(status_code=502, detail="Couldn't reach Anthropic's API — check the connection and try again.")
+
         content = data.get("content", [])
         stop_reason = data.get("stop_reason")
 
@@ -209,7 +223,7 @@ def chat(body: ChatIn, db: Session = Depends(get_db)):
         for block in content:
             if block.get("type") != "tool_use":
                 continue
-            result = _run_tool(db, block["name"], block.get("input", {}))
+            result = _run_tool(db, background_tasks, block["name"], block.get("input", {}))
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block["id"],

@@ -393,6 +393,7 @@ function initSparks() {
 function stopAllPanelPolls() {
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
+  if (window.stopJarvisSession) window.stopJarvisSession();
 }
 async function openBigPanel(which) {
   stopAllPanelPolls();

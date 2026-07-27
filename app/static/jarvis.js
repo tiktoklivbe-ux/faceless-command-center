@@ -25,6 +25,7 @@
   let awake = false; // in wake mode: have we heard the wake phrase and are capturing a command?
   let history = [];
   let restartTimer = null;
+  let sessionToken = 0; // bumped every time we start/stop, so stale onend/onerror callbacks from a previous session can be ignored
 
   function bubble(role, text) {
     const div = document.createElement("div");
@@ -131,22 +132,22 @@
       return;
     }
 
-    recognizer = new SpeechRecognition();
-    recognizer.interimResults = false;
-    recognizer.lang = "en-US";
-
     function stopEverything() {
       mode = "off";
       awake = false;
+      sessionToken++; // invalidate any in-flight recognizer's callbacks
       clearTimeout(restartTimer);
       micBtn.classList.remove("jarvis-mic-active");
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
-      try { recognizer.stop(); } catch (_) {}
+      if (recognizer) {
+        try { recognizer.abort(); } catch (_) {}
+      }
     }
 
-    recognizer.onresult = (e) => {
-      const text = e.results[e.results.length - 1][0].transcript;
+    window.stopJarvisSession = stopEverything;
+
+    function handleResult(text) {
       if (mode === "ptt") {
         send(log, text);
         return;
@@ -164,26 +165,54 @@
         status.textContent = "Say 'Hey Jarvis' any time.";
         send(log, text);
       }
-    };
+    }
 
-    recognizer.onerror = (e) => {
-      if (e.error === "no-speech" || e.error === "aborted") return; // expected, just keep going
-      status.textContent = `Mic error: ${e.error}`;
-    };
+    // Creates a brand-new SpeechRecognition instance for this session rather
+    // than reusing one across mode switches. Browsers are inconsistent about
+    // calling start() again before a previous session has fully wound down
+    // (some throw InvalidStateError, some just silently misbehave) -- a
+    // fresh instance per session, guarded by a token so stale events from an
+    // old instance can't affect the new one, sidesteps that entirely.
+    function startSession(continuous) {
+      sessionToken++;
+      const myToken = sessionToken;
+      const r = new SpeechRecognition();
+      r.continuous = continuous;
+      r.interimResults = false;
+      r.lang = "en-US";
 
-    recognizer.onend = () => {
-      // The Web Speech API stops itself periodically even in "continuous"
-      // mode on most browsers -- auto-restart if we're still meant to be
-      // listening, so wake mode actually feels always-on.
-      if (mode === "wake") {
-        restartTimer = setTimeout(() => {
-          try { recognizer.start(); } catch (_) {}
-        }, 250);
-      } else if (mode === "ptt") {
-        mode = "off";
-        micBtn.classList.remove("jarvis-mic-active");
+      r.onresult = (e) => {
+        if (myToken !== sessionToken) return;
+        const text = e.results[e.results.length - 1][0].transcript;
+        handleResult(text);
+      };
+      r.onerror = (e) => {
+        if (myToken !== sessionToken) return;
+        if (e.error === "no-speech" || e.error === "aborted") return; // expected, keep going
+        status.textContent = `Mic error: ${e.error}`;
+      };
+      r.onend = () => {
+        if (myToken !== sessionToken) return; // a newer session has already taken over
+        if (mode === "wake") {
+          restartTimer = setTimeout(() => {
+            if (myToken !== sessionToken) return;
+            startSession(true);
+          }, 250);
+        } else if (mode === "ptt") {
+          mode = "off";
+          micBtn.classList.remove("jarvis-mic-active");
+        }
+      };
+
+      recognizer = r;
+      try {
+        r.start();
+      } catch (_) {
+        // start() can throw if called too soon after a previous stop; a
+        // short retry covers that race without user-visible impact.
+        setTimeout(() => { if (myToken === sessionToken) { try { r.start(); } catch (__) {} } }, 200);
       }
-    };
+    }
 
     micBtn.addEventListener("click", () => {
       if (mode === "ptt") { stopEverything(); return; }
@@ -191,8 +220,7 @@
       mode = "ptt";
       micBtn.classList.add("jarvis-mic-active");
       status.textContent = "Listening…";
-      recognizer.continuous = false;
-      try { recognizer.start(); } catch (_) {}
+      startSession(false);
     });
 
     wakeBtn.addEventListener("click", () => {
@@ -202,8 +230,7 @@
       awake = false;
       wakeBtn.classList.add("jarvis-mic-active");
       status.textContent = "Say 'Hey Jarvis' any time.";
-      recognizer.continuous = true;
-      try { recognizer.start(); } catch (_) {}
+      startSession(true);
     });
   };
 })();
