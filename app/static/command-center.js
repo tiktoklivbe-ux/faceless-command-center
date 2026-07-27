@@ -535,6 +535,64 @@ function timeAgo(iso) {
 }
 
 let mcPoll = null;
+
+/**
+ * Draws a shareable 1200x630 "media kit" card from real Mission Control
+ * numbers and triggers a PNG download. Meant for Plutus-style sponsor
+ * outreach -- a fast, honest snapshot rather than a polished design system;
+ * good enough to attach to a cold email.
+ */
+function generateMediaKit(overview) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200; canvas.height = 630;
+  const ctx = canvas.getContext("2d");
+
+  // background
+  const bg = ctx.createLinearGradient(0, 0, 1200, 630);
+  bg.addColorStop(0, "#01030a"); bg.addColorStop(1, "#0a0f22");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, 1200, 630);
+
+  // subtle border glow
+  ctx.strokeStyle = "rgba(0,232,255,0.35)"; ctx.lineWidth = 2;
+  ctx.strokeRect(20, 20, 1160, 590);
+
+  ctx.fillStyle = "#00e8ff";
+  ctx.font = "bold 28px sans-serif";
+  ctx.fillText("FACELESS COMMAND CENTER", 60, 90);
+  ctx.fillStyle = "#7c8db5";
+  ctx.font = "16px sans-serif";
+  ctx.fillText("Channel Media Kit — generated " + new Date().toLocaleDateString(), 60, 120);
+
+  const stats = [
+    ["Total Subscribers", overview.totals.subscribers.toLocaleString()],
+    ["Total Views", overview.totals.views.toLocaleString()],
+    ["Videos Published", overview.totals.videos_total.toLocaleString()],
+    ["Videos Today", String(overview.totals.videos_today)],
+  ];
+  stats.forEach(([label, val], i) => {
+    const x = 60 + (i % 2) * 560;
+    const y = 200 + Math.floor(i / 2) * 140;
+    ctx.fillStyle = "#eafcff";
+    ctx.font = "bold 48px sans-serif";
+    ctx.fillText(val, x, y);
+    ctx.fillStyle = "#7c8db5";
+    ctx.font = "16px sans-serif";
+    ctx.fillText(label.toUpperCase(), x, y + 28);
+  });
+
+  ctx.fillStyle = "#39ffa0";
+  ctx.font = "14px sans-serif";
+  ctx.fillText("Numbers pulled live from connected YouTube/TikTok accounts.", 60, 590);
+
+  canvas.toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "media-kit.png";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+}
+
 async function renderMissionControlPanel(body) {
   if (mcPoll) clearInterval(mcPoll);
   body.innerHTML = `
@@ -568,6 +626,9 @@ async function renderMissionControlPanel(body) {
           <a class="msc-link-card" href="https://github.com/tiktoklivbe-ux/faceless-command-center" target="_blank" rel="noopener">
             <span class="msc-link-icon">🐙</span><span>GitHub Repo</span>
           </a>
+          <button class="msc-link-card" id="msc-mediakit-btn" style="cursor:pointer">
+            <span class="msc-link-icon">🤝</span><span>Download Media Kit</span>
+          </button>
         </div>
 
         <div class="msc-cols">
@@ -600,6 +661,12 @@ async function renderMissionControlPanel(body) {
   });
   $("#msc-nav-orbit").addEventListener("click", () => closeBigPanel());
 
+  let lastOverview = null;
+  $("#msc-mediakit-btn").addEventListener("click", () => {
+    if (!lastOverview) { toast("Stats still loading — try again in a second."); return; }
+    generateMediaKit(lastOverview);
+  });
+
   const draw = async () => {
     let overview, act;
     try {
@@ -608,6 +675,7 @@ async function renderMissionControlPanel(body) {
         API("/api/missioncontrol/activity?limit=30"),
       ]);
     } catch (e) { return; }
+    lastOverview = overview;
 
     const stats = $("#msc-stats");
     if (stats) stats.innerHTML = `

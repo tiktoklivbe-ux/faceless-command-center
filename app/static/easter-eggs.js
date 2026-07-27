@@ -124,4 +124,62 @@
       if (o) o.remove();
     }
   });
+
+  // ---------------------------------------------------------------- live tab title
+  // Shows a spinner in the browser tab while any agent is working, so you can
+  // tell something's rendering without keeping the tab focused. Purely
+  // additive: reads #core's "busy" class (set elsewhere by refreshAgents)
+  // rather than owning any state itself, so it can't get out of sync with
+  // or interfere with the real polling logic.
+  const BASE_TITLE = document.title;
+  const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+  let spinnerIdx = 0;
+  setInterval(() => {
+    const core = document.getElementById("core");
+    const busy = core && core.classList.contains("busy");
+    document.title = busy ? `${SPINNER_FRAMES[spinnerIdx++ % 4]} ${BASE_TITLE}` : BASE_TITLE;
+  }, 400);
+
+  // ---------------------------------------------------------------- matrix rain toggle
+  // Typing "matrix" (while not focused in an input) drops a green code-rain
+  // overlay for a few seconds. Entirely cosmetic, auto-removes itself.
+  let matrixBuffer = "";
+  function matrixRain() {
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "position:fixed;inset:0;z-index:10000;pointer-events:none;opacity:0.85;";
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    const cols = Math.floor(innerWidth / 16);
+    const drops = new Array(cols).fill(0);
+    const chars = "アイウエオカキクケコ01アETHER";
+
+    let frames = 0;
+    const maxFrames = 260; // ~4-5s at typical refresh rate
+    function step() {
+      ctx.fillStyle = "rgba(1,3,10,0.15)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#39ffa0";
+      ctx.font = "14px monospace";
+      drops.forEach((y, i) => {
+        const ch = chars[Math.floor(Math.random() * chars.length)];
+        ctx.fillText(ch, i * 16, y * 16);
+        drops[i] = y * 16 > innerHeight && Math.random() > 0.975 ? 0 : y + 1;
+      });
+      frames++;
+      if (frames < maxFrames) requestAnimationFrame(step);
+      else canvas.remove();
+    }
+    requestAnimationFrame(step);
+  }
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (e.key.length !== 1) return;
+    matrixBuffer = (matrixBuffer + e.key.toLowerCase()).slice(-6);
+    if (matrixBuffer === "matrix") {
+      matrixBuffer = "";
+      matrixRain();
+    }
+  });
 })();
