@@ -23,7 +23,7 @@ tier awake.
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,43 @@ from .pipeline import orchestrator
 log = logging.getLogger("chronos")
 
 CHECK_INTERVAL_SECONDS = 300  # 5 minutes
+
+# If a job sits in one of these active states longer than this, its worker
+# almost certainly died (e.g. killed mid-run by a Render redeploy/restart)
+# and nothing will ever pick it back up. Auto-clearing it to FAILED lets
+# Chronos treat that channel as no longer blocked, instead of the job sitting
+# stuck for days.
+STUCK_JOB_TIMEOUT_MINUTES = 30
+_ACTIVE_STATUSES = [
+    models.JobStatus.QUEUED,
+    models.JobStatus.SCRIPT,
+    models.JobStatus.VOICE,
+    models.JobStatus.VISUALS,
+    models.JobStatus.CAPTIONS,
+    models.JobStatus.ASSEMBLING,
+    models.JobStatus.PUBLISHING,
+]
+
+
+def clear_stuck_jobs(db: Session) -> int:
+    cutoff = datetime.utcnow() - timedelta(minutes=STUCK_JOB_TIMEOUT_MINUTES)
+    stuck_jobs = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.status.in_(_ACTIVE_STATUSES))
+        .filter(models.VideoJob.updated_at < cutoff)
+        .all()
+    )
+    for job in stuck_jobs:
+        log.warning("Chronos watchdog: clearing stuck job %s (was %s since %s)",
+                    job.id, job.status, job.updated_at)
+        job.status = models.JobStatus.FAILED
+        job.error_message = (
+            "Job stalled (likely killed by a server restart/redeploy) — "
+            "auto-cleared by Chronos watchdog"
+        )
+    if stuck_jobs:
+        db.commit()
+    return len(stuck_jobs)
 
 
 def _today_start() -> datetime:
@@ -71,6 +108,9 @@ def _channel_due(db: Session, channel: models.Channel) -> bool:
 def _tick():
     db = SessionLocal()
     try:
+        cleared = clear_stuck_jobs(db)
+        if cleared:
+            log.warning("Chronos watchdog: cleared %d stuck job(s) this tick", cleared)
         channels = db.query(models.Channel).filter(models.Channel.auto_enabled == True).all()  # noqa: E712
         for channel in channels:
             try:
@@ -93,6 +133,18 @@ def _tick():
 
 async def automation_loop():
     log.info("Chronos automation loop started (checking every %ss)", CHECK_INTERVAL_SECONDS)
+    # Clear any jobs stranded by the restart that's kicking off this very
+    # process (e.g. a redeploy killed them mid-run) before the first tick.
+    try:
+        db = SessionLocal()
+        try:
+            cleared = clear_stuck_jobs(db)
+            if cleared:
+                log.warning("Chronos watchdog: cleared %d stuck job(s) on startup", cleared)
+        finally:
+            db.close()
+    except Exception:
+        log.exception("Chronos: startup stuck-job check failed")
     while True:
         try:
             await asyncio.get_event_loop().run_in_executor(None, _tick)
