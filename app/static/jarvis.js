@@ -228,6 +228,12 @@
           <button class="icon-btn" id="jarvis-send" title="Send">▸</button>
         </div>
         <div class="bp-sub" id="jarvis-status" style="margin-top:6px"></div>
+        <div class="jarvis-sms-box">
+          <b>Text Jarvis from your phone</b>
+          <p>Get a Twilio phone number, then set its "A message comes in" webhook to:</p>
+          <code id="jarvis-sms-url">/api/jarvis/sms</code>
+          <p class="jarvis-sms-note">Same Jarvis, same tools — texting or talking in-app both reach the same brain. Keep that URL private; anyone who has it can trigger it.</p>
+        </div>
       </div>
     `;
 
@@ -246,6 +252,9 @@
 
     log.appendChild(bubble("assistant",
       "Hey, I'm here. Type, hold the mic to talk once, or turn on 'Hey Jarvis' mode to leave the mic open."));
+
+    const smsUrlEl = $("#jarvis-sms-url");
+    if (smsUrlEl) smsUrlEl.textContent = `${window.location.origin}/api/jarvis/sms`;
 
     sendBtn.addEventListener("click", () => {
       const text = input.value.trim();

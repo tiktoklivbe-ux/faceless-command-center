@@ -80,6 +80,14 @@ def run_command(payload: CommandIn, background_tasks: BackgroundTasks, db: Sessi
         return {"action": "open_panel", "panel": "channels", "message": "Opening your channels."}
     if re.search(r"\b(jobs|library|videos|history)\b", low):
         return {"action": "open_panel", "panel": "jobs", "message": "Opening the video library."}
+    if re.search(r"\b(texting|text jarvis|sms|set up texting)\b", low):
+        return {"action": "info", "message":
+                "To text Jarvis: get a Twilio phone number, then set its incoming-message "
+                "webhook to this app's URL plus /api/jarvis/sms. Once that's set, texting "
+                "that number reaches the same Jarvis that's in the app -- same tools, same "
+                "channel/job access. Full steps are in the Jarvis panel."}
+    if re.search(r"\bjarvis\b", low):
+        return {"action": "open_panel", "panel": "jarvis", "message": "Opening Jarvis."}
     if re.search(r"\b(help|what can you do|commands)\b", low):
         return {"action": "help", "message":
                 "Try: 'make a video about black holes', 'open mission control', 'open settings', "

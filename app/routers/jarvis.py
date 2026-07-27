@@ -20,7 +20,8 @@ import json
 import textwrap
 
 import requests
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -183,18 +184,14 @@ def _call_claude(api_key: str, model: str, messages: list[dict]) -> dict:
     return resp.json()
 
 
-@router.post("/chat", response_model=ChatOut)
-def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def run_jarvis_turn(db: Session, background_tasks: BackgroundTasks, messages: list[dict]) -> str:
+    """Runs the tool-use loop against Claude for one turn and returns the
+    final plain-text reply. Shared by the in-app chat endpoint and the SMS
+    webhook so both go through identical logic and tools."""
     api_key = get_setting(db, "anthropic_api_key")
     if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="No Anthropic API key configured yet -- add one in Settings.",
-        )
+        return "No Anthropic API key is configured yet -- add one in Settings."
     model = get_setting(db, "anthropic_model", "claude-sonnet-4-5")
-
-    messages = [{"role": t.role, "content": t.content} for t in body.history]
-    messages.append({"role": "user", "content": body.message})
 
     for _ in range(4):
         try:
@@ -202,21 +199,19 @@ def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else "?"
             if status == 401:
-                detail = "That Anthropic API key looks invalid — check it in Settings."
-            elif status == 429:
-                detail = "Anthropic's rate limit was hit — try again in a moment."
-            else:
-                detail = f"Anthropic API error ({status})."
-            raise HTTPException(status_code=502, detail=detail)
+                return "That Anthropic API key looks invalid -- check it in Settings."
+            if status == 429:
+                return "Anthropic's rate limit was hit -- try again in a moment."
+            return f"Anthropic API error ({status})."
         except requests.RequestException:
-            raise HTTPException(status_code=502, detail="Couldn't reach Anthropic's API — check the connection and try again.")
+            return "Couldn't reach Anthropic's API -- check the connection and try again."
 
         content = data.get("content", [])
         stop_reason = data.get("stop_reason")
 
         if stop_reason != "tool_use":
             reply = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            return ChatOut(reply=reply.strip() or "…")
+            return reply.strip() or "…"
 
         messages.append({"role": "assistant", "content": content})
         tool_results = []
@@ -231,4 +226,93 @@ def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(
             })
         messages.append({"role": "user", "content": tool_results})
 
-    return ChatOut(reply="Sorry, I got stuck trying to look that up. Try asking again.")
+    return "Sorry, I got stuck trying to look that up. Try asking again."
+
+
+@router.post("/chat", response_model=ChatOut)
+def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    if not get_setting(db, "anthropic_api_key"):
+        raise HTTPException(
+            status_code=400,
+            detail="No Anthropic API key configured yet -- add one in Settings.",
+        )
+    messages = [{"role": t.role, "content": t.content} for t in body.history]
+    messages.append({"role": "user", "content": body.message})
+    reply = run_jarvis_turn(db, background_tasks, messages)
+    return ChatOut(reply=reply)
+
+
+# ---------------------------------------------------------------- texting Jarvis (SMS)
+# Works with any provider that speaks Twilio's "incoming message webhook"
+# convention (form-encoded POST with From/Body, expects TwiML XML back) --
+# Twilio itself is the easiest way to get a real phone number for this.
+#
+# SETUP (once you have a Twilio account + phone number):
+#   1. In the Twilio console, open your phone number's configuration.
+#   2. Under "A message comes in", set the webhook to:
+#        https://<your-render-app>.onrender.com/api/jarvis/sms
+#      Method: HTTP POST.
+#   3. Text that number. Twilio POSTs it here, this runs the same Jarvis
+#      logic (including tools), and replies via TwiML -- Twilio sends the
+#      reply back as a text automatically.
+#
+# SECURITY NOTE: this endpoint doesn't verify Twilio's request signature, so
+# anyone who discovers the URL could POST to it and trigger a real tool call
+# (e.g. start a video). Keep the URL private for now. If this matters more
+# once it's really in use, Twilio signature validation (using your Twilio
+# Auth Token) is the standard fix -- ask and I can add it.
+_MAX_SMS_HISTORY = 10
+
+
+def _load_sms_history(db: Session, phone: str) -> list[dict]:
+    thread = db.get(models.SmsThread, phone)
+    if not thread:
+        return []
+    try:
+        return json.loads(thread.history_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _save_sms_history(db: Session, phone: str, history: list[dict]) -> None:
+    history = history[-_MAX_SMS_HISTORY:]
+    thread = db.get(models.SmsThread, phone)
+    if not thread:
+        thread = models.SmsThread(phone=phone)
+        db.add(thread)
+    thread.history_json = json.dumps(history)
+    db.commit()
+
+
+def _twiml(message: str) -> Response:
+    # Minimal manual XML escaping -- avoids pulling in an XML library for
+    # four characters.
+    escaped = (
+        message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{escaped}</Message></Response>'
+    return Response(content=xml, media_type="application/xml")
+
+
+@router.post("/sms")
+async def sms_webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    form = await request.form()
+    from_number = form.get("From", "unknown")
+    body = (form.get("Body") or "").strip()
+    if not body:
+        return _twiml("Didn't catch a message there -- try texting again.")
+
+    if not get_setting(db, "anthropic_api_key"):
+        return _twiml("Jarvis isn't set up yet -- add an Anthropic API key in Settings first.")
+
+    history = _load_sms_history(db, from_number)
+    messages = list(history)
+    messages.append({"role": "user", "content": body})
+
+    reply = run_jarvis_turn(db, background_tasks, messages)
+
+    history.append({"role": "user", "content": body})
+    history.append({"role": "assistant", "content": reply})
+    _save_sms_history(db, from_number, history)
+
+    return _twiml(reply)

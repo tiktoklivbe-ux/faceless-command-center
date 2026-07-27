@@ -95,6 +95,22 @@ AGENTS = [
      "blurb": "Tracks the money. Watches monetization eligibility and estimated "
               "revenue so growth turns into income.",
      "actions": ["Show revenue estimate", "Check eligibility"]},
+    {"id": "jarvis", "name": "Jarvis", "title": "Personal Assistant", "stage": None,
+     "icon": "🎙️", "color": "#ff2f9e", "ring": 2,
+     "blurb": "Talk or text it directly. Checks real channel/job status and can start "
+              "a video on command — by voice in the app, or by text message from "
+              "anywhere once SMS is set up.",
+     "actions": ["Open Jarvis", "Set up texting"]},
+    {"id": "plutus", "name": "Plutus", "title": "Sponsorships & Deals", "stage": None,
+     "icon": "🤝", "color": "#ffd23d", "ring": 2,
+     "blurb": "Drafts brand-deal outreach messages once your numbers are worth "
+              "pitching, using real stats pulled straight from Mission Control.",
+     "actions": ["Draft a sponsor pitch"]},
+    {"id": "mnemosyne", "name": "Mnemosyne", "title": "Research & Fact-Check", "stage": None,
+     "icon": "📚", "color": "#39ffa0", "ring": 2,
+     "blurb": "Keeper of sources. Digs up the real fact or study behind a shower "
+              "thought before Athena scripts it, so nothing shipped is just made up.",
+     "actions": ["Fact-check last script", "Find a source"]},
 ]
 
 STAGE_TO_AGENT = {a["stage"]: a["id"] for a in AGENTS if a["stage"]}

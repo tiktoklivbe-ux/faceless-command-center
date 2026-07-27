@@ -90,3 +90,15 @@ class Setting(Base):
     key = Column(String, primary_key=True)
     value_enc = Column(Text, nullable=True)
     is_secret = Column(Boolean, default=True)
+
+
+class SmsThread(Base):
+    """Short rolling conversation history per phone number, for the texting
+    version of Jarvis (see app/routers/jarvis.py's /sms webhook). Kept
+    separate from the in-app chat's history (which lives client-side) since
+    a phone number has no browser session to hold it in."""
+    __tablename__ = "sms_threads"
+
+    phone = Column(String, primary_key=True)
+    history_json = Column(Text, default="[]")  # list of {"role","content"}, trimmed to last ~10
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
