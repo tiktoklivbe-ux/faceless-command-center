@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, Integer
+from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, Integer, Float
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -101,4 +101,24 @@ class SmsThread(Base):
 
     phone = Column(String, primary_key=True)
     history_json = Column(Text, default="[]")  # list of {"role","content"}, trimmed to last ~10
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VoicePrint(Base):
+    """A rough, approximate voice fingerprint for the app's one owner
+    (single row, id='owner' -- this app has one primary user, not a
+    multi-user auth system). Built from pitch statistics only (average,
+    min, max fundamental frequency), NOT a real biometric speaker-embedding
+    model. Good enough for a fun 'is this probably Tom or a guest' gate,
+    not real security. Updates via a slow exponential moving average each
+    time a confirmed-match sample comes in, so it adapts gradually to
+    natural voice variation (tired, sick, etc.) instead of overwriting
+    outright or staying frozen at the first enrollment."""
+    __tablename__ = "voiceprints"
+
+    id = Column(String, primary_key=True, default="owner")
+    avg_pitch = Column(Float, nullable=True)
+    min_pitch = Column(Float, nullable=True)
+    max_pitch = Column(Float, nullable=True)
+    sample_count = Column(Integer, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

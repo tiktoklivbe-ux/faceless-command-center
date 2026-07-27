@@ -27,6 +27,7 @@
   let restartTimer = null;
   let sessionToken = 0; // bumped every time we start/stop, so stale onend/onerror callbacks from a previous session can be ignored
   let currentOrb = null;
+  let sessionGreeted = false; // whether we've already given the Tom/guest greeting for the current mic session
 
   function bubble(role, text) {
     const div = document.createElement("div");
@@ -234,6 +235,13 @@
           <code id="jarvis-sms-url">/api/jarvis/sms</code>
           <p class="jarvis-sms-note">Same Jarvis, same tools — texting or talking in-app both reach the same brain. Keep that URL private; anyone who has it can trigger it.</p>
         </div>
+
+        <div class="jarvis-sms-box">
+          <b>Voice ID <span style="font-weight:400; opacity:0.7;">(approximate — not real security)</span></b>
+          <p id="jarvis-voiceid-status">Checking enrollment…</p>
+          <button class="btn" id="jarvis-enroll-btn" style="margin-top:6px">🎙️ Enroll My Voice</button>
+          <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Easily fooled by a similar-pitched voice — it's a fun gate, not identity verification. It slowly adapts to your voice over time as it's used.</p>
+        </div>
       </div>
     `;
 
@@ -255,6 +263,42 @@
 
     const smsUrlEl = $("#jarvis-sms-url");
     if (smsUrlEl) smsUrlEl.textContent = `${window.location.origin}/api/jarvis/sms`;
+
+    const voiceStatus = $("#jarvis-voiceid-status");
+    const enrollBtn = $("#jarvis-enroll-btn");
+    if (window.VoiceID) {
+      VoiceID.fetchProfile().then((p) => {
+        if (voiceStatus) {
+          voiceStatus.textContent = p.enrolled
+            ? `Enrolled — ${Math.round(p.avg_pitch)}Hz average, refined over ${p.sample_count} sample${p.sample_count === 1 ? "" : "s"}.`
+            : "Not enrolled yet — Jarvis can't tell you apart from a guest until you enroll.";
+        }
+      });
+      if (enrollBtn) {
+        enrollBtn.addEventListener("click", async () => {
+          const ok = await VoiceID.ensureMic();
+          if (!ok) { toast("Couldn't access the mic to enroll."); return; }
+          enrollBtn.disabled = true;
+          enrollBtn.textContent = "Listening… speak naturally for a few seconds";
+          VoiceID.startSampling();
+          setTimeout(async () => {
+            const sample = VoiceID.stopSamplingAndGet();
+            enrollBtn.disabled = false;
+            enrollBtn.textContent = "🎙️ Enroll My Voice";
+            if (!sample) { toast("Didn't catch enough voice — try again somewhere quieter."); return; }
+            await VoiceID.reportMatch(sample);
+            const p = VoiceID.getProfile();
+            if (voiceStatus && p) {
+              voiceStatus.textContent = `Enrolled — ${Math.round(p.avg_pitch)}Hz average, refined over ${p.sample_count} sample${p.sample_count === 1 ? "" : "s"}.`;
+            }
+            toast("Voice enrolled.");
+          }, 3500);
+        });
+      }
+    } else if (enrollBtn) {
+      enrollBtn.disabled = true;
+      if (voiceStatus) voiceStatus.textContent = "Voice ID module didn't load.";
+    }
 
     sendBtn.addEventListener("click", () => {
       const text = input.value.trim();
@@ -278,12 +322,14 @@
     function stopEverything() {
       mode = "off";
       awake = false;
+      sessionGreeted = false;
       sessionToken++; // invalidate any in-flight recognizer's callbacks
       clearTimeout(restartTimer);
       micBtn.classList.remove("jarvis-mic-active");
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
       orb.setListening(false);
+      if (window.VoiceID) VoiceID.stopSamplingAndGet(); // discard, just stop the timer
       if (recognizer) {
         try { recognizer.abort(); } catch (_) {}
       }
@@ -295,9 +341,33 @@
       currentOrb = null;
     };
 
+    async function maybeGreet(log) {
+      if (sessionGreeted || !window.VoiceID) return;
+      sessionGreeted = true;
+      const sample = VoiceID.stopSamplingAndGet();
+      VoiceID.startSampling(); // immediately resume for the rest of this session
+      if (!sample) return; // not enough signal to judge, skip silently
+
+      const match = VoiceID.isLikelyMatch(sample);
+      if (match === null) return; // nobody enrolled yet -- nothing to compare against
+      if (match) {
+        const greeting = "Hey sir.";
+        log.appendChild(bubble("assistant", greeting));
+        speak(greeting);
+        VoiceID.reportMatch(sample); // slowly refine the profile toward the current voice
+      } else {
+        const guess = VoiceID.softGuess(sample.avg);
+        const greeting = `Hey there — this doesn't sound like Tom to me. I'm his assistant, Jarvis.` +
+          (guess ? ` Rough guess from pitch: ${guess}. Not a real ID, just a hint.` : "");
+        log.appendChild(bubble("assistant", greeting));
+        speak(greeting);
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
     function handleResult(text) {
       if (mode === "ptt") {
-        send(log, text);
+        maybeGreet(log).then(() => send(log, text));
         return;
       }
       // wake mode
@@ -306,12 +376,16 @@
           awake = true;
           status.textContent = "Listening for your command…";
           const rest = stripWakePhrase(text);
-          if (rest) { awake = false; send(log, rest); status.textContent = "Say 'Hey Jarvis' any time."; }
+          if (rest) {
+            awake = false;
+            maybeGreet(log).then(() => send(log, rest));
+            status.textContent = "Say 'Hey Jarvis' any time.";
+          }
         }
       } else {
         awake = false;
         status.textContent = "Say 'Hey Jarvis' any time.";
-        send(log, text);
+        maybeGreet(log).then(() => send(log, text));
       }
     }
 
@@ -349,11 +423,15 @@
         } else if (mode === "ptt") {
           mode = "off";
           micBtn.classList.remove("jarvis-mic-active");
+          if (window.VoiceID) VoiceID.stopSamplingAndGet(); // discard -- ptt session is over, don't leave the sampler running
         }
       };
 
       recognizer = r;
       orb.setListening(true);
+      if (window.VoiceID) {
+        VoiceID.ensureMic().then((ok) => { if (ok) VoiceID.startSampling(); });
+      }
       try {
         r.start();
       } catch (_) {

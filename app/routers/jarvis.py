@@ -316,3 +316,66 @@ async def sms_webhook(request: Request, background_tasks: BackgroundTasks, db: S
     _save_sms_history(db, from_number, history)
 
     return _twiml(reply)
+
+
+# ---------------------------------------------------------------- voice ID (approximate, not real biometrics)
+# A rough "is this probably Tom or a guest" gate based on pitch statistics
+# only -- NOT a real speaker-verification model. Genuinely useful caveats:
+#   - Two people with similar vocal pitch can be confused for each other.
+#   - A congested nose, tiredness, or a noisy room can shift your own
+#     reading enough to miss a match.
+#   - This should never be used for anything that actually needs security.
+# "Learning": every time the live sample is accepted as a match, it's fed
+# back into update_voiceprint below, which blends it into the stored average
+# with a fixed small weight -- so the profile drifts slowly toward your
+# current voice over time instead of ever being overwritten wholesale or
+# staying frozen at the first enrollment.
+class VoicePrintIn(BaseModel):
+    avg_pitch: float
+    min_pitch: float
+    max_pitch: float
+
+
+class VoicePrintOut(BaseModel):
+    enrolled: bool
+    avg_pitch: float | None = None
+    min_pitch: float | None = None
+    max_pitch: float | None = None
+    sample_count: int = 0
+
+
+@router.get("/voiceprint", response_model=VoicePrintOut)
+def get_voiceprint(db: Session = Depends(get_db)):
+    vp = db.get(models.VoicePrint, "owner")
+    if not vp or not vp.sample_count:
+        return VoicePrintOut(enrolled=False)
+    return VoicePrintOut(
+        enrolled=True, avg_pitch=vp.avg_pitch, min_pitch=vp.min_pitch,
+        max_pitch=vp.max_pitch, sample_count=vp.sample_count,
+    )
+
+
+@router.post("/voiceprint", response_model=VoicePrintOut)
+def update_voiceprint(body: VoicePrintIn, db: Session = Depends(get_db)):
+    vp = db.get(models.VoicePrint, "owner")
+    if not vp or not vp.sample_count:
+        vp = db.get(models.VoicePrint, "owner") or models.VoicePrint(id="owner")
+        vp.avg_pitch = body.avg_pitch
+        vp.min_pitch = body.min_pitch
+        vp.max_pitch = body.max_pitch
+        vp.sample_count = 1
+        db.add(vp)
+    else:
+        # slow exponential moving average -- new samples nudge the profile
+        # rather than replacing it, so one bad/noisy sample can't wreck it
+        weight_new = 0.25
+        vp.avg_pitch = vp.avg_pitch * (1 - weight_new) + body.avg_pitch * weight_new
+        vp.min_pitch = min(vp.min_pitch, body.min_pitch)
+        vp.max_pitch = max(vp.max_pitch, body.max_pitch)
+        vp.sample_count += 1
+    db.commit()
+    db.refresh(vp)
+    return VoicePrintOut(
+        enrolled=True, avg_pitch=vp.avg_pitch, min_pitch=vp.min_pitch,
+        max_pitch=vp.max_pitch, sample_count=vp.sample_count,
+    )
