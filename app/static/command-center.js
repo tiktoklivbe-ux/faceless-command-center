@@ -551,6 +551,25 @@ async function renderMissionControlPanel(body) {
         <h1 style="margin-bottom:2px">Mission Control</h1>
         <div class="bp-sub">Real numbers, real agent activity — no theatrics.</div>
         <div class="msc-stats" id="msc-stats"></div>
+
+        <div class="msc-links-row">
+          <a class="msc-link-card" href="https://studio.youtube.com" target="_blank" rel="noopener">
+            <span class="msc-link-icon">▶️</span><span>YouTube Studio</span>
+          </a>
+          <a class="msc-link-card" href="https://www.tiktok.com/tiktokstudio" target="_blank" rel="noopener">
+            <span class="msc-link-icon">🎵</span><span>TikTok Studio</span>
+          </a>
+          <a class="msc-link-card" href="https://elevenlabs.io/app" target="_blank" rel="noopener">
+            <span class="msc-link-icon">🗣️</span><span>ElevenLabs</span>
+          </a>
+          <a class="msc-link-card" href="https://dashboard.render.com" target="_blank" rel="noopener">
+            <span class="msc-link-icon">🖥️</span><span>Render Dashboard</span>
+          </a>
+          <a class="msc-link-card" href="https://github.com/tiktoklivbe-ux/faceless-command-center" target="_blank" rel="noopener">
+            <span class="msc-link-icon">🐙</span><span>GitHub Repo</span>
+          </a>
+        </div>
+
         <div class="msc-cols">
           <div class="msc-channels" id="msc-channels"><h2>Channels</h2><div id="msc-ch-list"></div></div>
           <div class="msc-activity">
@@ -558,6 +577,21 @@ async function renderMissionControlPanel(body) {
             <div id="msc-act-list" class="msc-act-list"></div>
           </div>
         </div>
+
+        <div class="msc-tips">
+          <h2>Growth &amp; Monetization Ideas</h2>
+          <div class="msc-tips-grid">
+            <div class="msc-tip"><b>Repurpose across platforms</b><span>Post the same video to YouTube Shorts, TikTok, and Instagram Reels — same asset, 3x the reach.</span></div>
+            <div class="msc-tip"><b>Watch your retention graph</b><span>YouTube Studio shows exactly where viewers drop off — tighten the hook if it's in the first 3 seconds.</span></div>
+            <div class="msc-tip"><b>Affiliate links in description</b><span>If a Shower Thought references a product/book, a relevant Amazon Associates link costs nothing to add.</span></div>
+            <div class="msc-tip"><b>Series &amp; playlists</b><span>Numbered "Part 1/2/3" thoughts drive binge-watching and session time, which the algorithm rewards.</span></div>
+            <div class="msc-tip"><b>Community tab polls</b><span>Ask viewers to vote on the next topic — free engagement signal, plus content ideas from your audience.</span></div>
+            <div class="msc-tip"><b>TikTok Creator Rewards</b><span>Once eligible, longer-form TikToks (1min+) earn more per view than Shorts-length ones.</span></div>
+            <div class="msc-tip"><b>Brand deal outreach</b><span>Once you have real numbers in Mission Control, a simple media kit (screenshot these stats) is enough to pitch small sponsors.</span></div>
+            <div class="msc-tip"><b>YouTube Shorts Fund/ad revenue</b><span>Make sure watch-time monetization is actually turned on in YouTube Studio — it's off by default for new channels.</span></div>
+          </div>
+        </div>
+
         <div class="msc-uplink" id="msc-uplink"><span class="hdot"></span> <span id="msc-uplink-text">Connecting…</span></div>
       </div>
     </div>`;

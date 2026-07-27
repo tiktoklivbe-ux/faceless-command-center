@@ -404,6 +404,36 @@ video { width: 100%; border-radius: 10px; background: #000; border: 1px solid va
 .msc-tile .mt-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
 
 .msc-cols { display: grid; grid-template-columns: 260px 1fr; gap: 20px; align-items: start; }
+
+/* ---------------- quick links dock ---------------- */
+.msc-links-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 20px; }
+.msc-link-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: 8px;
+  border: 1px solid var(--border-soft); background: rgba(0,0,0,0.22);
+  color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 600;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.msc-link-card:hover {
+  border-color: var(--cyan); box-shadow: 0 0 14px rgba(0,232,255,0.25);
+  transform: translateY(-1px);
+}
+.msc-link-icon { font-size: 15px; }
+
+/* ---------------- growth / monetization tips ---------------- */
+.msc-tips { margin-top: 28px; }
+.msc-tips h2 { margin-bottom: 12px; }
+.msc-tips-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.msc-tip {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px; border-radius: 8px;
+  border: 1px solid var(--border-soft); background: rgba(0,0,0,0.18);
+}
+.msc-tip b { color: var(--green); font-size: 13px; }
+.msc-tip span { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+@media (max-width: 900px) {
+  .msc-tips-grid { grid-template-columns: 1fr; }
+}
 .msc-channels, .msc-activity {
   background: rgba(9,16,32,0.55); border: 1px solid var(--border-soft); border-radius: 12px; padding: 16px;
 }
