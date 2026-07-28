@@ -408,7 +408,24 @@ async function openBigPanel(which) {
   if (which === "missioncontrol") return renderMissionControlPanel(body);
   if (which === "jarvis") return renderJarvisPanel(body);
 }
-window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); };
+const SIDE_MAP = {
+  "side-missioncontrol": "missioncontrol",
+  "side-jarvis": "jarvis",
+  "side-jobs": "jobs",
+  "side-channels": "channels",
+  "side-settings": "settings",
+};
+function setActiveSideItem(panelName) {
+  document.querySelectorAll("#sidebar .side-item").forEach((el) => el.classList.remove("active"));
+  if (panelName === null) {
+    const orbitBtn = $("#side-orbit");
+    if (orbitBtn) orbitBtn.classList.add("active");
+    return;
+  }
+  const id = Object.keys(SIDE_MAP).find((k) => SIDE_MAP[k] === panelName);
+  if (id) { const el = document.getElementById(id); if (el) el.classList.add("active"); }
+}
+window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); setActiveSideItem(null); };
 
 async function renderChannelsPanel(body) {
   body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
@@ -827,6 +844,16 @@ async function init() {
   $("#tb-jobs").addEventListener("click", () => openBigPanel("jobs"));
   $("#tb-missioncontrol").addEventListener("click", () => openBigPanel("missioncontrol"));
   $("#tb-jarvis").addEventListener("click", () => openBigPanel("jarvis"));
+
+  // left sidebar -- same destinations as the toolbar icons, just labeled.
+  // "Orbit" is the one that closes any open panel and returns to the
+  // starfield/constellation view rather than opening a panel.
+  Object.entries(SIDE_MAP).forEach(([id, panel]) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", () => { openBigPanel(panel); setActiveSideItem(panel); });
+  });
+  $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
+  setActiveSideItem(null);
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   await refreshAgents();

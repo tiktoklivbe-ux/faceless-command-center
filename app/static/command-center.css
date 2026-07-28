@@ -228,6 +228,33 @@ html, body {
 .icon-btn:hover { border-color: var(--cyan); box-shadow: 0 0 16px rgba(0,232,255,0.3); color: var(--cyan); }
 #toolbar { position: fixed; z-index: 60; top: 62px; right: 16px; display: flex; flex-direction: column; gap: 10px; }
 
+/* ---------------- left sidebar nav ---------------- */
+#sidebar {
+  position: fixed; z-index: 60; top: 62px; left: 16px; bottom: 16px;
+  display: flex; flex-direction: column; gap: 6px;
+  width: 168px; padding: 10px;
+  background: rgba(6,10,22,0.55); border: 1px solid var(--border-soft);
+  border-radius: 12px; backdrop-filter: blur(10px);
+}
+.side-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--muted); font-family: var(--font-body); font-size: 13px; font-weight: 600;
+  text-align: left; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.side-item:hover { background: rgba(0,232,255,0.06); color: var(--ink); }
+.side-item.active {
+  background: rgba(0,232,255,0.1); border-color: rgba(0,232,255,0.35);
+  color: var(--cyan); box-shadow: 0 0 14px rgba(0,232,255,0.15);
+}
+.side-icon { font-size: 17px; width: 22px; text-align: center; flex-shrink: 0; }
+.side-label { white-space: nowrap; }
+@media (max-width: 900px) {
+  #sidebar { display: none; } /* toolbar icons remain available on small screens */
+}
+
 /* ---------------- floating holographic panels ---------------- */
 .holo {
   position: fixed; z-index: 55;
