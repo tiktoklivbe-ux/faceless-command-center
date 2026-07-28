@@ -1,15 +1,25 @@
 import asyncio
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 
 from .database import init_db
 from .routers import channels, settings, jobs, oauth, rundown, command, missioncontrol, jarvis
 from .scheduler import automation_loop
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# Bumps once per process start (i.e. once per deploy, since the host
+# restarts the process). Appended as a query string to every asset URL in
+# index.html so browsers can't keep serving a stale cached JS/CSS file after
+# a new deploy goes out -- previously they could, since FileResponse didn't
+# set any cache headers and browsers are free to reuse a cached copy
+# indefinitely in that case. This was the actual cause of "I pushed new code
+# but nothing changed in my browser."
+_ASSET_VERSION = str(int(time.time()))
 
 app = FastAPI(title="Faceless Control Center")
 
@@ -26,6 +36,13 @@ app.include_router(jarvis.router)
 
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
+_INDEX_HTML_RAW = (STATIC_DIR / "index.html").read_text()
+_INDEX_HTML_VERSIONED = (
+    _INDEX_HTML_RAW
+    .replace('.js"', f'.js?v={_ASSET_VERSION}"')
+    .replace('.css"', f'.css?v={_ASSET_VERSION}"')
+)
+
 
 @app.on_event("startup")
 async def _start_chronos():
@@ -38,5 +55,14 @@ async def _start_chronos():
 @app.get("/{full_path:path}")
 def spa(full_path: str):
     """Single-page app: every non-API route just serves index.html and the
-    frontend JS figures out what to show based on the URL hash."""
-    return FileResponse(STATIC_DIR / "index.html")
+    frontend JS figures out what to show based on the URL hash.
+
+    Asset URLs (.js/.css) get a ?v=<deploy-time> query string baked in at
+    startup so a new deploy is always fetched fresh instead of a browser
+    reusing an old cached copy of the JS. The HTML response itself also gets
+    no-cache headers so the browser always re-checks for this too.
+    """
+    return HTMLResponse(
+        content=_INDEX_HTML_VERSIONED,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
