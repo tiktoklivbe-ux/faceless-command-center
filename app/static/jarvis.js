@@ -73,6 +73,13 @@
     return sum / data.length / 255;
   }
 
+  function getSpeechBars() {
+    if (!speechAnalyser) return null;
+    const data = new Uint8Array(speechAnalyser.frequencyBinCount);
+    speechAnalyser.getByteFrequencyData(data);
+    return data;
+  }
+
   async function speak(text) {
     if (jarvisSettings && jarvisSettings.jarvis_read_aloud === false) return;
 
@@ -106,7 +113,7 @@
         speechAnalyser = null;
       }
 
-      audio.onplay = () => { if (currentOrb) currentOrb.setSpeaking(true, getSpeechAmplitude); };
+      audio.onplay = () => { if (currentOrb) currentOrb.setSpeaking(true, getSpeechAmplitude, getSpeechBars); };
       audio.onended = () => { if (currentOrb) currentOrb.setSpeaking(false, null); URL.revokeObjectURL(url); };
       audio.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
       await audio.play();
@@ -177,6 +184,7 @@
     let listening = false;
     let speaking = false;
     let getSpeakAmp = null;
+    let getSpeakBars = null;
     let audioCtx = null, analyser = null, freqData = null, micStream = null;
     let micLevel = 0;
     let accent = "#00e8ff";
@@ -206,6 +214,30 @@
         return micLevel;
       }
       return listening ? 0.35 + Math.sin(t * 6) * 0.15 : 0;
+    }
+
+    function updateEqBars() {
+      const eqEl = document.getElementById("jarvis-eq");
+      if (!eqEl) return;
+      const bars = eqEl.children;
+      let data = null;
+      if (speaking && getSpeakBars) {
+        data = getSpeakBars();
+      } else if (listening && analyser && freqData) {
+        analyser.getByteFrequencyData(freqData);
+        data = freqData;
+      }
+      const n = bars.length;
+      for (let i = 0; i < n; i++) {
+        let v = 0.08;
+        if (data && data.length) {
+          const idx = Math.floor((i / n) * data.length);
+          v = Math.max(0.08, data[idx] / 255);
+        } else if (!reducedMotion) {
+          v = 0.08 + Math.abs(Math.sin(t * 2 + i * 0.7)) * 0.05;
+        }
+        bars[i].style.height = `${Math.round(v * 100)}%`;
+      }
     }
 
     function draw() {
@@ -328,6 +360,7 @@
         ctx.restore();
       });
 
+      updateEqBars();
       raf = requestAnimationFrame(draw);
     }
 
@@ -341,7 +374,7 @@
         audioCtx = null; analyser = null; micStream = null;
       },
       setListening(on) { listening = on; if (on) ensureMic(); },
-      setSpeaking(on, ampFn) { speaking = on; getSpeakAmp = ampFn || null; },
+      setSpeaking(on, ampFn, barsFn) { speaking = on; getSpeakAmp = ampFn || null; getSpeakBars = barsFn || null; },
       setAccent(hex) { if (hex) accent = hex; },
     };
   }
@@ -447,13 +480,16 @@
       jarvisSettings = {
         jarvis_read_aloud: val("jarvis_read_aloud", "true") !== "false",
         jarvis_accent_color: val("jarvis_accent_color", "#00e8ff"),
+        jarvis_personality: val("jarvis_personality", "butler"),
+        jarvis_model: val("jarvis_model", "claude-haiku-4-5-20251001"),
+        has_elevenlabs: !!val("elevenlabs_api_key"),
       };
       const custom = val("jarvis_wake_word", "").trim().toLowerCase();
       wakePhrases = custom ? [custom, ...DEFAULT_WAKE_PHRASES] : DEFAULT_WAKE_PHRASES.slice();
       if (currentOrb) currentOrb.setAccent(jarvisSettings.jarvis_accent_color);
       return val("jarvis_greeting", "");
     } catch (_) {
-      jarvisSettings = { jarvis_read_aloud: true, jarvis_accent_color: "#00e8ff" };
+      jarvisSettings = { jarvis_read_aloud: true, jarvis_accent_color: "#00e8ff", jarvis_personality: "butler", jarvis_model: "claude-haiku-4-5-20251001", has_elevenlabs: false };
       return "";
     }
   }
@@ -510,12 +546,15 @@
         <div class="jarvis-body">
         <div class="jarvis-left">
           <canvas id="jarvis-orb" width="420" height="420"></canvas>
+          <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 24 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
+          <div class="jarvis-caption" id="jarvis-caption"></div>
           <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:10px"></div>
           <div class="jarvis-controls-row">
             <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤 Talk</button>
             <button class="icon-btn" id="jarvis-wake" title="Toggle wake mode">👂 Hey Jarvis</button>
           </div>
           <button class="btn secondary" id="jarvis-reset" style="margin-top:14px">Clear Conversation</button>
+          <div class="jarvis-readout" id="jarvis-readout"></div>
         </div>
         <div class="jarvis-right">
           <div class="jarvis-tabs">
@@ -552,6 +591,17 @@
 
     const greetingText = await applySettings();
     startNotifyPoll();
+
+    const readout = $("#jarvis-readout");
+    if (readout) {
+      const personalityLabel = { butler: "BUTLER", casual: "CASUAL", dry_wit: "DRY WIT", hype: "HYPE" }[jarvisSettings.jarvis_personality] || "BUTLER";
+      const modelLabel = jarvisSettings.jarvis_model.includes("haiku") ? "HAIKU (FAST)" : jarvisSettings.jarvis_model.includes("opus") ? "OPUS" : "SONNET";
+      readout.innerHTML = `
+        <div>MODE <span>${personalityLabel}</span></div>
+        <div>MODEL <span>${modelLabel}</span></div>
+        <div>VOICE <span>${jarvisSettings.has_elevenlabs ? "ELEVENLABS" : "BROWSER (fallback)"}</span></div>
+      `;
+    }
 
     const log = $("#jarvis-log");
     const input = $("#jarvis-text");
@@ -721,12 +771,22 @@
       const myToken = sessionToken;
       const r = new SpeechRecognition();
       r.continuous = continuous;
-      r.interimResults = false;
+      r.interimResults = true;
       r.lang = "en-US";
 
       r.onresult = (e) => {
         if (myToken !== sessionToken) return;
-        const text = e.results[e.results.length - 1][0].transcript;
+        const result = e.results[e.results.length - 1];
+        const text = result[0].transcript;
+        if (!result.isFinal) {
+          // live caption -- shows what it's hearing in real time, not just
+          // after you finish talking
+          const caption = $("#jarvis-caption");
+          if (caption) caption.textContent = text;
+          return;
+        }
+        const caption = $("#jarvis-caption");
+        if (caption) caption.textContent = "";
         handleResult(text);
       };
       r.onerror = (e) => {
