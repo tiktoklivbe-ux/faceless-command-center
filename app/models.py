@@ -104,6 +104,31 @@ class SmsThread(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AgentCommand(Base):
+    """A queued action for the local Jarvis Agent (a separate script that
+    runs on the user's own computer, outside this web app -- see
+    app/routers/agent.py and the jarvis_agent.py file given to the user).
+    This app has zero direct connection to anyone's physical computer, so
+    'computer control' works as a command queue: Jarvis (this server)
+    writes a row here, the local agent polls for pending rows and executes
+    them, then reports the result back.
+
+    Deliberately a small, fixed action vocabulary (see ALLOWED_ACTIONS in
+    app/routers/agent.py) rather than arbitrary code execution -- that's a
+    real safety boundary, not an oversight.
+    """
+    __tablename__ = "agent_commands"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    action = Column(String, nullable=False)       # "open_app" | "type_text" | "click_at" | "press_keys"
+    params_json = Column(Text, default="{}")
+    status = Column(String, default="pending")     # "pending" | "sent" | "done" | "failed"
+    result_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class VoicePrint(Base):
     """A rough, approximate voice fingerprint for the app's one owner
     (single row, id='owner' -- this app has one primary user, not a

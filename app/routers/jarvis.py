@@ -6,18 +6,21 @@ Jarvis — voice assistant, now with real tool-use.
                            (check job/channel status, kick off a new video),
                            returns a spoken-friendly reply.
 
-Scope, on purpose:
+Scope:
   - Can see and act on things INSIDE this app (jobs, channels, starting a
     video) because those are just existing internal functions -- safe,
     already-tested code paths, no new attack surface.
-  - Cannot touch your actual computer (files, other apps, your OS) yet --
-    that's a real separate project (Phase 2: a local companion app with its
-    own OS-level permissions) and isn't quietly smuggled in here.
+  - CAN also control the user's actual computer now, via the computer_action
+    tool -- but only through the local Jarvis Agent (a separate script the
+    user runs on their own machine, see app/routers/agent.py) polling a
+    command queue, and only within a small fixed set of actions. This app
+    itself still has zero direct connection to anyone's physical computer.
 
 Reuses the same Anthropic key already configured in Settings.
 """
 import json
 import textwrap
+import time
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -40,12 +43,13 @@ SYSTEM_PROMPT_BASE = textwrap.dedent("""
       clearly asked for a list or detailed explanation.
     - Plain spoken sentences only. No markdown, no bullets, no headers.
     - You have tools to check real channel/job status, check the weather,
-      look at recent activity, adjust automation settings, and start a new
-      video. Use them whenever the question is about the actual state of
-      the system or the world instead of guessing.
-    - You do not control anything on Tom's physical computer (files, other
-      apps, OS-level actions) yet -- if asked, say that's a separate feature
-      being built, not that you can't help at all.
+      look at recent activity, adjust automation settings, start a new
+      video, and control the user's actual computer (open an app, type
+      text, click at a location, press a key combo, take a screenshot) via
+      the local Jarvis Agent. Only use computer_action when the user
+      clearly wants something done on their computer, not as a first resort
+      -- and if the agent isn't connected, tell them plainly rather than
+      pretending it worked.
     - If a tool result shows an error or nothing found, say so plainly
       rather than inventing details.
 """).strip()
@@ -125,6 +129,25 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "description": "Max activity lines to return, default 10."}},
+        },
+    },
+    {
+        "name": "computer_action",
+        "description": "Control the user's actual computer through the local Jarvis Agent: open an application, "
+                       "type text at the current cursor focus, click at a screen coordinate, press a key combo, "
+                       "or take a screenshot. Requires the local agent to be running and paired -- if it's not "
+                       "connected, this will report that clearly instead of pretending to work.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["open_app", "type_text", "click_at", "press_keys", "screenshot"]},
+                "app_name": {"type": "string", "description": "For open_app: the application name."},
+                "text": {"type": "string", "description": "For type_text: the text to type."},
+                "x": {"type": "integer", "description": "For click_at: screen x coordinate."},
+                "y": {"type": "integer", "description": "For click_at: screen y coordinate."},
+                "keys": {"type": "string", "description": "For press_keys: a combo like 'cmd+space' or 'ctrl+c'."},
+            },
+            "required": ["action"],
         },
     },
 ]
@@ -250,6 +273,40 @@ def _tool_get_activity_feed(db: Session, limit: int | None) -> dict:
     return {"recent_activity": lines[: (limit or 10)] or ["Nothing logged yet."]}
 
 
+def _tool_computer_action(db: Session, tool_input: dict) -> dict:
+    if not get_setting(db, "jarvis_agent_token"):
+        return {"error": "No local Jarvis Agent has been paired yet -- set one up in the Jarvis panel's More tab first."}
+
+    action = tool_input.get("action")
+    if action not in {"open_app", "type_text", "click_at", "press_keys", "screenshot"}:
+        return {"error": f"Unknown action '{action}'."}
+
+    params = {k: v for k, v in tool_input.items() if k != "action"}
+    cmd = models.AgentCommand(action=action, params_json=json.dumps(params))
+    db.add(cmd)
+    db.commit()
+    db.refresh(cmd)
+
+    # The local agent polls roughly every 1-2s (see jarvis_agent.py), so
+    # wait up to ~8s here for it to pick this up and report back, rather
+    # than immediately telling Claude "queued" with no idea if it worked.
+    # If the agent isn't actually running, this will time out honestly.
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        db.refresh(cmd)
+        if cmd.status == "done":
+            result = json.loads(cmd.result_json) if cmd.result_json else {}
+            return {"executed": True, "action": action, "result": result}
+        if cmd.status == "failed":
+            return {"executed": False, "action": action, "error": cmd.error_message or "The local agent reported failure."}
+        time.sleep(0.4)
+
+    return {
+        "executed": False, "action": action,
+        "error": "No response from the local Jarvis Agent -- it may not be running right now.",
+    }
+
+
 def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_input: dict) -> dict:
     if name == "list_channels":
         return _tool_list_channels(db)
@@ -265,6 +322,8 @@ def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_in
         )
     if name == "get_activity_feed":
         return _tool_get_activity_feed(db, tool_input.get("limit"))
+    if name == "computer_action":
+        return _tool_computer_action(db, tool_input)
     return {"error": f"Unknown tool '{name}'"}
 
 

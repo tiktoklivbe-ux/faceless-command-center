@@ -583,6 +583,18 @@
               <button class="btn" id="jarvis-enroll-btn" style="margin-top:6px">🎙️ Enroll My Voice</button>
               <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Not identity verification — a fun gate. Adapts to your voice slowly over time.</p>
             </div>
+            <div class="jarvis-sms-box">
+              <b>Computer Control <span id="jarvis-agent-status" style="font-weight:400; opacity:0.7;">(checking…)</span></b>
+              <p>Lets Jarvis actually control this computer — open apps, type, click, press keys — through a small script that runs locally on your machine (not this server).</p>
+              <ol class="jarvis-sms-note" style="padding-left:18px; margin:8px 0">
+                <li><a href="/assets/jarvis_agent.py" download style="color:var(--cyan)">Download jarvis_agent.py</a></li>
+                <li><code>pip install requests pyautogui</code></li>
+                <li>Generate a pairing token here, then run the script and paste it in when asked</li>
+              </ol>
+              <button class="btn" id="jarvis-gen-token-btn">Generate Pairing Token</button>
+              <div class="jarvis-sms-note" id="jarvis-token-display" style="margin-top:8px"></div>
+              <p class="jarvis-sms-note" style="margin-top:8px">⚠️ The token is a password for your computer — shown once, keep it private, regenerating invalidates the old one.</p>
+            </div>
           </div>
         </div>
         </div>
@@ -681,6 +693,26 @@
     } else if (enrollBtn) {
       enrollBtn.disabled = true;
       if (voiceStatus) voiceStatus.textContent = "Voice ID module didn't load.";
+    }
+
+    const agentStatusEl = $("#jarvis-agent-status");
+    const genTokenBtn = $("#jarvis-gen-token-btn");
+    const tokenDisplay = $("#jarvis-token-display");
+    fetch("/api/jarvis/agent/status").then((r) => r.json()).then((d) => {
+      if (agentStatusEl) agentStatusEl.textContent = d.paired ? "(token generated)" : "(not set up)";
+    }).catch(() => {});
+    if (genTokenBtn) {
+      genTokenBtn.addEventListener("click", async () => {
+        try {
+          const r = await fetch("/api/jarvis/agent/generate-token", { method: "POST" });
+          const d = await r.json();
+          tokenDisplay.innerHTML = `Token (copy now, shown once): <code style="user-select:all">${d.token}</code>`;
+          if (agentStatusEl) agentStatusEl.textContent = "(token generated)";
+          toast("Pairing token generated — copy it now.");
+        } catch (_) {
+          toast("Couldn't generate a token — try again.");
+        }
+      });
     }
 
     sendBtn.addEventListener("click", () => {

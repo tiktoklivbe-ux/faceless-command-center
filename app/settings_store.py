@@ -29,6 +29,7 @@ KNOWN_KEYS = {
     "jarvis_notifications": False,  # "true" | "false" -- desktop notification when a video job finishes
     "jarvis_accent_color": False,   # hex color for the Jarvis panel's accent/orb
     "jarvis_greeting": False,       # custom greeting shown when the panel opens
+    "jarvis_agent_token": True,     # secret pairing token for the local computer-control agent
 }
 
 
