@@ -1,33 +1,43 @@
 /**
- * jarvis.js — voice assistant panel.
+ * jarvis.js — voice assistant, full-page experience.
  *
- * Two listening modes, both using the browser's built-in Web Speech API
- * (no extra libraries, works wherever Chrome/Edge/Chromium-based browsers
- * run -- Safari and Firefox don't support SpeechRecognition yet, so those
- * fall back to typing only, clearly labeled rather than silently broken):
+ * What changed from v1:
+ *  - Real human-sounding voice via ElevenLabs (reusing the key already in
+ *    Settings) instead of the robotic browser speech synthesis. Falls back
+ *    to browser speech automatically if no ElevenLabs key is set, or if
+ *    that request fails for any reason.
+ *  - The orb reacts to the ACTUAL amplitude of Jarvis's real voice while
+ *    speaking (via a Web Audio analyser on the playing audio), not a fake
+ *    wobble -- only falls back to a synthetic pulse when browser TTS is
+ *    what's actually playing, since that engine exposes no usable waveform.
+ *  - Full-page split layout: big orb + controls on the left, a tabbed
+ *    Chat / Settings / More area on the right, instead of a small modal.
+ *  - Settings tab: personality, wake word, ElevenLabs voice picker, model
+ *    speed, read-aloud toggle, accent color, custom greeting -- all real,
+ *    saved through the same /api/settings endpoint as everything else.
+ *  - Faster by default: Jarvis now uses Haiku unless you pick otherwise in
+ *    Settings, specifically because the tool-use loop can mean a few
+ *    sequential API calls in one turn and a slower model compounds that.
  *
- *   - Push-to-talk: tap the mic, speak, it sends automatically on pause.
- *   - "Hey Jarvis" wake mode: toggle it on, it listens continuously in the
- *     background (auto-restarting itself, since the browser API times out
- *     on its own every so often) and only sends what you say AFTER it
- *     hears the wake phrase.
- *
- * Talks to /api/jarvis/chat, which has real tool-use against this app
- * (channel/job status, starting videos) -- so answers here can reflect the
- * actual state of your Command Center, not just chit-chat.
+ * Listening still works the same two ways as before:
+ *   - Push-to-talk: tap the mic, speak, sends automatically on pause.
+ *   - "Hey Jarvis" wake mode: continuous listening, only acts after the
+ *     wake phrase (or your custom one, if you set one in Settings).
  */
 (function () {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const WAKE_PHRASES = ["hey jarvis", "hey, jarvis", "ok jarvis", "okay jarvis"];
+  const DEFAULT_WAKE_PHRASES = ["hey jarvis", "hey, jarvis", "ok jarvis", "okay jarvis"];
 
   let recognizer = null;
   let mode = "off"; // "off" | "ptt" | "wake"
-  let awake = false; // in wake mode: have we heard the wake phrase and are capturing a command?
+  let awake = false;
   let history = [];
   let restartTimer = null;
-  let sessionToken = 0; // bumped every time we start/stop, so stale onend/onerror callbacks from a previous session can be ignored
+  let sessionToken = 0;
   let currentOrb = null;
-  let sessionGreeted = false; // whether we've already given the Tom/guest greeting for the current mic session
+  let sessionGreeted = false;
+  let wakePhrases = DEFAULT_WAKE_PHRASES.slice();
+  let jarvisSettings = null; // cached copy of the jarvis_* settings, refreshed on panel open and after saving
 
   function bubble(role, text) {
     const div = document.createElement("div");
@@ -36,21 +46,79 @@
     return div;
   }
 
-  function speak(text) {
+  // ---------------------------------------------------------------- speech output
+  let currentAudioEl = null;
+  let currentAudioUrl = null;
+  let speechAnalyser = null;
+  let speechAudioCtx = null;
+
+  function speakViaBrowser(text) {
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.02;
     u.pitch = 0.95;
-    u.onstart = () => { if (currentOrb) currentOrb.setSpeaking(true); };
-    u.onend = () => { if (currentOrb) currentOrb.setSpeaking(false); };
-    u.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false); };
+    u.onstart = () => { if (currentOrb) currentOrb.setSpeaking(true, null); };
+    u.onend = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
+    u.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
     window.speechSynthesis.speak(u);
   }
 
+  function getSpeechAmplitude() {
+    if (!speechAnalyser) return null;
+    const data = new Uint8Array(speechAnalyser.frequencyBinCount);
+    speechAnalyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    return sum / data.length / 255;
+  }
+
+  async function speak(text) {
+    if (jarvisSettings && jarvisSettings.jarvis_read_aloud === false) return;
+
+    try {
+      const resp = await fetch("/api/jarvis/speak", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!resp.ok) throw new Error("no elevenlabs");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+
+      if (currentAudioEl) {
+        currentAudioEl.pause();
+        currentAudioEl.remove();
+        if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
+      }
+      const audio = new Audio(url);
+      currentAudioEl = audio;
+      currentAudioUrl = url;
+
+      try {
+        if (!speechAudioCtx) speechAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = speechAudioCtx.createMediaElementSource(audio);
+        speechAnalyser = speechAudioCtx.createAnalyser();
+        speechAnalyser.fftSize = 64;
+        source.connect(speechAnalyser);
+        speechAnalyser.connect(speechAudioCtx.destination);
+      } catch (_) {
+        speechAnalyser = null;
+      }
+
+      audio.onplay = () => { if (currentOrb) currentOrb.setSpeaking(true, getSpeechAmplitude); };
+      audio.onended = () => { if (currentOrb) currentOrb.setSpeaking(false, null); URL.revokeObjectURL(url); };
+      audio.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
+      await audio.play();
+    } catch (_) {
+      speakViaBrowser(text);
+    }
+  }
+
+  // ---------------------------------------------------------------- wake phrase handling
   function stripWakePhrase(text) {
     const low = text.toLowerCase();
-    for (const w of WAKE_PHRASES) {
+    for (const w of wakePhrases) {
       const idx = low.indexOf(w);
       if (idx !== -1) return text.slice(idx + w.length).replace(/^[,.\s]+/, "");
     }
@@ -59,9 +127,10 @@
 
   function containsWakePhrase(text) {
     const low = text.toLowerCase();
-    return WAKE_PHRASES.some((w) => low.includes(w));
+    return wakePhrases.some((w) => low.includes(w));
   }
 
+  // ---------------------------------------------------------------- chat
   async function send(log, text) {
     if (!text.trim()) return;
     log.appendChild(bubble("user", text));
@@ -96,14 +165,7 @@
     }
   }
 
-  /**
-   * A canvas orb that idles with a gentle pulse, glows brighter and reacts
-   * to real mic input while listening, and does a lively synthetic wobble
-   * while Jarvis is speaking (browser TTS doesn't expose real amplitude, so
-   * this fakes a plausible one rather than sitting static).
-   * Fails gracefully: if getUserMedia is denied/unavailable, listening mode
-   * just falls back to a faster idle pulse instead of throwing or hanging.
-   */
+  // ---------------------------------------------------------------- orb visualizer
   function createOrbVisualizer(canvas) {
     const ctx = canvas.getContext("2d");
     const W = canvas.width, H = canvas.height;
@@ -114,8 +176,10 @@
     let t = 0;
     let listening = false;
     let speaking = false;
+    let getSpeakAmp = null;
     let audioCtx = null, analyser = null, freqData = null, micStream = null;
-    let micLevel = 0; // 0..1, smoothed
+    let micLevel = 0;
+    let accent = "#00e8ff";
 
     async function ensureMic() {
       if (audioCtx || !navigator.mediaDevices?.getUserMedia) return;
@@ -128,8 +192,6 @@
         freqData = new Uint8Array(analyser.frequencyBinCount);
         source.connect(analyser);
       } catch (_) {
-        // Denied, no mic, or insecure context -- listening mode just uses
-        // the synthetic idle pulse instead. Not fatal.
         audioCtx = null;
       }
     }
@@ -139,11 +201,10 @@
         analyser.getByteFrequencyData(freqData);
         let sum = 0;
         for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-        const avg = sum / freqData.length / 255; // 0..1
+        const avg = sum / freqData.length / 255;
         micLevel += (avg - micLevel) * 0.3;
         return micLevel;
       }
-      // synthetic fallback when no real mic data is available
       return listening ? 0.35 + Math.sin(t * 6) * 0.15 : 0;
     }
 
@@ -151,24 +212,29 @@
       t += reducedMotion ? 0 : 0.02;
       ctx.clearRect(0, 0, W, H);
 
-      let radius = 34;
-      let glow = 24;
-      let color = "#00e8ff";
+      let radius = 70;
+      let glow = 46;
+      let color = accent;
 
       if (speaking) {
-        const wobble = reducedMotion ? 6 : Math.sin(t * 9) * 6 + Math.sin(t * 5.3) * 4;
-        radius = 40 + wobble;
-        glow = 46 + Math.abs(wobble) * 2;
+        let level;
+        if (getSpeakAmp) {
+          const a = getSpeakAmp();
+          level = a === null || a === undefined ? 0.3 : a;
+        } else {
+          level = reducedMotion ? 0.4 : 0.35 + Math.sin(t * 9) * 0.15 + Math.sin(t * 5.3) * 0.1;
+        }
+        radius = 74 + level * 46;
+        glow = 50 + level * 90;
         color = "#b26bff";
       } else if (listening) {
         const level = currentLevel();
-        radius = 34 + level * 26;
-        glow = 26 + level * 60;
+        radius = 70 + level * 50;
+        glow = 46 + level * 100;
         color = "#ff2f9e";
       } else {
-        // idle: a static glow when reduced motion is on, gentle breathing otherwise
-        radius = reducedMotion ? 34 : 34 + Math.sin(t * 1.4) * 3;
-        glow = reducedMotion ? 22 : 22 + Math.sin(t * 1.4) * 6;
+        radius = reducedMotion ? 70 : 70 + Math.sin(t * 1.4) * 6;
+        glow = reducedMotion ? 40 : 40 + Math.sin(t * 1.4) * 10;
       }
 
       ctx.save();
@@ -184,14 +250,15 @@
       ctx.fill();
       ctx.restore();
 
-      // thin orbiting ring for a HUD feel
-      ctx.save();
-      ctx.strokeStyle = `${color}55`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius + 18, t * 0.5, t * 0.5 + Math.PI * 1.4);
-      ctx.stroke();
-      ctx.restore();
+      [1, -0.6].forEach((dir, i) => {
+        ctx.save();
+        ctx.strokeStyle = `${color}44`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 26 + i * 16, t * 0.5 * dir, t * 0.5 * dir + Math.PI * 1.3);
+        ctx.stroke();
+        ctx.restore();
+      });
 
       raf = requestAnimationFrame(draw);
     }
@@ -205,45 +272,212 @@
         if (audioCtx) audioCtx.close().catch(() => {});
         audioCtx = null; analyser = null; micStream = null;
       },
-      setListening(on) {
-        listening = on;
-        if (on) ensureMic();
-      },
-      setSpeaking(on) { speaking = on; },
+      setListening(on) { listening = on; if (on) ensureMic(); },
+      setSpeaking(on, ampFn) { speaking = on; getSpeakAmp = ampFn || null; },
+      setAccent(hex) { if (hex) accent = hex; },
     };
   }
 
-  window.renderJarvisPanel = function (body) {
-    body.innerHTML = `
-      <div class="jarvis-wrap">
-        <h1 style="margin-bottom:2px">🎙️ Jarvis</h1>
-        <div class="bp-sub">Talks back, and can check real channel/job status or start a video. Doesn't control your computer yet — that's a separate future build.</div>
-        <div class="jarvis-orb-wrap">
-          <canvas id="jarvis-orb" width="160" height="160"></canvas>
-        </div>
-        <div class="jarvis-log" id="jarvis-log"></div>
-        <div class="jarvis-input-row">
-          <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤</button>
-          <button class="icon-btn" id="jarvis-wake" title="Toggle 'Hey Jarvis' always-listening mode">👂</button>
-          <input id="jarvis-text" placeholder="Type, or use the mic…" autocomplete="off"/>
-          <button class="icon-btn" id="jarvis-send" title="Send">▸</button>
-        </div>
-        <div class="bp-sub" id="jarvis-status" style="margin-top:6px"></div>
-        <div class="jarvis-sms-box">
-          <b>Text Jarvis from your phone</b>
-          <p>Get a Twilio phone number, then set its "A message comes in" webhook to:</p>
-          <code id="jarvis-sms-url">/api/jarvis/sms</code>
-          <p class="jarvis-sms-note">Same Jarvis, same tools — texting or talking in-app both reach the same brain. Keep that URL private; anyone who has it can trigger it.</p>
-        </div>
+  // ---------------------------------------------------------------- settings tab
+  const PERSONALITY_OPTIONS = [
+    ["butler", "Butler — formal, poised, dry wit"],
+    ["casual", "Casual — laid-back friend"],
+    ["dry_wit", "Dry Wit — deadpan, sarcastic"],
+    ["hype", "Hype — high energy, enthusiastic"],
+  ];
+  const MODEL_OPTIONS = [
+    ["claude-haiku-4-5-20251001", "Haiku 4.5 — fastest (recommended for voice)"],
+    ["claude-sonnet-5", "Sonnet 5 — smarter, a bit slower"],
+    ["claude-opus-4-8", "Opus 4.8 — most capable, slowest"],
+  ];
 
-        <div class="jarvis-sms-box">
-          <b>Voice ID <span style="font-weight:400; opacity:0.7;">(approximate — not real security)</span></b>
-          <p id="jarvis-voiceid-status">Checking enrollment…</p>
-          <button class="btn" id="jarvis-enroll-btn" style="margin-top:6px">🎙️ Enroll My Voice</button>
-          <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Easily fooled by a similar-pitched voice — it's a fun gate, not identity verification. It slowly adapts to your voice over time as it's used.</p>
+  async function loadSettingsIntoTab(container) {
+    const [settingsResp, voicesResp] = await Promise.all([
+      fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/jarvis/voices").then((r) => r.json()).catch(() => ({ voices: [] })),
+    ]);
+    const val = (k, d = "") => (settingsResp[k] && settingsResp[k].value) || d;
+
+    const voiceOptionsHtml = voicesResp.voices.length
+      ? voicesResp.voices.map((v) => `<option value="${v.voice_id}">${v.name}</option>`).join("")
+      : `<option value="">— add an ElevenLabs key in Settings to pick a voice —</option>`;
+
+    container.innerHTML = `
+      <div class="jarvis-settings-grid">
+        <label>Personality</label>
+        <select id="js-personality">
+          ${PERSONALITY_OPTIONS.map(([v, l]) => `<option value="${v}" ${val("jarvis_personality", "butler") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+
+        <label>Voice (ElevenLabs)</label>
+        <select id="js-voice">${voiceOptionsHtml}</select>
+
+        <label>Speed / model</label>
+        <select id="js-model">
+          ${MODEL_OPTIONS.map(([v, l]) => `<option value="${v}" ${val("jarvis_model", "claude-haiku-4-5-20251001") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+
+        <label>Wake word</label>
+        <input id="js-wakeword" placeholder="hey jarvis" value="${val("jarvis_wake_word")}"/>
+
+        <label>Custom greeting</label>
+        <input id="js-greeting" placeholder="Hey, I'm here." value="${val("jarvis_greeting")}"/>
+
+        <label>Accent color</label>
+        <input id="js-accent" type="color" value="${val("jarvis_accent_color", "#00e8ff")}"/>
+
+        <label>Read replies aloud</label>
+        <input id="js-readaloud" type="checkbox" ${val("jarvis_read_aloud", "true") !== "false" ? "checked" : ""}/>
+
+        <label>Desktop notifications</label>
+        <input id="js-notify" type="checkbox" ${val("jarvis_notifications") === "true" ? "checked" : ""}/>
+      </div>
+      <div class="bp-sub" style="margin:10px 0">Notifications only fire while this panel is open, and only for jobs finishing/failing — not a background service yet.</div>
+      <button class="btn" id="js-save">Save Jarvis Settings</button>
+      <div class="bp-sub" id="js-save-status" style="margin-top:8px"></div>
+    `;
+
+    if (voicesResp.voices.length) {
+      const sel = $("#js-voice");
+      const current = val("jarvis_voice_id");
+      if (current) sel.value = current;
+    }
+
+    $("#js-save").addEventListener("click", async () => {
+      const payload = {
+        jarvis_personality: $("#js-personality").value,
+        jarvis_voice_id: $("#js-voice").value,
+        jarvis_model: $("#js-model").value,
+        jarvis_wake_word: $("#js-wakeword").value.trim(),
+        jarvis_greeting: $("#js-greeting").value.trim(),
+        jarvis_accent_color: $("#js-accent").value,
+        jarvis_read_aloud: $("#js-readaloud").checked ? "true" : "false",
+        jarvis_notifications: $("#js-notify").checked ? "true" : "false",
+      };
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        $("#js-save-status").textContent = "Saved.";
+        await applySettings();
+        if (payload.jarvis_notifications === "true" && "Notification" in window && Notification.permission === "default") {
+          Notification.requestPermission();
+        }
+        toast("Jarvis settings saved.");
+      } catch (_) {
+        $("#js-save-status").textContent = "Couldn't save — try again.";
+      }
+    });
+  }
+
+  async function applySettings() {
+    try {
+      const s = await fetch("/api/settings").then((r) => r.json());
+      const val = (k, d = "") => (s[k] && s[k].value) || d;
+      jarvisSettings = {
+        jarvis_read_aloud: val("jarvis_read_aloud", "true") !== "false",
+        jarvis_accent_color: val("jarvis_accent_color", "#00e8ff"),
+      };
+      const custom = val("jarvis_wake_word", "").trim().toLowerCase();
+      wakePhrases = custom ? [custom, ...DEFAULT_WAKE_PHRASES] : DEFAULT_WAKE_PHRASES.slice();
+      if (currentOrb) currentOrb.setAccent(jarvisSettings.jarvis_accent_color);
+      return val("jarvis_greeting", "");
+    } catch (_) {
+      jarvisSettings = { jarvis_read_aloud: true, jarvis_accent_color: "#00e8ff" };
+      return "";
+    }
+  }
+
+  // ---------------------------------------------------------------- job-finish notifications
+  // Real, working, but scoped: only checks while this panel is open (every
+  // 20s), and only for jobs transitioning INTO a finished state (published,
+  // ready_for_review, failed) that weren't already in that state last time
+  // we checked. Not a background service -- closing the panel stops it,
+  // same as everything else here.
+  const _FINISHED_STATUSES = new Set(["published", "ready_for_review", "failed"]);
+  let notifyPoll = null;
+  let knownJobStatuses = new Map(); // job id -> last-seen status
+
+  async function notifyTick() {
+    try {
+      const s = await fetch("/api/settings").then((r) => r.json());
+      if (!s.jarvis_notifications || s.jarvis_notifications.value !== "true") return;
+      if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+      const jobs = await fetch("/api/jobs").then((r) => r.json());
+      for (const j of jobs) {
+        const prev = knownJobStatuses.get(j.id);
+        knownJobStatuses.set(j.id, j.status);
+        if (prev === undefined) continue; // first time seeing this job -- don't notify retroactively
+        if (prev !== j.status && _FINISHED_STATUSES.has(j.status)) {
+          const label = j.status === "failed" ? "failed" : "is ready";
+          new Notification("Faceless Command Center", {
+            body: `"${j.title || j.topic || "A video"}" ${label}.`,
+          });
+        }
+      }
+    } catch (_) { /* silent -- this is a nice-to-have, not core functionality */ }
+  }
+
+  function startNotifyPoll() {
+    if (notifyPoll) return;
+    notifyTick(); // seed knownJobStatuses immediately rather than waiting 20s
+    notifyPoll = setInterval(notifyTick, 20000);
+  }
+  function stopNotifyPoll() {
+    if (notifyPoll) { clearInterval(notifyPoll); notifyPoll = null; }
+    knownJobStatuses = new Map();
+  }
+
+  // ---------------------------------------------------------------- main panel
+  window.renderJarvisPanel = async function (body) {
+    body.innerHTML = `
+      <div class="jarvis-page">
+        <div class="jarvis-left">
+          <canvas id="jarvis-orb" width="280" height="280"></canvas>
+          <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:10px"></div>
+          <div class="jarvis-controls-row">
+            <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤 Talk</button>
+            <button class="icon-btn" id="jarvis-wake" title="Toggle wake mode">👂 Hey Jarvis</button>
+          </div>
+          <button class="btn secondary" id="jarvis-reset" style="margin-top:14px">Clear Conversation</button>
+        </div>
+        <div class="jarvis-right">
+          <div class="jarvis-tabs">
+            <button class="jarvis-tab active" data-tab="chat">Chat</button>
+            <button class="jarvis-tab" data-tab="settings">Settings</button>
+            <button class="jarvis-tab" data-tab="more">More</button>
+          </div>
+          <div class="jarvis-tabpanel" data-tabpanel="chat">
+            <div class="jarvis-log" id="jarvis-log"></div>
+            <div class="jarvis-input-row">
+              <input id="jarvis-text" placeholder="Type, or use the mic…" autocomplete="off"/>
+              <button class="icon-btn" id="jarvis-send" title="Send">▸</button>
+            </div>
+          </div>
+          <div class="jarvis-tabpanel" data-tabpanel="settings" style="display:none"></div>
+          <div class="jarvis-tabpanel" data-tabpanel="more" style="display:none">
+            <div class="jarvis-sms-box">
+              <b>Text Jarvis from your phone</b>
+              <p>Get a Twilio phone number, then set its "A message comes in" webhook to:</p>
+              <code id="jarvis-sms-url">/api/jarvis/sms</code>
+              <p class="jarvis-sms-note">Same Jarvis, same tools — texting or talking in-app both reach the same brain. Keep that URL private; anyone who has it can trigger it.</p>
+            </div>
+            <div class="jarvis-sms-box">
+              <b>Voice ID <span style="font-weight:400; opacity:0.7;">(approximate — not real security)</span></b>
+              <p id="jarvis-voiceid-status">Checking enrollment…</p>
+              <button class="btn" id="jarvis-enroll-btn" style="margin-top:6px">🎙️ Enroll My Voice</button>
+              <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Not identity verification — a fun gate. Adapts to your voice slowly over time.</p>
+            </div>
+          </div>
         </div>
       </div>
     `;
+
+    const greetingText = await applySettings();
+    startNotifyPoll();
 
     const log = $("#jarvis-log");
     const input = $("#jarvis-text");
@@ -252,14 +486,39 @@
     const sendBtn = $("#jarvis-send");
     const status = $("#jarvis-status");
     const orbCanvas = $("#jarvis-orb");
+    const resetBtn = $("#jarvis-reset");
 
     const orb = createOrbVisualizer(orbCanvas);
     currentOrb = orb;
-    orb.start(); // ambient idle animation always runs; ramps up when listening/speaking
-    window.stopJarvisSession = () => { orb.stop(); currentOrb = null; };
+    orb.setAccent(jarvisSettings.jarvis_accent_color);
+    orb.start();
+    window.stopJarvisSession = () => { orb.stop(); currentOrb = null; stopNotifyPoll(); };
 
-    log.appendChild(bubble("assistant",
-      "Hey, I'm here. Type, hold the mic to talk once, or turn on 'Hey Jarvis' mode to leave the mic open."));
+    document.querySelectorAll(".jarvis-tab").forEach((tabBtn) => {
+      tabBtn.addEventListener("click", () => {
+        document.querySelectorAll(".jarvis-tab").forEach((b) => b.classList.remove("active"));
+        tabBtn.classList.add("active");
+        const target = tabBtn.dataset.tab;
+        document.querySelectorAll(".jarvis-tabpanel").forEach((p) => {
+          p.style.display = p.dataset.tabpanel === target ? "" : "none";
+        });
+        if (target === "settings") {
+          const panel = document.querySelector('.jarvis-tabpanel[data-tabpanel="settings"]');
+          if (panel && !panel.dataset.loaded) {
+            panel.dataset.loaded = "1";
+            loadSettingsIntoTab(panel);
+          }
+        }
+      });
+    });
+
+    log.appendChild(bubble("assistant", greetingText || "Hey, I'm here. Type, hold the mic to talk once, or turn on 'Hey Jarvis' mode to leave the mic open."));
+
+    resetBtn.addEventListener("click", () => {
+      history = [];
+      log.innerHTML = "";
+      log.appendChild(bubble("assistant", "Conversation cleared."));
+    });
 
     const smsUrlEl = $("#jarvis-sms-url");
     if (smsUrlEl) smsUrlEl.textContent = `${window.location.origin}/api/jarvis/sms`;
@@ -311,58 +570,53 @@
     if (!SpeechRecognition) {
       micBtn.disabled = true;
       wakeBtn.disabled = true;
-      status.textContent = "Voice isn't supported in this browser (try Chrome or Edge) — typing still works fully.";
+      status.textContent = "Voice input isn't supported in this browser (try Chrome or Edge) — typing still works fully, and replies are still spoken aloud.";
       return;
     }
-
-    // Orb requests mic access lazily the first time listening actually
-    // starts (inside setListening(true)) rather than eagerly here, so the
-    // permission prompt is tied to a clear user action (tapping the mic).
 
     function stopEverything() {
       mode = "off";
       awake = false;
       sessionGreeted = false;
-      sessionToken++; // invalidate any in-flight recognizer's callbacks
+      sessionToken++;
       clearTimeout(restartTimer);
       micBtn.classList.remove("jarvis-mic-active");
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
       orb.setListening(false);
-      if (window.VoiceID) VoiceID.stopSamplingAndGet(); // discard, just stop the timer
-      if (recognizer) {
-        try { recognizer.abort(); } catch (_) {}
-      }
+      if (window.VoiceID) VoiceID.stopSamplingAndGet();
+      if (recognizer) { try { recognizer.abort(); } catch (_) {} }
     }
 
     window.stopJarvisSession = () => {
       stopEverything();
       orb.stop();
       currentOrb = null;
+      stopNotifyPoll();
     };
 
-    async function maybeGreet(log) {
+    async function maybeGreet(logEl) {
       if (sessionGreeted || !window.VoiceID) return;
       sessionGreeted = true;
       const sample = VoiceID.stopSamplingAndGet();
-      VoiceID.startSampling(); // immediately resume for the rest of this session
-      if (!sample) return; // not enough signal to judge, skip silently
+      VoiceID.startSampling();
+      if (!sample) return;
 
       const match = VoiceID.isLikelyMatch(sample);
-      if (match === null) return; // nobody enrolled yet -- nothing to compare against
+      if (match === null) return;
       if (match) {
         const greeting = "Hey sir.";
-        log.appendChild(bubble("assistant", greeting));
+        logEl.appendChild(bubble("assistant", greeting));
         speak(greeting);
-        VoiceID.reportMatch(sample); // slowly refine the profile toward the current voice
+        VoiceID.reportMatch(sample);
       } else {
         const guess = VoiceID.softGuess(sample.avg);
         const greeting = `Hey there — this doesn't sound like Tom to me. I'm his assistant, Jarvis.` +
           (guess ? ` Rough guess from pitch: ${guess}. Not a real ID, just a hint.` : "");
-        log.appendChild(bubble("assistant", greeting));
+        logEl.appendChild(bubble("assistant", greeting));
         speak(greeting);
       }
-      log.scrollTop = log.scrollHeight;
+      logEl.scrollTop = logEl.scrollHeight;
     }
 
     function handleResult(text) {
@@ -370,7 +624,6 @@
         maybeGreet(log).then(() => send(log, text));
         return;
       }
-      // wake mode
       if (!awake) {
         if (containsWakePhrase(text)) {
           awake = true;
@@ -379,22 +632,16 @@
           if (rest) {
             awake = false;
             maybeGreet(log).then(() => send(log, rest));
-            status.textContent = "Say 'Hey Jarvis' any time.";
+            status.textContent = "Say the wake word any time.";
           }
         }
       } else {
         awake = false;
-        status.textContent = "Say 'Hey Jarvis' any time.";
+        status.textContent = "Say the wake word any time.";
         maybeGreet(log).then(() => send(log, text));
       }
     }
 
-    // Creates a brand-new SpeechRecognition instance for this session rather
-    // than reusing one across mode switches. Browsers are inconsistent about
-    // calling start() again before a previous session has fully wound down
-    // (some throw InvalidStateError, some just silently misbehave) -- a
-    // fresh instance per session, guarded by a token so stale events from an
-    // old instance can't affect the new one, sidesteps that entirely.
     function startSession(continuous) {
       sessionToken++;
       const myToken = sessionToken;
@@ -410,11 +657,11 @@
       };
       r.onerror = (e) => {
         if (myToken !== sessionToken) return;
-        if (e.error === "no-speech" || e.error === "aborted") return; // expected, keep going
+        if (e.error === "no-speech" || e.error === "aborted") return;
         status.textContent = `Mic error: ${e.error}`;
       };
       r.onend = () => {
-        if (myToken !== sessionToken) return; // a newer session has already taken over
+        if (myToken !== sessionToken) return;
         if (mode === "wake") {
           restartTimer = setTimeout(() => {
             if (myToken !== sessionToken) return;
@@ -423,7 +670,7 @@
         } else if (mode === "ptt") {
           mode = "off";
           micBtn.classList.remove("jarvis-mic-active");
-          if (window.VoiceID) VoiceID.stopSamplingAndGet(); // discard -- ptt session is over, don't leave the sampler running
+          if (window.VoiceID) VoiceID.stopSamplingAndGet();
         }
       };
 
@@ -435,8 +682,6 @@
       try {
         r.start();
       } catch (_) {
-        // start() can throw if called too soon after a previous stop; a
-        // short retry covers that race without user-visible impact.
         setTimeout(() => { if (myToken === sessionToken) { try { r.start(); } catch (__) {} } }, 200);
       }
     }
@@ -456,7 +701,7 @@
       mode = "wake";
       awake = false;
       wakeBtn.classList.add("jarvis-mic-active");
-      status.textContent = "Say 'Hey Jarvis' any time.";
+      status.textContent = "Say the wake word any time.";
       startSession(true);
     });
   };

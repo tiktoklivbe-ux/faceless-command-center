@@ -400,6 +400,7 @@ async function openBigPanel(which) {
   const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
   inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
   inner.classList.toggle("wide", which === "missioncontrol");
+  inner.classList.toggle("fullpage", which === "jarvis");
   bp.classList.add("open");
   const body = $("#bp-body");
   if (which === "settings") return renderSettingsPanel(body);

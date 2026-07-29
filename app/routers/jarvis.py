@@ -32,23 +32,43 @@ from ..pipeline import orchestrator
 
 router = APIRouter(prefix="/api/jarvis", tags=["jarvis"])
 
-SYSTEM_PROMPT = textwrap.dedent("""
+SYSTEM_PROMPT_BASE = textwrap.dedent("""
     You are Jarvis, a spoken voice assistant for Tom's Faceless Command
-    Center. The person is talking out loud and your reply gets read aloud by
-    their browser, so:
+    Center. The person is talking out loud and your reply gets read aloud,
+    so:
     - Keep replies short and conversational -- a few sentences, unless they
       clearly asked for a list or detailed explanation.
     - Plain spoken sentences only. No markdown, no bullets, no headers.
-    - You have tools to check real channel/job status and to start a new
-      video. Use them whenever the question is about the actual state of the
-      system ("did my video finish", "what's my channel called", "make a
-      video about X") instead of guessing.
+    - You have tools to check real channel/job status, check the weather,
+      look at recent activity, adjust automation settings, and start a new
+      video. Use them whenever the question is about the actual state of
+      the system or the world instead of guessing.
     - You do not control anything on Tom's physical computer (files, other
       apps, OS-level actions) yet -- if asked, say that's a separate feature
       being built, not that you can't help at all.
     - If a tool result shows an error or nothing found, say so plainly
       rather than inventing details.
 """).strip()
+
+PERSONALITY_PRESETS = {
+    "butler": "Personality: speak like a poised, formal butler -- polite, "
+              "understated, occasional dry wit. Address the user as 'sir' "
+              "when it feels natural, not every single line.",
+    "casual": "Personality: speak like a laid-back, friendly buddy -- "
+              "casual language, contractions, upbeat and warm.",
+    "dry_wit": "Personality: speak with a dry, deadpan sense of humor -- "
+               "understated jokes and light sarcasm, but still genuinely "
+               "helpful underneath it.",
+    "hype": "Personality: speak with high energy and enthusiasm, like a "
+            "hype man cheering the user on -- still concise, just upbeat.",
+}
+DEFAULT_PERSONALITY = "butler"
+
+
+def build_system_prompt(personality: str) -> str:
+    tone = PERSONALITY_PRESETS.get(personality, PERSONALITY_PRESETS[DEFAULT_PERSONALITY])
+    return f"{SYSTEM_PROMPT_BASE}\n\n{tone}"
+
 
 TOOLS = [
     {
@@ -76,6 +96,35 @@ TOOLS = [
                 "channel_name": {"type": "string", "description": "Which channel. If omitted, uses the first/only channel."},
                 "topic": {"type": "string", "description": "Optional topic; if omitted the agent picks one."},
             },
+        },
+    },
+    {
+        "name": "check_weather",
+        "description": "Get the current weather for a named city/location.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"location": {"type": "string", "description": "City or place name."}},
+            "required": ["location"],
+        },
+    },
+    {
+        "name": "update_automation",
+        "description": "Change a channel's Chronos automation settings -- how many videos per day, or turn automation on/off.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {"type": "string", "description": "Which channel. If omitted, uses the first/only channel."},
+                "auto_per_day": {"type": "integer", "description": "New videos-per-day target, if changing it."},
+                "auto_enabled": {"type": "boolean", "description": "Turn automation on (true) or off (false), if changing it."},
+            },
+        },
+    },
+    {
+        "name": "get_activity_feed",
+        "description": "Get a summary of recent agent activity across recent video jobs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "Max activity lines to return, default 10."}},
         },
     },
 ]
@@ -139,6 +188,68 @@ def _tool_start_video(db: Session, background_tasks: BackgroundTasks, channel_na
     return {"started": True, "channel": channel.name, "job_id": job.id, "topic": topic or "(agent's choice)"}
 
 
+def _tool_check_weather(location: str) -> dict:
+    if not location:
+        return {"error": "No location given."}
+    try:
+        geo = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1}, timeout=10,
+        ).json()
+        results = geo.get("results")
+        if not results:
+            return {"error": f"Couldn't find a location matching '{location}'."}
+        place = results[0]
+        wx = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": place["latitude"], "longitude": place["longitude"], "current_weather": "true"},
+            timeout=10,
+        ).json()
+        cw = wx.get("current_weather", {})
+        return {
+            "location": place.get("name", location),
+            "region": place.get("admin1"),
+            "temperature_c": cw.get("temperature"),
+            "windspeed_kmh": cw.get("windspeed"),
+        }
+    except requests.RequestException:
+        return {"error": "Couldn't reach the weather service right now."}
+
+
+def _tool_update_automation(db: Session, channel_name: str | None, auto_per_day: int | None, auto_enabled: bool | None) -> dict:
+    channel = None
+    if channel_name:
+        channel = db.query(models.Channel).filter(
+            models.Channel.name.ilike(f"%{channel_name}%")
+        ).first()
+        if not channel:
+            return {"error": f"No channel matching '{channel_name}'."}
+    else:
+        channel = db.query(models.Channel).order_by(models.Channel.created_at.asc()).first()
+    if not channel:
+        return {"error": "No channels configured yet."}
+
+    if auto_per_day is not None:
+        channel.auto_per_day = max(1, auto_per_day)
+    if auto_enabled is not None:
+        channel.auto_enabled = auto_enabled
+    db.commit()
+    return {
+        "updated": True, "channel": channel.name,
+        "auto_enabled": channel.auto_enabled, "auto_per_day": channel.auto_per_day,
+    }
+
+
+def _tool_get_activity_feed(db: Session, limit: int | None) -> dict:
+    jobs = db.query(models.VideoJob).order_by(models.VideoJob.created_at.desc()).limit(5).all()
+    lines: list[str] = []
+    for j in jobs:
+        for line in (j.stage_log or "").splitlines()[-3:]:
+            if line.strip():
+                lines.append(line.strip())
+    return {"recent_activity": lines[: (limit or 10)] or ["Nothing logged yet."]}
+
+
 def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_input: dict) -> dict:
     if name == "list_channels":
         return _tool_list_channels(db)
@@ -146,6 +257,14 @@ def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_in
         return _tool_list_recent_jobs(db, tool_input.get("channel_name"), tool_input.get("limit"))
     if name == "start_video":
         return _tool_start_video(db, background_tasks, tool_input.get("channel_name"), tool_input.get("topic"))
+    if name == "check_weather":
+        return _tool_check_weather(tool_input.get("location", ""))
+    if name == "update_automation":
+        return _tool_update_automation(
+            db, tool_input.get("channel_name"), tool_input.get("auto_per_day"), tool_input.get("auto_enabled"),
+        )
+    if name == "get_activity_feed":
+        return _tool_get_activity_feed(db, tool_input.get("limit"))
     return {"error": f"Unknown tool '{name}'"}
 
 
@@ -163,7 +282,7 @@ class ChatOut(BaseModel):
     reply: str
 
 
-def _call_claude(api_key: str, model: str, messages: list[dict]) -> dict:
+def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> dict:
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -173,8 +292,8 @@ def _call_claude(api_key: str, model: str, messages: list[dict]) -> dict:
         },
         json={
             "model": model,
-            "max_tokens": 500,
-            "system": SYSTEM_PROMPT,
+            "max_tokens": 400,
+            "system": system_prompt,
             "messages": messages,
             "tools": TOOLS,
         },
@@ -191,11 +310,19 @@ def run_jarvis_turn(db: Session, background_tasks: BackgroundTasks, messages: li
     api_key = get_setting(db, "anthropic_api_key")
     if not api_key:
         return "No Anthropic API key is configured yet -- add one in Settings."
-    model = get_setting(db, "anthropic_model", "claude-sonnet-5")
+    # Jarvis defaults to Haiku, not Sonnet -- a voice assistant needs to feel
+    # snappy above all else, and the tool-use loop can mean several
+    # sequential API round-trips in one turn, so a slower model compounds
+    # fast. This is a separate setting from anthropic_model (which Athena's
+    # script generation uses), so you can keep script quality on Sonnet/Opus
+    # while keeping Jarvis fast, or override either independently in Settings.
+    model = get_setting(db, "jarvis_model", "claude-haiku-4-5-20251001")
+    personality = get_setting(db, "jarvis_personality", DEFAULT_PERSONALITY)
+    system_prompt = build_system_prompt(personality)
 
     for _ in range(4):
         try:
-            data = _call_claude(api_key, model, messages)
+            data = _call_claude(api_key, model, system_prompt, messages)
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else "?"
             if status == 401:
@@ -316,6 +443,65 @@ async def sms_webhook(request: Request, background_tasks: BackgroundTasks, db: S
     _save_sms_history(db, from_number, history)
 
     return _twiml(reply)
+
+
+# ---------------------------------------------------------------- real voice output (ElevenLabs)
+# The browser's built-in speech synthesis (used as a fallback) sounds
+# robotic -- this app already has ElevenLabs wired in for video narration,
+# so Jarvis reuses the same key to sound like an actual voice instead.
+# Falls back to browser speech synthesis automatically on the frontend if no
+# ElevenLabs key is configured, or if this endpoint errors.
+DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # ElevenLabs premade "Adam" voice -- same family already used for video narration elsewhere in this app
+
+
+class SpeakIn(BaseModel):
+    text: str
+
+
+@router.post("/speak")
+def speak(body: SpeakIn, db: Session = Depends(get_db)):
+    api_key = get_setting(db, "elevenlabs_api_key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No ElevenLabs key configured.")
+    voice_id = get_setting(db, "jarvis_voice_id") or DEFAULT_VOICE_ID
+    try:
+        resp = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
+            json={
+                "text": body.text,
+                "model_id": "eleven_turbo_v2_5",  # low-latency model -- matters for a live voice assistant
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error ({status}).")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Couldn't reach ElevenLabs.")
+    return Response(content=resp.content, media_type="audio/mpeg")
+
+
+@router.get("/voices")
+def list_voices(db: Session = Depends(get_db)):
+    """For the Settings voice picker. Returns an empty list (not an error)
+    if no key is configured yet, so the frontend can just show 'add a key
+    to pick a voice' instead of a broken dropdown."""
+    api_key = get_setting(db, "elevenlabs_api_key")
+    if not api_key:
+        return {"voices": []}
+    try:
+        resp = requests.get(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": api_key}, timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {"voices": [{"voice_id": v["voice_id"], "name": v["name"]} for v in data.get("voices", [])]}
+    except requests.RequestException:
+        return {"voices": []}
 
 
 # ---------------------------------------------------------------- voice ID (approximate, not real biometrics)

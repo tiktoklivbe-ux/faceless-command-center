@@ -20,6 +20,15 @@ KNOWN_KEYS = {
     "youtube_client_secret": True,
     "tiktok_client_key": True,
     "tiktok_client_secret": True,
+    # Jarvis customization
+    "jarvis_model": False,          # separate from anthropic_model -- Jarvis favors speed by default
+    "jarvis_voice_id": False,       # ElevenLabs voice ID; empty = fall back to browser speech synthesis
+    "jarvis_personality": False,    # "butler" | "casual" | "dry_wit" | "hype"
+    "jarvis_wake_word": False,      # default "hey jarvis", customizable
+    "jarvis_read_aloud": False,     # "true" | "false"
+    "jarvis_notifications": False,  # "true" | "false" -- desktop notification when a video job finishes
+    "jarvis_accent_color": False,   # hex color for the Jarvis panel's accent/orb
+    "jarvis_greeting": False,       # custom greeting shown when the panel opens
 }
 
 
