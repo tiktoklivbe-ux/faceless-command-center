@@ -250,13 +250,81 @@
       ctx.fill();
       ctx.restore();
 
+      // crisp core edge -- a sharp thin ring right at the glow's boundary,
+      // contrasting with the soft gradient fill for a more defined, "precision
+      // instrument" look instead of just a fuzzy ball of light
+      ctx.save();
+      ctx.strokeStyle = `${color}cc`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // faint crosshair through center -- reads as a targeting/scanning HUD
+      ctx.save();
+      ctx.strokeStyle = `${color}22`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - radius - 30, cy); ctx.lineTo(cx + radius + 30, cy);
+      ctx.moveTo(cx, cy - radius - 30); ctx.lineTo(cx, cy + radius + 30);
+      ctx.stroke();
+      ctx.restore();
+
+      // two dashed orbiting arcs (slower, more technical feeling than a
+      // continuous line)
       [1, -0.6].forEach((dir, i) => {
         ctx.save();
-        ctx.strokeStyle = `${color}44`;
+        ctx.strokeStyle = `${color}55`;
         ctx.lineWidth = 1.5;
+        ctx.setLineDash([2, 6]);
         ctx.beginPath();
         ctx.arc(cx, cy, radius + 26 + i * 16, t * 0.5 * dir, t * 0.5 * dir + Math.PI * 1.3);
         ctx.stroke();
+        ctx.restore();
+      });
+
+      // outer tick-mark dial -- short radial lines at regular angle
+      // intervals around a ring, like a measurement instrument, slowly
+      // rotating
+      const dialRadius = radius + 56;
+      const tickCount = 48;
+      ctx.save();
+      for (let i = 0; i < tickCount; i++) {
+        const angle = (i / tickCount) * Math.PI * 2 + t * 0.15;
+        const major = i % 6 === 0;
+        const len = major ? 10 : 4;
+        const x1 = cx + Math.cos(angle) * dialRadius;
+        const y1 = cy + Math.sin(angle) * dialRadius;
+        const x2 = cx + Math.cos(angle) * (dialRadius + len);
+        const y2 = cy + Math.sin(angle) * (dialRadius + len);
+        ctx.strokeStyle = major ? `${color}88` : `${color}33`;
+        ctx.lineWidth = major ? 1.5 : 1;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // small satellite dots orbiting at two different radii/speeds for
+      // depth -- brighter and faster when actively listening or speaking
+      const satSpeed = (speaking || listening) ? 1.4 : 0.4;
+      [
+        { r: radius + 40, speed: satSpeed, size: 2.5, dir: 1 },
+        { r: radius + 40, speed: satSpeed, size: 2.5, dir: 1, offset: Math.PI },
+        { r: dialRadius + 14, speed: satSpeed * 0.6, size: 2, dir: -1 },
+      ].forEach((sat) => {
+        const angle = t * sat.speed * sat.dir + (sat.offset || 0);
+        const x = cx + Math.cos(angle) * sat.r;
+        const y = cy + Math.sin(angle) * sat.r;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(x, y, sat.size, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
       });
 
@@ -441,7 +509,7 @@
         </div>
         <div class="jarvis-body">
         <div class="jarvis-left">
-          <canvas id="jarvis-orb" width="360" height="360"></canvas>
+          <canvas id="jarvis-orb" width="420" height="420"></canvas>
           <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:10px"></div>
           <div class="jarvis-controls-row">
             <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤 Talk</button>

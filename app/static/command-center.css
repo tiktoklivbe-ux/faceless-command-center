@@ -584,7 +584,7 @@ button.msc-link-card { cursor: pointer; }
 }
 @keyframes jarvisPulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.jarvis-body { display: grid; grid-template-columns: 440px 1fr; gap: 0; flex: 1; min-height: 0; }
+.jarvis-body { display: grid; grid-template-columns: 500px 1fr; gap: 0; flex: 1; min-height: 0; }
 .jarvis-left {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 20px; border-right: 1px solid rgba(0,232,255,0.14);
