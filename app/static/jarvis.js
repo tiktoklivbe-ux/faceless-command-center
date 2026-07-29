@@ -435,8 +435,13 @@
   window.renderJarvisPanel = async function (body) {
     body.innerHTML = `
       <div class="jarvis-page">
+        <div class="jarvis-header">
+          <div class="jarvis-header-title">JARVIS</div>
+          <div class="jarvis-header-status"><span class="jarvis-status-dot"></span> ONLINE</div>
+        </div>
+        <div class="jarvis-body">
         <div class="jarvis-left">
-          <canvas id="jarvis-orb" width="280" height="280"></canvas>
+          <canvas id="jarvis-orb" width="360" height="360"></canvas>
           <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:10px"></div>
           <div class="jarvis-controls-row">
             <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤 Talk</button>
@@ -472,6 +477,7 @@
               <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Not identity verification — a fun gate. Adapts to your voice slowly over time.</p>
             </div>
           </div>
+        </div>
         </div>
       </div>
     `;

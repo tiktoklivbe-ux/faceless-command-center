@@ -441,8 +441,18 @@ video { width: 100%; border-radius: 10px; background: #000; border: 1px solid va
 /* ---------------- Mission Control (data-console view, sibling to the orbit) ---------------- */
 #bigpanel-inner.wide { width: min(1180px, 97vw); padding: 0; }
 #bigpanel-inner.wide .bp-close { z-index: 5; }
-#bigpanel-inner.fullpage { width: min(1400px, 96vw); height: 92vh; padding: 0; }
-#bigpanel-inner.fullpage .bp-close { z-index: 5; }
+
+/* Jarvis "fullpage" mode: breaks completely out of the right-side drawer
+   layout used by every other panel. Full viewport, no border, no gap --
+   meant to feel like a dedicated screen, not a popup. */
+#bigpanel-inner.fullpage {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  border-left: none; padding: 0; transform: none;
+  background: radial-gradient(ellipse at 30% 20%, #0d1830 0%, #04070f 60%);
+}
+#bigpanel-inner.fullpage .bp-close {
+  z-index: 20; top: 24px; right: 28px;
+}
 #bigpanel-inner.fullpage #bp-body { height: 100%; }
 .msc-wrap { display: grid; grid-template-columns: 190px 1fr; height: 100%; min-height: 100vh; }
 .msc-nav {
@@ -554,28 +564,48 @@ button.msc-link-card { cursor: pointer; }
 }
 
 /* ---------------- jarvis panel (full-page split layout) ---------------- */
-.jarvis-page {
-  display: grid; grid-template-columns: 320px 1fr; gap: 24px;
-  height: 100%; padding: 24px;
+.jarvis-page { display: flex; flex-direction: column; height: 100%; }
+.jarvis-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 80px 18px 40px; border-bottom: 1px solid rgba(0,232,255,0.18);
+  background: linear-gradient(90deg, rgba(0,232,255,0.06), transparent 60%);
 }
+.jarvis-header-title {
+  font-family: var(--font-head); font-size: 26px; letter-spacing: 4px;
+  color: var(--cyan); text-shadow: 0 0 18px rgba(0,232,255,0.5);
+}
+.jarvis-header-status {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 2px; color: var(--green);
+}
+.jarvis-status-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 10px var(--green); animation: jarvisPulseDot 1.6s ease-in-out infinite;
+}
+@keyframes jarvisPulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.jarvis-body { display: grid; grid-template-columns: 440px 1fr; gap: 0; flex: 1; min-height: 0; }
 .jarvis-left {
-  display: flex; flex-direction: column; align-items: center;
-  justify-content: center; padding: 20px;
-  border-right: 1px solid var(--border-soft);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 20px; border-right: 1px solid rgba(0,232,255,0.14);
+  background: radial-gradient(ellipse at 50% 40%, rgba(0,232,255,0.05), transparent 70%);
 }
 #jarvis-orb { display: block; }
-.jarvis-controls-row { display: flex; gap: 10px; margin-top: 18px; }
-.jarvis-controls-row .icon-btn { width: auto; padding: 0 16px; gap: 6px; }
-.jarvis-right { display: flex; flex-direction: column; min-height: 0; }
+.jarvis-controls-row { display: flex; gap: 10px; margin-top: 22px; }
+.jarvis-controls-row .icon-btn {
+  width: auto; padding: 10px 20px; gap: 6px; font-size: 13px; font-weight: 700;
+  letter-spacing: 0.5px; border-radius: 999px;
+}
+.jarvis-right { display: flex; flex-direction: column; min-height: 0; padding: 26px 50px 30px 40px; }
 
-.jarvis-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
+.jarvis-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border-soft); }
 .jarvis-tab {
   background: transparent; border: none; border-bottom: 2px solid transparent;
-  color: var(--muted); font-family: var(--font-body); font-weight: 600; font-size: 13px;
-  padding: 10px 16px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  color: var(--muted); font-family: var(--font-body); font-weight: 700; font-size: 13px;
+  letter-spacing: 0.5px; padding: 10px 18px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
 }
 .jarvis-tab:hover { color: var(--ink); }
-.jarvis-tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+.jarvis-tab.active { color: var(--cyan); border-bottom-color: var(--cyan); text-shadow: 0 0 10px rgba(0,232,255,0.4); }
 .jarvis-tabpanel { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 
 .jarvis-log {
@@ -638,6 +668,8 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-settings-grid input[type="checkbox"] { width: 18px; height: 18px; }
 
 @media (max-width: 900px) {
-  .jarvis-page { grid-template-columns: 1fr; }
+  .jarvis-body { grid-template-columns: 1fr; }
   .jarvis-left { border-right: none; border-bottom: 1px solid var(--border-soft); padding-bottom: 20px; }
+  .jarvis-header { padding: 16px 60px 14px 20px; }
+  .jarvis-right { padding: 20px; }
 }
