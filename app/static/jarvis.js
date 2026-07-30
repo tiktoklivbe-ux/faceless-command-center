@@ -29,7 +29,7 @@
   const DEFAULT_WAKE_PHRASES = ["hey jarvis", "hey, jarvis", "ok jarvis", "okay jarvis"];
 
   let recognizer = null;
-  let mode = "off"; // "off" | "ptt" | "wake"
+  let mode = "off"; // "off" | "wake" (always-on listening)
   let awake = false;
   let history = [];
   let restartTimer = null;
@@ -240,125 +240,97 @@
       }
     }
 
+    // Precomputed sphere points, distributed evenly using the Fibonacci
+    // sphere method (golden-angle spiral) -- gives a much more uniform dot
+    // distribution than naive lat/long stepping, which bunches points at
+    // the poles.
+    const SPHERE_POINTS = (() => {
+      const pts = [];
+      const N = 900;
+      const golden = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < N; i++) {
+        const y = 1 - (i / (N - 1)) * 2;
+        const r = Math.sqrt(1 - y * y);
+        const theta = golden * i;
+        pts.push([Math.cos(theta) * r, y, Math.sin(theta) * r]);
+      }
+      return pts;
+    })();
+
     function draw() {
       t += reducedMotion ? 0 : 0.02;
       ctx.clearRect(0, 0, W, H);
 
-      let radius = 70;
-      let glow = 46;
+      let level = 0;
       let color = accent;
-
       if (speaking) {
-        let level;
         if (getSpeakAmp) {
           const a = getSpeakAmp();
           level = a === null || a === undefined ? 0.3 : a;
         } else {
-          level = reducedMotion ? 0.4 : 0.35 + Math.sin(t * 9) * 0.15 + Math.sin(t * 5.3) * 0.1;
+          level = reducedMotion ? 0.4 : 0.35 + Math.sin(t * 9) * 0.15;
         }
-        radius = 74 + level * 46;
-        glow = 50 + level * 90;
         color = "#b26bff";
       } else if (listening) {
-        const level = currentLevel();
-        radius = 70 + level * 50;
-        glow = 46 + level * 100;
+        level = currentLevel();
         color = "#ff2f9e";
-      } else {
-        radius = reducedMotion ? 70 : 70 + Math.sin(t * 1.4) * 6;
-        glow = reducedMotion ? 40 : 40 + Math.sin(t * 1.4) * 10;
       }
 
-      ctx.save();
-      ctx.shadowColor = color;
-      ctx.shadowBlur = glow;
-      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-      g.addColorStop(0, "#eafcff");
-      g.addColorStop(0.45, color);
-      g.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      const baseR = Math.min(W, H) * 0.30;
+      // sphere swells with audio level -- real amplitude when available
+      const R = baseR * (1 + level * 0.16);
+      const rotY = t * 0.35;
+      const rotX = 0.42; // fixed slight tilt so it reads as a 3D globe, not a flat disc
 
-      // crisp core edge -- a sharp thin ring right at the glow's boundary,
-      // contrasting with the soft gradient fill for a more defined, "precision
-      // instrument" look instead of just a fuzzy ball of light
-      ctx.save();
-      ctx.strokeStyle = `${color}cc`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+      const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+      const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
 
-      // faint crosshair through center -- reads as a targeting/scanning HUD
-      ctx.save();
-      ctx.strokeStyle = `${color}22`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx - radius - 30, cy); ctx.lineTo(cx + radius + 30, cy);
-      ctx.moveTo(cx, cy - radius - 30); ctx.lineTo(cx, cy + radius + 30);
-      ctx.stroke();
-      ctx.restore();
+      for (let i = 0; i < SPHERE_POINTS.length; i++) {
+        const [px, py, pz] = SPHERE_POINTS[i];
+        // rotate around Y, then X
+        const x1 = px * cosY - pz * sinY;
+        const z1 = px * sinY + pz * cosY;
+        const y2 = py * cosX - z1 * sinX;
+        const z2 = py * sinX + z1 * cosX;
 
-      // two dashed orbiting arcs (slower, more technical feeling than a
-      // continuous line)
-      [1, -0.6].forEach((dir, i) => {
-        ctx.save();
-        ctx.strokeStyle = `${color}55`;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([2, 6]);
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius + 26 + i * 16, t * 0.5 * dir, t * 0.5 * dir + Math.PI * 1.3);
-        ctx.stroke();
-        ctx.restore();
-      });
+        // perspective: points further back render smaller and dimmer,
+        // which is what actually sells the 3D read
+        const depth = (z2 + 1) / 2; // 0 (back) .. 1 (front)
+        const scale = 0.55 + depth * 0.45;
+        const sx = cx + x1 * R * scale;
+        const sy = cy + y2 * R * scale;
 
-      // outer tick-mark dial -- short radial lines at regular angle
-      // intervals around a ring, like a measurement instrument, slowly
-      // rotating
-      const dialRadius = radius + 56;
-      const tickCount = 48;
-      ctx.save();
-      for (let i = 0; i < tickCount; i++) {
-        const angle = (i / tickCount) * Math.PI * 2 + t * 0.15;
-        const major = i % 6 === 0;
-        const len = major ? 10 : 4;
-        const x1 = cx + Math.cos(angle) * dialRadius;
-        const y1 = cy + Math.sin(angle) * dialRadius;
-        const x2 = cx + Math.cos(angle) * (dialRadius + len);
-        const y2 = cy + Math.sin(angle) * (dialRadius + len);
-        ctx.strokeStyle = major ? `${color}88` : `${color}33`;
-        ctx.lineWidth = major ? 1.5 : 1;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-      }
-      ctx.restore();
+        const alpha = 0.12 + depth * 0.75;
+        const size = 0.7 + depth * 1.5;
 
-      // small satellite dots orbiting at two different radii/speeds for
-      // depth -- brighter and faster when actively listening or speaking
-      const satSpeed = (speaking || listening) ? 1.4 : 0.4;
-      [
-        { r: radius + 40, speed: satSpeed, size: 2.5, dir: 1 },
-        { r: radius + 40, speed: satSpeed, size: 2.5, dir: 1, offset: Math.PI },
-        { r: dialRadius + 14, speed: satSpeed * 0.6, size: 2, dir: -1 },
-      ].forEach((sat) => {
-        const angle = t * sat.speed * sat.dir + (sat.offset || 0);
-        const x = cx + Math.cos(angle) * sat.r;
-        const y = cy + Math.sin(angle) * sat.r;
-        ctx.save();
+        ctx.globalAlpha = alpha;
         ctx.fillStyle = color;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 8;
+        ctx.fillRect(sx - size / 2, sy - size / 2, size, size);
+      }
+      ctx.globalAlpha = 1;
+
+      // faint containing ring + tick dial around the sphere
+      ctx.save();
+      ctx.strokeStyle = `${color}33`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 1.28, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const dialR = R * 1.42;
+      const ticks = 60;
+      for (let i = 0; i < ticks; i++) {
+        const a = (i / ticks) * Math.PI * 2 + t * 0.1;
+        const major = i % 5 === 0;
+        const len = major ? 8 : 3;
+        ctx.strokeStyle = major ? `${color}77` : `${color}2a`;
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(x, y, sat.size, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      });
+        ctx.moveTo(cx + Math.cos(a) * dialR, cy + Math.sin(a) * dialR);
+        ctx.lineTo(cx + Math.cos(a) * (dialR + len), cy + Math.sin(a) * (dialR + len));
+        ctx.stroke();
+      }
+      ctx.restore();
 
       updateEqBars();
       raf = requestAnimationFrame(draw);
@@ -385,6 +357,7 @@
     ["casual", "Casual — laid-back friend"],
     ["dry_wit", "Dry Wit — deadpan, sarcastic"],
     ["hype", "Hype — high energy, enthusiastic"],
+    ["unfiltered", "Unfiltered — blunt, swears, no filter"],
   ];
   const MODEL_OPTIONS = [
     ["claude-haiku-4-5-20251001", "Haiku 4.5 — fastest (recommended for voice)"],
@@ -545,31 +518,26 @@
         </div>
         <div class="jarvis-body">
         <div class="jarvis-left">
-          <canvas id="jarvis-orb" width="420" height="420"></canvas>
-          <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 24 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
-          <div class="jarvis-caption" id="jarvis-caption"></div>
-          <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:10px"></div>
-          <div class="jarvis-controls-row">
-            <button class="icon-btn" id="jarvis-mic" title="Hold to talk">🎤 Talk</button>
-            <button class="icon-btn" id="jarvis-wake" title="Toggle wake mode">👂 Hey Jarvis</button>
-          </div>
-          <button class="btn secondary" id="jarvis-reset" style="margin-top:14px">Clear Conversation</button>
+          <div class="jarvis-sysline">SYSTEM STATUS</div>
           <div class="jarvis-readout" id="jarvis-readout"></div>
+          <div class="jarvis-sysline" style="margin-top:20px">TRANSCRIPT</div>
+          <div class="jarvis-log" id="jarvis-log"></div>
+        </div>
+        <div class="jarvis-center">
+          <canvas id="jarvis-orb" width="460" height="460"></canvas>
+          <div class="jarvis-caption" id="jarvis-caption"></div>
+          <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:6px"></div>
+          <div class="jarvis-controls-row">
+            <button class="icon-btn" id="jarvis-wake" title="Toggle always-listening">◉ ENGAGE</button>
+          </div>
+          <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 32 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
         </div>
         <div class="jarvis-right">
           <div class="jarvis-tabs">
-            <button class="jarvis-tab active" data-tab="chat">Chat</button>
-            <button class="jarvis-tab" data-tab="settings">Settings</button>
+            <button class="jarvis-tab active" data-tab="settings">Settings</button>
             <button class="jarvis-tab" data-tab="more">More</button>
           </div>
-          <div class="jarvis-tabpanel" data-tabpanel="chat">
-            <div class="jarvis-log" id="jarvis-log"></div>
-            <div class="jarvis-input-row">
-              <input id="jarvis-text" placeholder="Type, or use the mic…" autocomplete="off"/>
-              <button class="icon-btn" id="jarvis-send" title="Send">▸</button>
-            </div>
-          </div>
-          <div class="jarvis-tabpanel" data-tabpanel="settings" style="display:none"></div>
+          <div class="jarvis-tabpanel" data-tabpanel="settings"></div>
           <div class="jarvis-tabpanel" data-tabpanel="more" style="display:none">
             <div class="jarvis-sms-box">
               <b>Text Jarvis from your phone</b>
@@ -606,7 +574,7 @@
 
     const readout = $("#jarvis-readout");
     if (readout) {
-      const personalityLabel = { butler: "BUTLER", casual: "CASUAL", dry_wit: "DRY WIT", hype: "HYPE" }[jarvisSettings.jarvis_personality] || "BUTLER";
+      const personalityLabel = { butler: "BUTLER", casual: "CASUAL", dry_wit: "DRY WIT", hype: "HYPE", unfiltered: "UNFILTERED" }[jarvisSettings.jarvis_personality] || "BUTLER";
       const modelLabel = jarvisSettings.jarvis_model.includes("haiku") ? "HAIKU (FAST)" : jarvisSettings.jarvis_model.includes("opus") ? "OPUS" : "SONNET";
       readout.innerHTML = `
         <div>MODE <span>${personalityLabel}</span></div>
@@ -616,13 +584,9 @@
     }
 
     const log = $("#jarvis-log");
-    const input = $("#jarvis-text");
-    const micBtn = $("#jarvis-mic");
     const wakeBtn = $("#jarvis-wake");
-    const sendBtn = $("#jarvis-send");
     const status = $("#jarvis-status");
     const orbCanvas = $("#jarvis-orb");
-    const resetBtn = $("#jarvis-reset");
 
     const orb = createOrbVisualizer(orbCanvas);
     currentOrb = orb;
@@ -648,13 +612,13 @@
       });
     });
 
-    log.appendChild(bubble("assistant", greetingText || "Hey, I'm here. Type, hold the mic to talk once, or turn on 'Hey Jarvis' mode to leave the mic open."));
+    const settingsPanel = document.querySelector('.jarvis-tabpanel[data-tabpanel="settings"]');
+    if (settingsPanel) {
+      settingsPanel.dataset.loaded = "1";
+      loadSettingsIntoTab(settingsPanel);
+    }
 
-    resetBtn.addEventListener("click", () => {
-      history = [];
-      log.innerHTML = "";
-      log.appendChild(bubble("assistant", "Conversation cleared."));
-    });
+    log.appendChild(bubble("assistant", greetingText || "Standing by. Hit ENGAGE, then just talk — no button holding."));
 
     const smsUrlEl = $("#jarvis-sms-url");
     if (smsUrlEl) smsUrlEl.textContent = `${window.location.origin}/api/jarvis/sms`;
@@ -715,18 +679,9 @@
       });
     }
 
-    sendBtn.addEventListener("click", () => {
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      send(log, text);
-    });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendBtn.click(); });
-
     if (!SpeechRecognition) {
-      micBtn.disabled = true;
       wakeBtn.disabled = true;
-      status.textContent = "Voice input isn't supported in this browser (try Chrome or Edge) — typing still works fully, and replies are still spoken aloud.";
+      status.textContent = "Voice isn't supported in this browser — try Chrome or Edge.";
       return;
     }
 
@@ -736,7 +691,6 @@
       sessionGreeted = false;
       sessionToken++;
       clearTimeout(restartTimer);
-      micBtn.classList.remove("jarvis-mic-active");
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
       orb.setListening(false);
@@ -776,26 +730,13 @@
     }
 
     function handleResult(text) {
-      if (mode === "ptt") {
-        maybeGreet(log).then(() => send(log, text));
-        return;
-      }
-      if (!awake) {
-        if (containsWakePhrase(text)) {
-          awake = true;
-          status.textContent = "Listening for your command…";
-          const rest = stripWakePhrase(text);
-          if (rest) {
-            awake = false;
-            maybeGreet(log).then(() => send(log, rest));
-            status.textContent = "Say the wake word any time.";
-          }
-        }
-      } else {
-        awake = false;
-        status.textContent = "Say the wake word any time.";
-        maybeGreet(log).then(() => send(log, text));
-      }
+      // Always-on: once ENGAGE is active, everything you say goes straight
+      // to Jarvis. No wake word needed per command, no button to hold --
+      // that friction was the main complaint about push-to-talk. The wake
+      // phrase is still stripped if you happen to say it out of habit.
+      const cleaned = containsWakePhrase(text) ? stripWakePhrase(text) : text;
+      if (!cleaned.trim()) return;
+      maybeGreet(log).then(() => send(log, cleaned));
     }
 
     function startSession(continuous) {
@@ -833,10 +774,6 @@
             if (myToken !== sessionToken) return;
             startSession(true);
           }, 250);
-        } else if (mode === "ptt") {
-          mode = "off";
-          micBtn.classList.remove("jarvis-mic-active");
-          if (window.VoiceID) VoiceID.stopSamplingAndGet();
         }
       };
 
@@ -852,22 +789,18 @@
       }
     }
 
-    micBtn.addEventListener("click", () => {
-      if (mode === "ptt") { stopEverything(); return; }
-      stopEverything();
-      mode = "ptt";
-      micBtn.classList.add("jarvis-mic-active");
-      status.textContent = "Listening…";
-      startSession(false);
-    });
-
     wakeBtn.addEventListener("click", () => {
-      if (mode === "wake") { stopEverything(); return; }
+      if (mode === "wake") {
+        stopEverything();
+        wakeBtn.textContent = "◉ ENGAGE";
+        return;
+      }
       stopEverything();
       mode = "wake";
       awake = false;
       wakeBtn.classList.add("jarvis-mic-active");
-      status.textContent = "Say the wake word any time.";
+      wakeBtn.textContent = "◉ LISTENING";
+      status.textContent = "Just talk — no wake word needed.";
       startSession(true);
     });
   };
