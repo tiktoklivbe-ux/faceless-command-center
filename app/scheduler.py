@@ -23,6 +23,7 @@ tier awake.
 """
 import asyncio
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -36,11 +37,11 @@ log = logging.getLogger("chronos")
 CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
 # If a job sits in one of these active states longer than this, its worker
-# almost certainly died (e.g. killed mid-run by a Render redeploy/restart)
-# and nothing will ever pick it back up. Auto-clearing it to FAILED lets
-# Chronos treat that channel as no longer blocked, instead of the job sitting
-# stuck for days.
+# almost certainly died (e.g. killed mid-run by a redeploy/restart) and
+# nothing will ever pick it back up. See clear_stuck_jobs below for how
+# those are retried and eventually failed.
 STUCK_JOB_TIMEOUT_MINUTES = 30
+MAX_AUTO_RETRIES = 2
 _ACTIVE_STATUSES = [
     models.JobStatus.QUEUED,
     models.JobStatus.SCRIPT,
@@ -53,6 +54,18 @@ _ACTIVE_STATUSES = [
 
 
 def clear_stuck_jobs(db: Session) -> int:
+    """Find jobs stalled in an active state past the timeout and deal with them.
+
+    The common cause is the process being killed mid-run (a redeploy or host
+    restart landing mid-job) rather than the code actually erroring -- that
+    kills the worker with no chance to write a failure, which is why these
+    jobs previously just sat in 'assembling' forever with an empty error.
+
+    Since that cause is transient, the right response is to RETRY rather
+    than give up: the job is put back to QUEUED and re-dispatched, up to
+    MAX_AUTO_RETRIES times. Only after that does it get marked FAILED, so a
+    genuinely broken job can't loop forever.
+    """
     cutoff = datetime.utcnow() - timedelta(minutes=STUCK_JOB_TIMEOUT_MINUTES)
     stuck_jobs = (
         db.query(models.VideoJob)
@@ -61,13 +74,25 @@ def clear_stuck_jobs(db: Session) -> int:
         .all()
     )
     for job in stuck_jobs:
-        log.warning("Chronos watchdog: clearing stuck job %s (was %s since %s)",
-                    job.id, job.status, job.updated_at)
-        job.status = models.JobStatus.FAILED
-        job.error_message = (
-            "Job stalled (likely killed by a server restart/redeploy) — "
-            "auto-cleared by Chronos watchdog"
-        )
+        attempts = (job.stage_log or "").count("[watchdog] retrying")
+        if attempts < MAX_AUTO_RETRIES:
+            log.warning("Chronos watchdog: retrying stalled job %s (attempt %d)", job.id, attempts + 1)
+            job.stage_log = (job.stage_log or "") + (
+                f"\n[watchdog] retrying — job stalled with no error, which usually means the "
+                f"process was restarted mid-render. Attempt {attempts + 1} of {MAX_AUTO_RETRIES}.\n"
+            )
+            job.status = models.JobStatus.QUEUED
+            job.error_message = ""
+            db.commit()
+            threading.Thread(target=orchestrator.run_job, args=(job.id,), daemon=True).start()
+        else:
+            log.warning("Chronos watchdog: giving up on job %s after %d retries", job.id, attempts)
+            job.status = models.JobStatus.FAILED
+            job.error_message = (
+                "Job stalled repeatedly with no error logged, and automatic retries were "
+                "exhausted. This usually means the process is being killed mid-render "
+                "(a restart landing mid-job, or the container running out of resources)."
+            )
     if stuck_jobs:
         db.commit()
     return len(stuck_jobs)

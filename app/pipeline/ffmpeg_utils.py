@@ -36,13 +36,20 @@ def ken_burns_clip(image_path: Path, audio_path: Path, duration: float, out_path
     """
     fps = 30
     frames = max(int(duration * fps), 1)
-    # zoompan needs an input already scaled up so panning has room to move.
+    # zoompan needs the input scaled up so panning has room to move -- but only
+    # as much headroom as the zoom actually uses (max zoom here is ~1.3x).
+    # This used to scale to 2x (2160x3840), which meant zoompan buffering
+    # ~25MB uncompressed frames; on a 512MB instance that gets the whole
+    # container OOM-killed mid-render, which looks like a job silently
+    # freezing with no error rather than a clean failure. 1.4x gives the pan
+    # all the room it needs at a fraction of the memory.
+    scale_w, scale_h = int(width * 1.4), int(height * 1.4)
     if zoom_in:
-        zoom_expr = f"zoom+0.0007"
+        zoom_expr = f"min(zoom+0.0007,1.3)"
     else:
-        zoom_expr = f"if(lte(zoom,1.0),1.3,zoom-0.0007)"
+        zoom_expr = f"if(lte(zoom,1.0),1.3,max(zoom-0.0007,1.0))"
     vf = (
-        f"scale={width*2}:{height*2},"
+        f"scale={scale_w}:{scale_h},"
         f"zoompan=z='{zoom_expr}':d={frames}:s={width}x{height}:fps={fps},"
         f"format=yuv420p"
     )
@@ -53,6 +60,7 @@ def ken_burns_clip(image_path: Path, audio_path: Path, duration: float, out_path
         "-vf", vf,
         "-t", str(duration),
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-threads", "1",  # limit ffmpeg's own memory footprint on a small instance
         "-c:a", "aac", "-b:a", "160k",
         "-shortest",
         str(out_path),

@@ -8,6 +8,7 @@ Once both finish, the Assembly Agent turns that pair into a Ken Burns clip.
 After every segment is done, all clips are concatenated and captions burned
 in.
 """
+import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -63,6 +64,19 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     log("Assembly Agent: burning in captions…")
     final_path = job_dir / "final.mp4"
     ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path)
+
+    # Clean up intermediates now that final.mp4 exists. Without this every
+    # job permanently leaves behind a PNG + MP3 + MP4 per segment plus the
+    # pre-caption joined.mp4 -- at a few videos a day that fills the disk
+    # within weeks, and a full disk fails jobs in a confusing, unrelated-
+    # looking way. Only the final video and the SRT are actually needed.
+    try:
+        shutil.rmtree(clips_dir, ignore_errors=True)
+        joined_path.unlink(missing_ok=True)
+        joined_path.with_suffix(".txt").unlink(missing_ok=True)  # concat list file
+    except OSError as e:
+        log(f"Assembly Agent: cleanup skipped ({e}) -- video is still fine.")
+
     set_agent("assembly", "done")
 
     return final_path, srt_path
