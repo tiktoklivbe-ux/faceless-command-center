@@ -378,6 +378,9 @@
 
     container.innerHTML = `
       <div class="jarvis-settings-grid">
+        <label>ElevenLabs API key</label>
+        <input id="js-elevenlabs" type="password" placeholder="${settingsResp.elevenlabs_api_key && settingsResp.elevenlabs_api_key.set ? "•••••• (saved — type to replace)" : "paste key to get a real voice"}"/>
+
         <label>Personality</label>
         <select id="js-personality">
           ${PERSONALITY_OPTIONS.map(([v, l]) => `<option value="${v}" ${val("jarvis_personality", "butler") === v ? "selected" : ""}>${l}</option>`).join("")}
@@ -428,6 +431,10 @@
         jarvis_read_aloud: $("#js-readaloud").checked ? "true" : "false",
         jarvis_notifications: $("#js-notify").checked ? "true" : "false",
       };
+      // Only send the key if something was actually typed -- an empty field
+      // means "leave whatever's saved alone", not "clear it".
+      const elKey = $("#js-elevenlabs").value.trim();
+      if (elKey) payload.elevenlabs_api_key = elKey;
       try {
         await fetch("/api/settings", {
           method: "POST",
@@ -440,6 +447,9 @@
           Notification.requestPermission();
         }
         toast("Jarvis settings saved.");
+        // If a key was just added, reload this tab so the voice picker can
+        // actually populate from ElevenLabs instead of staying empty.
+        if (elKey) loadSettingsIntoTab(container);
       } catch (_) {
         $("#js-save-status").textContent = "Couldn't save — try again.";
       }
@@ -531,6 +541,10 @@
             <button class="icon-btn" id="jarvis-wake" title="Toggle always-listening">◉ ENGAGE</button>
           </div>
           <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 32 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
+          <div class="jarvis-input-row" style="margin-top:16px; width:100%; max-width:420px">
+            <input id="jarvis-text" placeholder="…or type here" autocomplete="off"/>
+            <button class="icon-btn" id="jarvis-send" title="Send">▸</button>
+          </div>
         </div>
         <div class="jarvis-right">
           <div class="jarvis-tabs">
@@ -587,6 +601,8 @@
     const wakeBtn = $("#jarvis-wake");
     const status = $("#jarvis-status");
     const orbCanvas = $("#jarvis-orb");
+    const input = $("#jarvis-text");
+    const sendBtn = $("#jarvis-send");
 
     const orb = createOrbVisualizer(orbCanvas);
     currentOrb = orb;
@@ -679,9 +695,17 @@
       });
     }
 
+    sendBtn.addEventListener("click", () => {
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      send(log, text);
+    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendBtn.click(); });
+
     if (!SpeechRecognition) {
       wakeBtn.disabled = true;
-      status.textContent = "Voice isn't supported in this browser — try Chrome or Edge.";
+      status.textContent = "Voice isn't supported in this browser — try Chrome or Edge. Typing still works.";
       return;
     }
 
@@ -765,6 +789,17 @@
       r.onerror = (e) => {
         if (myToken !== sessionToken) return;
         if (e.error === "no-speech" || e.error === "aborted") return;
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          status.textContent = "Microphone blocked — allow mic access in your browser's address bar, then hit ENGAGE again.";
+          log.appendChild(bubble("assistant", "Mic access is blocked, so I can't hear anything. Allow it in the address bar, or type below."));
+          stopEverything();
+          wakeBtn.textContent = "◉ ENGAGE";
+          return;
+        }
+        if (e.error === "network") {
+          status.textContent = "Speech service unreachable — check your connection. Typing still works.";
+          return;
+        }
         status.textContent = `Mic error: ${e.error}`;
       };
       r.onend = () => {
@@ -789,13 +824,31 @@
       }
     }
 
-    wakeBtn.addEventListener("click", () => {
+    wakeBtn.addEventListener("click", async () => {
       if (mode === "wake") {
         stopEverything();
         wakeBtn.textContent = "◉ ENGAGE";
         return;
       }
       stopEverything();
+
+      // Explicitly ask for the mic first. SpeechRecognition on its own
+      // doesn't always surface a permission prompt (and silently hears
+      // nothing if permission was never granted), which looks exactly like
+      // "I clicked engage, it says listening, but nothing happens."
+      // Requesting getUserMedia directly forces the prompt and gives us a
+      // real error to show if it's blocked.
+      if (navigator.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((tr) => tr.stop()); // just needed the permission, not the stream
+        } catch (err) {
+          status.textContent = "Microphone blocked. Click the padlock/mic icon in your browser's address bar and allow mic access for this site, then try again.";
+          log.appendChild(bubble("assistant", "I can't hear you — microphone access is blocked for this site. Allow it in your browser's address bar (padlock icon), or just type below."));
+          return;
+        }
+      }
+
       mode = "wake";
       awake = false;
       wakeBtn.classList.add("jarvis-mic-active");

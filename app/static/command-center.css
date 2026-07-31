@@ -647,6 +647,13 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-assistant { color: var(--ink); border-left-color: var(--cyan); }
 .jarvis-assistant::before { content: "JARVIS "; color: var(--cyan); opacity: 0.7; font-size: 9px; letter-spacing: 1px; }
 .jarvis-thinking { opacity: 0.4; font-style: italic; }
+.jarvis-input-row { display: flex; gap: 8px; align-items: center; }
+.jarvis-input-row input {
+  flex: 1; background: rgba(0,0,0,0.35); border: 1px solid rgba(0,232,255,0.15);
+  border-radius: 4px; padding: 9px 12px; color: var(--ink);
+  font-family: var(--font-mono); font-size: 12px; outline: none;
+}
+.jarvis-input-row input:focus { border-color: var(--cyan); }
 #jarvis-wake.jarvis-mic-active {
   border-color: var(--pink); color: var(--pink);
   box-shadow: 0 0 18px rgba(255,47,158,0.5);
