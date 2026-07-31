@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/jarvis/agent", tags=["jarvis-agent"])
 # The only actions the local agent will ever execute. Deliberately not
 # "run arbitrary code" -- a fixed, small, auditable vocabulary is the real
 # safety boundary for a feature that controls someone's actual computer.
-ALLOWED_ACTIONS = {"open_app", "type_text", "click_at", "press_keys", "screenshot"}
+ALLOWED_ACTIONS = {"open_app", "focus_window", "type_text", "click_at", "press_keys", "screenshot"}
 
 
 def _check_token(db: Session, token: str):

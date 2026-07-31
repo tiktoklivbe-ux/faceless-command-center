@@ -848,11 +848,8 @@ async function init() {
   $("#boot-skip").addEventListener("click", endBoot);
 
   // toolbar buttons
-  $("#tb-settings").addEventListener("click", () => openBigPanel("settings"));
-  $("#tb-channels").addEventListener("click", () => openBigPanel("channels"));
-  $("#tb-jobs").addEventListener("click", () => openBigPanel("jobs"));
-  $("#tb-missioncontrol").addEventListener("click", () => openBigPanel("missioncontrol"));
-  $("#tb-jarvis").addEventListener("click", () => openBigPanel("jarvis"));
+  // Navigation is the left sidebar only -- the duplicate right-hand toolbar
+  // was removed since every button led to the same place as a sidebar item.
 
   // left sidebar -- same destinations as the toolbar icons, just labeled.
   // "Orbit" is the one that closes any open panel and returns to the

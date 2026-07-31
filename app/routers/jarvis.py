@@ -54,7 +54,9 @@ SYSTEM_PROMPT_BASE = textwrap.dedent("""
       you only whether a key is set, and that's all you should ever say.
     - Only use computer_action when the user clearly wants something done on
       their machine, and if the local agent isn't connected, say so plainly
-      instead of pretending it worked.
+      instead of pretending it worked. When you do act on their computer,
+      say what you're doing in the same breath ("opening Notepad now") so
+      they can follow along rather than wondering what just happened.
     - If a tool result shows an error or nothing found, say so plainly
       rather than inventing details.
 """).strip()
@@ -152,14 +154,14 @@ TOOLS = [
     },
     {
         "name": "computer_action",
-        "description": "Control the user's actual computer through the local Jarvis Agent: open an application, "
+        "description": "Control the user's actual computer through the local Jarvis Agent: open an application (brought to the front so it's visible), focus an already-open window, "
                        "type text at the current cursor focus, click at a screen coordinate, press a key combo, "
                        "or take a screenshot. Requires the local agent to be running and paired -- if it's not "
                        "connected, this will report that clearly instead of pretending to work.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["open_app", "type_text", "click_at", "press_keys", "screenshot"]},
+                "action": {"type": "string", "enum": ["open_app", "focus_window", "type_text", "click_at", "press_keys", "screenshot"]},
                 "app_name": {"type": "string", "description": "For open_app: the application name."},
                 "text": {"type": "string", "description": "For type_text: the text to type."},
                 "x": {"type": "integer", "description": "For click_at: screen x coordinate."},
@@ -592,7 +594,7 @@ def _tool_computer_action(db: Session, tool_input: dict) -> dict:
         return {"error": "No local Jarvis Agent has been paired yet -- set one up in the Jarvis panel's More tab first."}
 
     action = tool_input.get("action")
-    if action not in {"open_app", "type_text", "click_at", "press_keys", "screenshot"}:
+    if action not in {"open_app", "focus_window", "type_text", "click_at", "press_keys", "screenshot"}:
         return {"error": f"Unknown action '{action}'."}
 
     params = {k: v for k, v in tool_input.items() if k != "action"}

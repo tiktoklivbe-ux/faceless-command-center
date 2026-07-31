@@ -83,12 +83,57 @@ def open_app(params):
         raise ValueError("No app_name given.")
     system = platform.system()
     if system == "Darwin":
+        # -a activates and brings to front on macOS already
         subprocess.run(["open", "-a", name], check=True)
     elif system == "Windows":
         os.startfile(name)  # noqa -- Windows-only API, fine here since we branched on platform
+        # os.startfile launches the app but doesn't guarantee it comes to the
+        # front -- it can open behind the browser where you'd never see it.
+        # Give it a moment to create its window, then explicitly raise it so
+        # the action is visible rather than silently happening off-screen.
+        time.sleep(1.2)
+        _focus_window_windows(name)
     else:
         subprocess.run(["xdg-open", name], check=True)
-    return {"opened": name}
+    return {"opened": name, "brought_to_front": True}
+
+
+def _focus_window_windows(app_name: str):
+    """Best-effort: bring a window whose title mentions app_name to the front.
+    Uses only the standard-library ctypes bridge to the Win32 API, so there's
+    no extra dependency. Silently gives up if it can't find a match -- the app
+    still opened, it just may not be focused."""
+    if platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        target = app_name.lower().replace(".exe", "")
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def enum_cb(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length == 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if target in buf.value.lower():
+                found.append(hwnd)
+                return False
+            return True
+
+        user32.EnumWindows(enum_cb, 0)
+        if found:
+            hwnd = found[0]
+            user32.ShowWindow(hwnd, 9)      # SW_RESTORE -- un-minimize if needed
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass  # focusing is a nicety, never worth failing the whole action over
 
 
 def type_text(params):
@@ -122,8 +167,26 @@ def screenshot(params):
     return {"width": img.width, "height": img.height, "note": "Screenshot captured (image data not yet relayed into chat)."}
 
 
+def focus_window(params):
+    """Bring an already-open window to the front by name. Useful for 'show me
+    what you're doing' -- switching to the window being acted on rather than
+    working in something hidden behind the browser."""
+    name = params.get("app_name") or params.get("title") or ""
+    if not name:
+        raise ValueError("No app_name/title given.")
+    system = platform.system()
+    if system == "Windows":
+        _focus_window_windows(name)
+    elif system == "Darwin":
+        subprocess.run(["open", "-a", name], check=True)
+    else:
+        subprocess.run(["wmctrl", "-a", name], check=False)
+    return {"focused": name}
+
+
 ACTIONS = {
     "open_app": open_app,
+    "focus_window": focus_window,
     "type_text": type_text,
     "click_at": click_at,
     "press_keys": press_keys,

@@ -226,7 +226,6 @@ html, body {
   transition: all 0.15s ease;
 }
 .icon-btn:hover { border-color: var(--cyan); box-shadow: 0 0 16px rgba(0,232,255,0.3); color: var(--cyan); }
-#toolbar { position: fixed; z-index: 60; top: 62px; right: 16px; display: flex; flex-direction: column; gap: 10px; }
 
 /* ---------------- left sidebar nav ---------------- */
 #sidebar {
