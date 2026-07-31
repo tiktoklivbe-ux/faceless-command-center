@@ -638,6 +638,19 @@
               <p class="jarvis-sms-note">Estimates pitch from a few seconds of speech and compares it later. Not identity verification — a fun gate. Adapts to your voice slowly over time.</p>
             </div>
             <div class="jarvis-sms-box">
+              <b>Sentry Mode <span id="sentry-state" style="font-weight:400; opacity:0.7;">(off)</span></b>
+              <p>Watches your webcam and alerts when it detects movement. Runs entirely on your device — no video leaves this browser.</p>
+              <div style="display:flex; gap:8px; align-items:center; margin:10px 0">
+                <button class="btn" id="sentry-toggle">Arm Sentry</button>
+                <label class="jarvis-sms-note" style="display:flex; align-items:center; gap:6px">
+                  Sensitivity
+                  <input type="range" id="sentry-sens" min="1" max="10" value="2" style="width:90px"/>
+                </label>
+              </div>
+              <div class="jarvis-sms-note" id="sentry-log"></div>
+              <p class="jarvis-sms-note">⚠️ This detects <b>motion</b>, not people. It can't tell you from anyone else — if you walk past the camera while armed, it will alert on you. It's a movement alarm, not facial recognition.</p>
+            </div>
+            <div class="jarvis-sms-box">
               <b>Computer Control <span id="jarvis-agent-status" style="font-weight:400; opacity:0.7;">(checking…)</span></b>
               <p>Lets Jarvis actually control this computer — open apps, type, click, press keys — through a small script that runs locally on your machine (not this server).</p>
               <ol class="jarvis-sms-note" style="padding-left:18px; margin:8px 0">
@@ -689,6 +702,10 @@
       currentOrb = null;
       stopNotifyPoll();
       if (window.MouseFX) MouseFX.resume();
+      // Never leave the webcam running once this panel is gone -- an
+      // invisible active camera is exactly the kind of thing that should
+      // not outlive the UI that turned it on.
+      if (window.SentryMode && SentryMode.isArmed()) SentryMode.stop();
     };
 
     document.querySelectorAll(".jarvis-tab").forEach((tabBtn) => {
@@ -780,6 +797,59 @@
       if (voiceStatus) voiceStatus.textContent = "Voice ID module didn't load.";
     }
 
+    const sentryToggle = $("#sentry-toggle");
+    const sentryState = $("#sentry-state");
+    const sentrySens = $("#sentry-sens");
+    const sentryLog = $("#sentry-log");
+    if (sentryToggle && window.SentryMode) {
+      sentrySens.addEventListener("input", () => {
+        SentryMode.setSensitivity(Number(sentrySens.value) / 100);
+      });
+      sentryToggle.addEventListener("click", async () => {
+        if (SentryMode.isArmed()) {
+          SentryMode.stop();
+          sentryToggle.textContent = "Arm Sentry";
+          sentryState.textContent = "(off)";
+          return;
+        }
+        sentryToggle.disabled = true;
+        sentryState.textContent = "(starting camera…)";
+        const res = await SentryMode.start({
+          sensitivity: Number(sentrySens.value) / 100,
+          onMotion: (info) => {
+            const line = `Motion detected at ${new Date(info.at).toLocaleTimeString()} (${info.percent}% of frame changed).`;
+            if (sentryLog) {
+              const el = document.createElement("div");
+              el.textContent = line;
+              sentryLog.prepend(el);
+              while (sentryLog.children.length > 8) sentryLog.lastChild.remove();
+            }
+            const spoken = "Motion detected on camera.";
+            log.appendChild(bubble("assistant", spoken));
+            log.scrollTop = log.scrollHeight;
+            speak(spoken);
+            if ("Notification" in window && Notification.permission === "granted") {
+              new Notification("Sentry Mode", { body: line });
+            }
+          },
+        });
+        sentryToggle.disabled = false;
+        if (!res.ok) {
+          sentryState.textContent = "(camera unavailable)";
+          if (sentryLog) sentryLog.textContent = res.error || "Couldn't start the camera.";
+          return;
+        }
+        sentryToggle.textContent = "Disarm Sentry";
+        sentryState.textContent = "(armed — calibrating)";
+        setTimeout(() => {
+          if (SentryMode.isArmed()) sentryState.textContent = "(armed)";
+        }, 3200);
+      });
+    } else if (sentryToggle) {
+      sentryToggle.disabled = true;
+      if (sentryState) sentryState.textContent = "(module didn't load)";
+    }
+
     const agentStatusEl = $("#jarvis-agent-status");
     const genTokenBtn = $("#jarvis-gen-token-btn");
     const tokenDisplay = $("#jarvis-token-display");
@@ -835,6 +905,10 @@
       currentOrb = null;
       stopNotifyPoll();
       if (window.MouseFX) MouseFX.resume();
+      // Never leave the webcam running once this panel is gone -- an
+      // invisible active camera is exactly the kind of thing that should
+      // not outlive the UI that turned it on.
+      if (window.SentryMode && SentryMode.isArmed()) SentryMode.stop();
     };
 
     function handleResult(text) {
