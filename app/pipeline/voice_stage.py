@@ -14,7 +14,7 @@ from ..settings_store import get_setting
 from ..config import WORDS_PER_MINUTE
 from .ffmpeg_utils import make_silence, probe_duration
 
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs' public "Rachel" voice, used if a channel has none set
+DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # ElevenLabs "Adam" -- the voice this channel's videos actually use; a per-channel voice_id still overrides it
 
 
 def _estimate_duration(text: str) -> float:

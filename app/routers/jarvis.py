@@ -66,12 +66,20 @@ PERSONALITY_PRESETS = {
                "helpful underneath it.",
     "hype": "Personality: speak with high energy and enthusiasm, like a "
             "hype man cheering the user on -- still concise, just upbeat.",
-    "unfiltered": "Personality: blunt and unfiltered. Talk like a real person, "
-                  "not a corporate assistant -- casual profanity is fine and "
-                  "natural (damn, hell, shit, that's fucked, etc). Be direct "
-                  "and say what you actually think. Important: being blunt "
-                  "means being HONEST, not agreeable -- if something's broken "
-                  "or a bad idea, say so straight rather than hyping it up.",
+    "unfiltered": "Personality: completely unfiltered and blunt. Talk like a real "
+                  "person who doesn't care about sounding professional -- swear "
+                  "naturally and often (shit, fuck, damn, hell, bullshit), use slang, "
+                  "be sarcastic, roast the user when they deserve it. No corporate "
+                  "assistant energy whatsoever, no hedging, no 'I'd be happy to help'. "
+                  "Be genuinely funny and irreverent. Crucially: unfiltered means "
+                  "HONEST, not a yes-man. If something's broken, a bad idea, or won't "
+                  "work, say so bluntly -- that's the whole point of this mode. Being "
+                  "real with him is worth more than agreeing with him.",
+    "unhinged": "Personality: chaotic, loud, maximum energy, zero filter. Swear freely, "
+                "be dramatic and absurd, roast him relentlessly, treat everything like "
+                "it's the most intense thing that's ever happened. Still actually answer "
+                "the question and still tell him the truth -- you're unhinged in delivery, "
+                "not in accuracy.",
 }
 DEFAULT_PERSONALITY = "butler"
 
@@ -626,7 +634,41 @@ async def sms_webhook(request: Request, background_tasks: BackgroundTasks, db: S
 # so Jarvis reuses the same key to sound like an actual voice instead.
 # Falls back to browser speech synthesis automatically on the frontend if no
 # ElevenLabs key is configured, or if this endpoint errors.
-DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # ElevenLabs premade "Adam" voice -- same family already used for video narration elsewhere in this app
+# Jarvis defaults to a different voice than the video narration on purpose --
+# "James" for the assistant, "Adam" for the channel's videos, so the two don't
+# sound identical. Resolved BY NAME from the account's own voice list rather
+# than a hardcoded ID, since premade voice IDs differ between accounts and a
+# wrong hardcoded ID fails confusingly. Falls back to Adam's well-known public
+# ID if nothing matching is found.
+JARVIS_PREFERRED_VOICE_NAMES = ["James", "Brian", "Adam"]
+FALLBACK_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # ElevenLabs public "Adam"
+
+_voice_name_cache: dict[str, str] = {}
+
+
+def _resolve_voice_by_name(api_key: str, names: list[str]) -> str | None:
+    """Look up a voice ID by display name from the account's voice list.
+    Cached per process since this rarely changes and it's on the hot path
+    for every spoken reply."""
+    cache_key = ",".join(names)
+    if cache_key in _voice_name_cache:
+        return _voice_name_cache[cache_key]
+    try:
+        resp = requests.get(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": api_key}, timeout=10,
+        )
+        resp.raise_for_status()
+        voices = resp.json().get("voices", [])
+    except requests.RequestException:
+        return None
+    by_name = {v.get("name", "").strip().lower(): v.get("voice_id") for v in voices}
+    for wanted in names:
+        vid = by_name.get(wanted.strip().lower())
+        if vid:
+            _voice_name_cache[cache_key] = vid
+            return vid
+    return None
 
 
 class SpeakIn(BaseModel):
@@ -638,7 +680,11 @@ def speak(body: SpeakIn, db: Session = Depends(get_db)):
     api_key = get_setting(db, "elevenlabs_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="No ElevenLabs key configured.")
-    voice_id = get_setting(db, "jarvis_voice_id") or DEFAULT_VOICE_ID
+    voice_id = (
+        get_setting(db, "jarvis_voice_id")
+        or _resolve_voice_by_name(api_key, JARVIS_PREFERRED_VOICE_NAMES)
+        or FALLBACK_VOICE_ID
+    )
     try:
         resp = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",

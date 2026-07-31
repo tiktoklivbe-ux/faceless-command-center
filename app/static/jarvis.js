@@ -393,6 +393,7 @@
     ["dry_wit", "Dry Wit — deadpan, sarcastic"],
     ["hype", "Hype — high energy, enthusiastic"],
     ["unfiltered", "Unfiltered — blunt, swears, no filter"],
+    ["unhinged", "Unhinged — chaotic, loud, maximum energy"],
   ];
   const MODEL_OPTIONS = [
     ["claude-haiku-4-5-20251001", "Haiku 4.5 — fastest (recommended for voice)"],
@@ -658,7 +659,7 @@
 
     const readout = $("#jarvis-readout");
     if (readout) {
-      const personalityLabel = { butler: "BUTLER", casual: "CASUAL", dry_wit: "DRY WIT", hype: "HYPE", unfiltered: "UNFILTERED" }[jarvisSettings.jarvis_personality] || "BUTLER";
+      const personalityLabel = { butler: "BUTLER", casual: "CASUAL", dry_wit: "DRY WIT", hype: "HYPE", unfiltered: "UNFILTERED", unhinged: "UNHINGED" }[jarvisSettings.jarvis_personality] || "BUTLER";
       const modelLabel = jarvisSettings.jarvis_model.includes("haiku") ? "HAIKU (FAST)" : jarvisSettings.jarvis_model.includes("opus") ? "OPUS" : "SONNET";
       readout.innerHTML = `
         <div>MODE <span>${personalityLabel}</span></div>
