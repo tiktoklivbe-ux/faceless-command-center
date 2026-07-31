@@ -35,6 +35,7 @@
   let restartTimer = null;
   let silenceTimer = null;
   let pendingText = "";
+  let lastInterimLength = 0; // tracks whether an utterance is still growing, so a pause mid-sentence isn't mistaken for the end
   let lastSentText = "";
   let lastSentAt = 0;
   let jarvisSpeaking = false; // true while Jarvis's own audio is playing, so the mic doesn't feed his voice back in as a command
@@ -123,14 +124,32 @@
       currentAudioEl = audio;
       currentAudioUrl = url;
 
+      // Route through an AudioContext so the orb can react to real amplitude.
+      // Critical caveat: browsers create AudioContexts SUSPENDED until a user
+      // gesture, and audio routed through a suspended context is completely
+      // SILENT while play() still resolves successfully -- no error, no
+      // fallback, just nothing audible. So resume it first, and if it won't
+      // resume, skip the analyser entirely and play the element directly
+      // rather than routing into a dead context.
+      let analyserWired = false;
       try {
         if (!speechAudioCtx) speechAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = speechAudioCtx.createMediaElementSource(audio);
-        speechAnalyser = speechAudioCtx.createAnalyser();
-        speechAnalyser.fftSize = 64;
-        source.connect(speechAnalyser);
-        speechAnalyser.connect(speechAudioCtx.destination);
+        if (speechAudioCtx.state === "suspended") {
+          await speechAudioCtx.resume().catch(() => {});
+        }
+        if (speechAudioCtx.state === "running") {
+          const source = speechAudioCtx.createMediaElementSource(audio);
+          speechAnalyser = speechAudioCtx.createAnalyser();
+          speechAnalyser.fftSize = 64;
+          source.connect(speechAnalyser);
+          speechAnalyser.connect(speechAudioCtx.destination);
+          analyserWired = true;
+        }
       } catch (_) {
+        analyserWired = false;
+      }
+      if (!analyserWired) {
+        // No visualizer data, but audible -- which is the right trade.
         speechAnalyser = null;
       }
 
@@ -492,10 +511,17 @@
 
     $("#js-testvoice").addEventListener("click", async () => {
       const status = $("#js-save-status");
+      // Create the Audio element and start it playing SYNCHRONOUSLY, while
+      // we're still inside the user's click. Browsers only allow audio to
+      // start from a genuine user gesture, and every `await` below hands
+      // control back to the event loop -- which ends that gesture context
+      // and gets a later .play() silently blocked. So we start a silent
+      // element now to unlock it, then swap in the real audio once it
+      // arrives.
+      const audio = new Audio();
+      audio.play().catch(() => {}); // unlocks playback; nothing to hear yet
+
       status.textContent = "Saving voice, then testing…";
-      // Save first, so the test genuinely exercises what's stored rather than
-      // whatever was stored before -- otherwise "test" tells you nothing about
-      // whether your pick took effect.
       try {
         await fetch("/api/settings", {
           method: "POST",
@@ -513,10 +539,16 @@
           return;
         }
         const blob = await resp.blob();
-        const audio = new Audio(URL.createObjectURL(blob));
-        audio.play();
+        audio.src = URL.createObjectURL(blob);
         const picked = $("#js-voice").options[$("#js-voice").selectedIndex]?.text || "that voice";
-        status.textContent = `Saved and playing: ${picked}`;
+        try {
+          await audio.play();
+          status.textContent = `Saved and playing: ${picked}`;
+        } catch (playErr) {
+          // Autoplay still blocked, or no audio output. Say so rather than
+          // leaving the user wondering why nothing happened.
+          status.textContent = `Saved ${picked}, but the browser blocked playback. Click anywhere on the page first, then try again.`;
+        }
       } catch (e) {
         status.textContent = "Test failed — check the ElevenLabs key.";
       }
@@ -988,6 +1020,7 @@
       clearTimeout(restartTimer);
       clearTimeout(silenceTimer);
       pendingText = "";
+      lastInterimLength = 0;
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
       orb.setListening(false);
@@ -1067,21 +1100,35 @@
           // than waiting for the browser to catch up.
           pendingText = text;
           clearTimeout(silenceTimer);
-          // Adaptive pause length. A flat 900ms cut people off mid-thought:
-          // natural pauses (breathing, thinking of the next word) routinely
-          // exceed that. So wait longer when the phrase looks unfinished --
-          // trailing conjunctions, very short fragments -- and stay snappy
-          // when it sounds like a complete thought.
+          // How long to wait after speech stops before deciding you're done.
+          //
+          // Previous logic shortened this for LONG phrases, which was exactly
+          // backwards: length is not evidence that someone has finished. A
+          // long sentence means they're mid-flow and more likely to pause for
+          // breath, so cutting them off fastest right then was the worst
+          // possible behaviour.
+          //
+          // Now: an obviously unfinished ending (trailing conjunction/article)
+          // or a still-growing utterance both buy MORE time. Only a short,
+          // complete-sounding phrase that has stopped growing gets the quick
+          // turnaround.
           const trimmed = text.trim();
           const words = trimmed.split(/\s+/).length;
-          const endsIncomplete = /\b(and|but|or|so|to|the|a|of|for|with|is|it|that|my|i|can|you|then|if|because|about|like)$/i.test(trimmed);
-          let waitMs = 1100;
-          if (endsIncomplete || words <= 2) waitMs = 2000; // clearly mid-sentence -- give them room
-          else if (words >= 8) waitMs = 900;              // long complete-sounding phrase -- act fast
+          const endsIncomplete = /\b(and|but|or|so|to|the|a|an|of|for|with|is|it|that|my|i|can|you|then|if|because|about|like|was|were|when|how|what|why|there|this|they|we|he|she|at|in|on|be|do|have|its|their|our)$/i.test(trimmed);
+          const stillGrowing = trimmed.length > lastInterimLength;
+          lastInterimLength = trimmed.length;
+
+          let waitMs = 1200;
+          if (endsIncomplete) waitMs = 2400;        // clearly mid-sentence
+          else if (words >= 8 && stillGrowing) waitMs = 2000;  // long and still going -- give room
+          else if (words >= 8) waitMs = 1500;       // long but paused
+          else if (words <= 2) waitMs = 2000;       // too short to be a real command yet
+
           silenceTimer = setTimeout(() => {
             if (myToken !== sessionToken) return;
             const toSend = pendingText;
             pendingText = "";
+            lastInterimLength = 0;
             if (caption) caption.textContent = "";
             if (toSend && toSend.trim()) handleResult(toSend);
           }, waitMs);
@@ -1141,6 +1188,16 @@
         return;
       }
       stopEverything();
+
+      // Unlock audio while we're inside a real user gesture. Browsers keep
+      // AudioContexts suspended until one happens, and a suspended context
+      // makes Jarvis's replies silently inaudible later -- play() succeeds,
+      // but no sound comes out. Doing it here means his first reply is
+      // actually audible.
+      try {
+        if (!speechAudioCtx) speechAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (speechAudioCtx.state === "suspended") await speechAudioCtx.resume().catch(() => {});
+      } catch (_) {}
 
       // Explicitly ask for the mic first. SpeechRecognition on its own
       // doesn't always surface a permission prompt (and silently hears
