@@ -655,6 +655,21 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-brief-card div { display: flex; flex-direction: column; gap: 2px; }
 .jarvis-brief-card span { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 1px; color: var(--muted); }
 .jarvis-brief-card b { font-family: var(--font-head); font-size: 15px; color: var(--cyan); }
+.jarvis-convo-list { display: flex; flex-direction: column; gap: 6px; }
+.jarvis-convo {
+  position: relative; padding: 10px 32px 10px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border-soft); background: rgba(0,0,0,0.2);
+  transition: border-color 0.15s, background 0.15s;
+}
+.jarvis-convo:hover { border-color: rgba(0,232,255,0.35); background: rgba(0,232,255,0.05); }
+.jarvis-convo.active { border-color: var(--cyan); background: rgba(0,232,255,0.08); }
+.jarvis-convo-title { font-size: 13px; color: var(--ink); margin-bottom: 3px; }
+.jarvis-convo-meta { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.jarvis-convo-del {
+  position: absolute; top: 8px; right: 8px; background: transparent; border: none;
+  color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px;
+}
+.jarvis-convo-del:hover { color: var(--red); background: rgba(255,79,106,0.1); }
 .jarvis-input-row { display: flex; gap: 8px; align-items: center; }
 .jarvis-input-row input {
   flex: 1; background: rgba(0,0,0,0.35); border: 1px solid rgba(0,232,255,0.15);

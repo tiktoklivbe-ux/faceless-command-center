@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from . import models
+from . import models, render_gate
 from .database import SessionLocal
 from .pipeline import orchestrator
 
@@ -76,6 +76,16 @@ def clear_stuck_jobs(db: Session) -> int:
     for job in stuck_jobs:
         attempts = (job.stage_log or "").count("[watchdog] retrying")
         if attempts < MAX_AUTO_RETRIES:
+            # Don't dispatch a retry while another render is in flight. Doing
+            # so was actively counterproductive: stalled jobs were usually
+            # killed by memory pressure in the first place, so adding another
+            # concurrent render made the next kill more likely -- retries
+            # feeding the exact problem they were meant to recover from.
+            if render_gate.is_busy():
+                log.info("Chronos watchdog: %s needs a retry but a render is already active; leaving it queued.", job.id)
+                job.status = models.JobStatus.QUEUED
+                job.error_message = ""
+                continue
             log.warning("Chronos watchdog: retrying stalled job %s (attempt %d)", job.id, attempts + 1)
             job.stage_log = (job.stage_log or "") + (
                 f"\n[watchdog] retrying — job stalled with no error, which usually means the "
@@ -136,6 +146,28 @@ def _tick():
         cleared = clear_stuck_jobs(db)
         if cleared:
             log.warning("Chronos watchdog: cleared %d stuck job(s) this tick", cleared)
+
+        # Nothing else to do while a render is in flight -- creating or
+        # dispatching more work now is what caused the pile-up that kept
+        # getting jobs OOM-killed.
+        if render_gate.is_busy():
+            log.info("Chronos: a render is active (%s); skipping this tick.", ", ".join(render_gate.active_jobs()))
+            return
+
+        # Drain the backlog before creating anything new. Jobs left QUEUED
+        # (by the gate or the watchdog) previously had nothing to pick them
+        # up, so they'd sit forever while Chronos happily made more.
+        queued = (
+            db.query(models.VideoJob)
+            .filter(models.VideoJob.status == models.JobStatus.QUEUED)
+            .order_by(models.VideoJob.created_at.asc())
+            .first()
+        )
+        if queued:
+            log.info("Chronos: picking up queued job %s", queued.id)
+            threading.Thread(target=orchestrator.run_job, args=(queued.id,), daemon=True).start()
+            return
+
         channels = db.query(models.Channel).filter(models.Channel.auto_enabled == True).all()  # noqa: E712
         for channel in channels:
             try:
@@ -149,7 +181,11 @@ def _tick():
                     db.commit()
                     db.refresh(job)
                     log.info("Chronos: auto-created job %s for channel %s", job.id, channel.name)
-                    orchestrator.run_job(job.id)
+                    # Dispatched on a thread -- calling run_job directly here
+                    # blocked the entire scheduler loop for the whole render,
+                    # so the watchdog couldn't run and nothing else ticked.
+                    threading.Thread(target=orchestrator.run_job, args=(job.id,), daemon=True).start()
+                    return  # one render at a time; the next tick handles the rest
             except Exception:
                 log.exception("Chronos: failed to process channel %s", channel.id)
     finally:

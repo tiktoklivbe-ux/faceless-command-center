@@ -129,6 +129,35 @@ class AgentCommand(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class JarvisConversation(Base):
+    """A saved Jarvis chat thread, so conversations survive closing the panel
+    or the browser. Previously history lived only in a JS variable and was
+    gone the moment the panel closed."""
+    __tablename__ = "jarvis_conversations"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    title = Column(String, default="")          # derived from the first user message
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    messages = relationship(
+        "JarvisMessage", back_populates="conversation",
+        cascade="all, delete-orphan", order_by="JarvisMessage.created_at",
+    )
+
+
+class JarvisMessage(Base):
+    __tablename__ = "jarvis_messages"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    conversation_id = Column(String, ForeignKey("jarvis_conversations.id"), nullable=False)
+    role = Column(String, nullable=False)       # "user" | "assistant"
+    content = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("JarvisConversation", back_populates="messages")
+
+
 class VoicePrint(Base):
     """A rough, approximate voice fingerprint for the app's one owner
     (single row, id='owner' -- this app has one primary user, not a

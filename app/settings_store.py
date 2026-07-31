@@ -31,6 +31,7 @@ KNOWN_KEYS = {
     "jarvis_greeting": False,       # custom greeting shown when the panel opens
     "jarvis_agent_token": True,     # secret pairing token for the local computer-control agent
     "jarvis_greeting_mode": False,  # "brief" | "walkthrough" | "silent" -- how much Jarvis says on panel open
+    "jarvis_speech_rate": False,    # playback speed multiplier for spoken replies, e.g. "1.0", "1.25"
 }
 
 

@@ -791,10 +791,12 @@ class ChatTurn(BaseModel):
 class ChatIn(BaseModel):
     message: str
     history: list[ChatTurn] = []
+    conversation_id: str | None = None
 
 
 class ChatOut(BaseModel):
     reply: str
+    conversation_id: str | None = None
 
 
 def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> dict:
@@ -878,10 +880,23 @@ def chat(body: ChatIn, background_tasks: BackgroundTasks, db: Session = Depends(
             status_code=400,
             detail="No Anthropic API key configured yet -- add one in Settings.",
         )
-    messages = [{"role": t.role, "content": t.content} for t in body.history]
+
+    # Prefer the stored conversation as the source of truth for history. That
+    # way every tab sees the same thread, and a reload doesn't lose context --
+    # the client-supplied history is only a fallback for brand-new chats.
+    messages: list[dict] = []
+    if body.conversation_id:
+        convo = db.get(models.JarvisConversation, body.conversation_id)
+        if convo:
+            for m in convo.messages[-10:]:
+                messages.append({"role": m.role, "content": m.content})
+    if not messages:
+        messages = [{"role": t.role, "content": t.content} for t in body.history]
+
     messages.append({"role": "user", "content": body.message})
     reply = run_jarvis_turn(db, background_tasks, messages)
-    return ChatOut(reply=reply)
+    convo_id = _save_turn(db, body.conversation_id, body.message, reply)
+    return ChatOut(reply=reply, conversation_id=convo_id)
 
 
 # ---------------------------------------------------------------- texting Jarvis (SMS)
@@ -1035,6 +1050,91 @@ def speak(body: SpeakIn, db: Session = Depends(get_db)):
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Couldn't reach ElevenLabs.")
     return Response(content=resp.content, media_type="audio/mpeg")
+
+
+# ---------------------------------------------------------------- conversation history
+# Chats are stored server-side rather than in browser state, which is what
+# makes them survive closing the panel, reloading, or opening the app on a
+# different device -- and it's also what lets multiple tabs share the same
+# live conversation.
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+    message_count: int
+
+
+@router.get("/conversations")
+def list_conversations(db: Session = Depends(get_db), limit: int = 25):
+    convos = (
+        db.query(models.JarvisConversation)
+        .order_by(models.JarvisConversation.updated_at.desc())
+        .limit(limit).all()
+    )
+    return {
+        "conversations": [
+            {
+                "id": c.id,
+                "title": c.title or "(untitled)",
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                "message_count": len(c.messages),
+            }
+            for c in convos
+        ]
+    }
+
+
+@router.post("/conversations")
+def create_conversation(db: Session = Depends(get_db)):
+    convo = models.JarvisConversation()
+    db.add(convo)
+    db.commit()
+    db.refresh(convo)
+    return {"id": convo.id, "title": "", "messages": []}
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
+    convo = db.get(models.JarvisConversation, conversation_id)
+    if not convo:
+        raise HTTPException(status_code=404, detail="No such conversation.")
+    return {
+        "id": convo.id,
+        "title": convo.title,
+        "messages": [
+            {"role": m.role, "content": m.content,
+             "created_at": m.created_at.isoformat() if m.created_at else None}
+            for m in convo.messages
+        ],
+    }
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, db: Session = Depends(get_db)):
+    convo = db.get(models.JarvisConversation, conversation_id)
+    if not convo:
+        raise HTTPException(status_code=404, detail="No such conversation.")
+    db.delete(convo)
+    db.commit()
+    return {"deleted": True}
+
+
+def _save_turn(db: Session, conversation_id: str | None, user_text: str, reply: str) -> str:
+    """Persist one exchange, creating the conversation if needed. Returns the
+    conversation id so the client can keep using it."""
+    convo = db.get(models.JarvisConversation, conversation_id) if conversation_id else None
+    if not convo:
+        convo = models.JarvisConversation()
+        db.add(convo)
+        db.flush()
+    if not convo.title:
+        # First user message makes a good enough thread title.
+        convo.title = (user_text[:60] + "…") if len(user_text) > 60 else user_text
+    db.add(models.JarvisMessage(conversation_id=convo.id, role="user", content=user_text))
+    db.add(models.JarvisMessage(conversation_id=convo.id, role="assistant", content=reply))
+    convo.updated_at = datetime.utcnow()
+    db.commit()
+    return convo.id
 
 
 @router.get("/briefing")

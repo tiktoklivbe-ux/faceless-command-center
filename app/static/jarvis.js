@@ -36,6 +36,13 @@
   let silenceTimer = null;
   let pendingText = "";
   let lastInterimLength = 0; // tracks whether an utterance is still growing, so a pause mid-sentence isn't mistaken for the end
+  let conversationId = null; // server-side thread id, so history survives reloads and is shared across tabs
+
+  // Cross-tab sync. Every tab with Jarvis open joins the same channel, so a
+  // message sent in one tab appears in all of them and they stay on the same
+  // conversation rather than silently diverging into separate threads.
+  const tabSync = ("BroadcastChannel" in window) ? new BroadcastChannel("jarvis-sync") : null;
+  const TAB_ID = Math.random().toString(36).slice(2); // so a tab ignores its own broadcasts
   let lastSentText = "";
   let lastSentAt = 0;
   let jarvisSpeaking = false; // true while Jarvis's own audio is playing, so the mic doesn't feed his voice back in as a command
@@ -78,7 +85,7 @@
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.02;
+    u.rate = 1.02 * ((jarvisSettings && jarvisSettings.jarvis_speech_rate) || 1.0);
     u.pitch = 0.95;
     u.onstart = () => { jarvisSpeaking = true; if (currentOrb) currentOrb.setSpeaking(true, null); };
     u.onend = () => { jarvisSpeaking = false; if (currentOrb) currentOrb.setSpeaking(false, null); };
@@ -137,6 +144,10 @@
         if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
       }
       const audio = new Audio(url);
+      // Playback rate is applied to the audio element rather than requested
+      // from the TTS API, so it works identically for both engines and can be
+      // changed without re-generating anything.
+      audio.playbackRate = (jarvisSettings && jarvisSettings.jarvis_speech_rate) || 1.0;
       currentAudioEl = audio;
       currentAudioUrl = url;
 
@@ -196,6 +207,84 @@
   // ---------------------------------------------------------------- chat
   async function send(log, text) {
     if (!text.trim()) return;
+    async function loadConversationList() {
+      const listEl = $("#jarvis-convo-list");
+      if (!listEl) return;
+      listEl.innerHTML = '<div class="bp-sub">Loading…</div>';
+      try {
+        const d = await fetch("/api/jarvis/conversations").then((r) => r.json());
+        if (!d.conversations.length) {
+          listEl.innerHTML = '<div class="bp-sub">No saved conversations yet.</div>';
+          return;
+        }
+        listEl.innerHTML = d.conversations.map((c) => `
+          <div class="jarvis-convo${c.id === conversationId ? " active" : ""}" data-cid="${c.id}">
+            <div class="jarvis-convo-title">${c.title}</div>
+            <div class="jarvis-convo-meta">${c.message_count} messages · ${new Date(c.updated_at).toLocaleString()}</div>
+            <button class="jarvis-convo-del" data-del="${c.id}" title="Delete">✕</button>
+          </div>`).join("");
+
+        listEl.querySelectorAll(".jarvis-convo").forEach((el) => {
+          el.addEventListener("click", (e) => {
+            if (e.target.dataset.del) return;
+            openConversation(el.dataset.cid);
+          });
+        });
+        listEl.querySelectorAll(".jarvis-convo-del").forEach((btn) => {
+          btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            await fetch(`/api/jarvis/conversations/${btn.dataset.del}`, { method: "DELETE" });
+            if (btn.dataset.del === conversationId) { conversationId = null; history = []; log.innerHTML = ""; }
+            loadConversationList();
+          });
+        });
+      } catch (_) {
+        listEl.innerHTML = '<div class="bp-sub">Couldn\'t load conversations.</div>';
+      }
+    }
+
+    async function openConversation(cid) {
+      try {
+        const d = await fetch(`/api/jarvis/conversations/${cid}`).then((r) => r.json());
+        conversationId = d.id;
+        history = d.messages.map((m) => ({ role: m.role, content: m.content }));
+        log.innerHTML = "";
+        d.messages.forEach((m) => log.appendChild(bubble(m.role, m.content)));
+        log.scrollTop = log.scrollHeight;
+        loadConversationList();
+        toast("Conversation loaded.");
+      } catch (_) { toast("Couldn't open that conversation."); }
+    }
+
+    const newChatBtn = $("#jarvis-newchat");
+    if (newChatBtn) {
+      newChatBtn.addEventListener("click", () => {
+        conversationId = null;
+        history = [];
+        log.innerHTML = "";
+        log.appendChild(bubble("assistant", "New conversation. What do you need?"));
+        loadConversationList();
+      });
+    }
+
+    // Other tabs push their exchanges here so every open tab shows the same
+    // thread instead of silently diverging.
+    if (tabSync) {
+      tabSync.onmessage = (ev) => {
+        const d = ev.data || {};
+        if (d.from === TAB_ID) return;
+        if (d.type === "turn") {
+          if (!conversationId) conversationId = d.conversationId;
+          if (d.conversationId !== conversationId) return;
+          log.appendChild(bubble("user", d.user));
+          log.appendChild(bubble("assistant", d.assistant));
+          log.scrollTop = log.scrollHeight;
+          history.push({ role: "user", content: d.user });
+          history.push({ role: "assistant", content: d.assistant });
+        }
+      };
+    }
+
     log.appendChild(bubble("user", text));
     log.scrollTop = log.scrollHeight;
     history.push({ role: "user", content: text });
@@ -209,19 +298,32 @@
       const resp = await fetch("/api/jarvis/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, history: history.slice(-10) }),
+        body: JSON.stringify({
+          message: text,
+          history: history.slice(-10),
+          conversation_id: conversationId,
+        }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Request failed (${resp.status})`);
       }
       const data = await resp.json();
+      if (data.conversation_id) conversationId = data.conversation_id;
       const clean = stripMarkdown(data.reply);
       thinking.remove();
       log.appendChild(bubble("assistant", clean));
       log.scrollTop = log.scrollHeight;
       history.push({ role: "assistant", content: clean });
       speak(clean);
+
+      // Tell other open tabs about this exchange so they stay in sync.
+      if (tabSync) {
+        tabSync.postMessage({
+          type: "turn", conversationId,
+          user: text, assistant: clean, from: TAB_ID,
+        });
+      }
     } catch (e) {
       thinking.remove();
       log.appendChild(bubble("assistant", `Error: ${e.message}`));
@@ -507,6 +609,15 @@
         <label>Wake word</label>
         <input id="js-wakeword" placeholder="hey jarvis" value="${val("jarvis_wake_word")}"/>
 
+        <label>Speech speed</label>
+        <select id="js-speechrate">
+          <option value="0.85" ${val("jarvis_speech_rate", "1.0") === "0.85" ? "selected" : ""}>Slower (0.85x)</option>
+          <option value="1.0" ${val("jarvis_speech_rate", "1.0") === "1.0" ? "selected" : ""}>Normal</option>
+          <option value="1.15" ${val("jarvis_speech_rate", "1.0") === "1.15" ? "selected" : ""}>Faster (1.15x)</option>
+          <option value="1.3" ${val("jarvis_speech_rate", "1.0") === "1.3" ? "selected" : ""}>Fast (1.3x)</option>
+          <option value="1.5" ${val("jarvis_speech_rate", "1.0") === "1.5" ? "selected" : ""}>Very fast (1.5x)</option>
+        </select>
+
         <label>On open</label>
         <select id="js-greetmode">
           <option value="walkthrough" ${val("jarvis_greeting_mode", "walkthrough") === "walkthrough" ? "selected" : ""}>Full walkthrough — talk me through the numbers</option>
@@ -594,6 +705,7 @@
       jarvis_wake_word: val("jarvis_wake_word"),
       jarvis_greeting: val("jarvis_greeting"),
       jarvis_greeting_mode: val("jarvis_greeting_mode", "walkthrough"),
+      jarvis_speech_rate: val("jarvis_speech_rate", "1.0"),
       jarvis_accent_color: val("jarvis_accent_color", "#00e8ff"),
       jarvis_read_aloud: val("jarvis_read_aloud", "true") !== "false" ? "true" : "false",
       jarvis_notifications: val("jarvis_notifications") === "true" ? "true" : "false",
@@ -607,6 +719,7 @@
         jarvis_wake_word: $("#js-wakeword").value.trim(),
         jarvis_greeting: $("#js-greeting").value.trim(),
         jarvis_greeting_mode: $("#js-greetmode").value,
+        jarvis_speech_rate: $("#js-speechrate").value,
         jarvis_accent_color: $("#js-accent").value,
         jarvis_read_aloud: $("#js-readaloud").checked ? "true" : "false",
         jarvis_notifications: $("#js-notify").checked ? "true" : "false",
@@ -639,7 +752,7 @@
         const labels = {
           jarvis_personality: "personality", jarvis_voice_id: "voice", jarvis_model: "model",
           jarvis_wake_word: "wake word", jarvis_greeting: "greeting",
-          jarvis_greeting_mode: "greeting mode", jarvis_accent_color: "accent colour",
+          jarvis_greeting_mode: "greeting mode", jarvis_speech_rate: "speech speed", jarvis_accent_color: "accent colour",
           jarvis_read_aloud: "read-aloud", jarvis_notifications: "notifications",
           elevenlabs_api_key: "ElevenLabs key",
         };
@@ -673,6 +786,7 @@
         jarvis_personality: val("jarvis_personality", "butler"),
         jarvis_greeting_mode: val("jarvis_greeting_mode", "walkthrough"),
         jarvis_model: val("jarvis_model", "claude-haiku-4-5-20251001"),
+        jarvis_speech_rate: parseFloat(val("jarvis_speech_rate", "1.0")) || 1.0,
         has_elevenlabs: !!val("elevenlabs_api_key"),
       };
       const custom = val("jarvis_wake_word", "").trim().toLowerCase();
@@ -794,9 +908,14 @@
         <div class="jarvis-right">
           <div class="jarvis-tabs">
             <button class="jarvis-tab active" data-tab="settings">Settings</button>
+            <button class="jarvis-tab" data-tab="history">History</button>
             <button class="jarvis-tab" data-tab="more">More</button>
           </div>
           <div class="jarvis-tabpanel" data-tabpanel="settings"></div>
+          <div class="jarvis-tabpanel" data-tabpanel="history" style="display:none">
+            <button class="btn" id="jarvis-newchat" style="margin-bottom:12px">＋ New Conversation</button>
+            <div id="jarvis-convo-list" class="jarvis-convo-list"></div>
+          </div>
           <div class="jarvis-tabpanel" data-tabpanel="more" style="display:none">
             <div class="jarvis-sms-box">
               <b>Text Jarvis from your phone</b>
@@ -891,6 +1010,7 @@
         document.querySelectorAll(".jarvis-tabpanel").forEach((p) => {
           p.style.display = p.dataset.tabpanel === target ? "" : "none";
         });
+        if (target === "history") loadConversationList();
         if (target === "settings") {
           const panel = document.querySelector('.jarvis-tabpanel[data-tabpanel="settings"]');
           if (panel && !panel.dataset.loaded) {

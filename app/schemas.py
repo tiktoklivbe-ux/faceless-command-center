@@ -76,3 +76,4 @@ class SettingsIn(BaseModel):
     jarvis_accent_color: Optional[str] = None
     jarvis_greeting: Optional[str] = None
     jarvis_greeting_mode: Optional[str] = None
+    jarvis_speech_rate: Optional[str] = None

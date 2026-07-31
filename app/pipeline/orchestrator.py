@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import JOBS_DIR
 from ..database import SessionLocal
+from .. import render_gate
 from . import script_stage, assemble_stage, publish_youtube, publish_tiktok
 
 AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
@@ -76,7 +77,34 @@ def _make_set_agent(db: Session, job: models.VideoJob):
 
 def run_job(job_id: str):
     """Entry point invoked in the background. Opens its own DB session so it
-    doesn't share one with the request that triggered it."""
+    doesn't share one with the request that triggered it.
+
+    Serialised by render_gate: only one video renders at a time. Concurrent
+    renders were exhausting the container's memory, and an OOM kill leaves no
+    exception to catch -- the job simply stopped with no error logged. If the
+    slot is taken, this leaves the job QUEUED for Chronos to pick up later
+    rather than forcing its way in.
+    """
+    if not render_gate.try_acquire(job_id):
+        db = SessionLocal()
+        try:
+            job = db.get(models.VideoJob, job_id)
+            if job:
+                job.status = models.JobStatus.QUEUED
+                _log(db, job, f"Waiting -- another video is rendering ({', '.join(render_gate.active_jobs())}). "
+                              f"This one stays queued and will start when that finishes.")
+                db.commit()
+        finally:
+            db.close()
+        return
+
+    try:
+        _run_job_inner(job_id)
+    finally:
+        render_gate.release(job_id)
+
+
+def _run_job_inner(job_id: str):
     db = SessionLocal()
     try:
         job = db.get(models.VideoJob, job_id)
