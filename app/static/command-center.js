@@ -218,8 +218,16 @@ function tickCamera(dt) {
 function mainLoop(now) {
   const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
   mainLoop._last = now;
-  tickCamera(dt);
-  updateConstellation(dt, now);
+  // Skip all the constellation/camera work when a full-page panel (Jarvis)
+  // is covering it -- it's completely invisible behind an opaque overlay,
+  // and running it alongside that panel's own canvas made the page lag.
+  const inner = document.getElementById("bigpanel-inner");
+  const covered = inner && inner.classList.contains("fullpage") &&
+                  document.getElementById("bigpanel").classList.contains("open");
+  if (!covered) {
+    tickCamera(dt);
+    updateConstellation(dt, now);
+  }
   requestAnimationFrame(mainLoop);
 }
 

@@ -192,6 +192,7 @@
     let audioCtx = null, analyser = null, freqData = null, micStream = null;
     let micLevel = 0;
     let accent = "#00e8ff";
+    let eqFrameCounter = 0;
 
     async function ensureMic() {
       if (audioCtx || !navigator.mediaDevices?.getUserMedia) return;
@@ -220,10 +221,17 @@
       return listening ? 0.35 + Math.sin(t * 6) * 0.15 : 0;
     }
 
+    let cachedEqBars = null;
+    let lastEqHeights = null;
+
     function updateEqBars() {
-      const eqEl = document.getElementById("jarvis-eq");
-      if (!eqEl) return;
-      const bars = eqEl.children;
+      if (!cachedEqBars) {
+        const eqEl = document.getElementById("jarvis-eq");
+        if (!eqEl) return;
+        cachedEqBars = Array.from(eqEl.children);
+        lastEqHeights = new Array(cachedEqBars.length).fill(-1);
+      }
+      const bars = cachedEqBars;
       let data = null;
       if (speaking && getSpeakBars) {
         data = getSpeakBars();
@@ -240,7 +248,13 @@
         } else if (!reducedMotion) {
           v = 0.08 + Math.abs(Math.sin(t * 2 + i * 0.7)) * 0.05;
         }
-        bars[i].style.height = `${Math.round(v * 100)}%`;
+        const pct = Math.round(v * 100);
+        // Skip the write entirely if the value hasn't changed -- assigning
+        // an identical style value still costs a style recalc.
+        if (pct !== lastEqHeights[i]) {
+          bars[i].style.height = `${pct}%`;
+          lastEqHeights[i] = pct;
+        }
       }
     }
 
@@ -289,31 +303,37 @@
       const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
       const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
 
-      for (let i = 0; i < SPHERE_POINTS.length; i++) {
-        const [px, py, pz] = SPHERE_POINTS[i];
-        // rotate around Y, then X
-        const x1 = px * cosY - pz * sinY;
-        const z1 = px * sinY + pz * cosY;
-        const y2 = py * cosX - z1 * sinX;
-        const z2 = py * sinX + z1 * cosX;
-
-        // perspective: points further back render smaller and dimmer,
-        // which is what actually sells the 3D read
-        const depth = (z2 + 1) / 2; // 0 (back) .. 1 (front)
-        const scale = 0.55 + depth * 0.45;
-        const sx = cx + x1 * R * scale;
-        const sy = cy + y2 * R * scale;
-
-        const alpha = 0.12 + depth * 0.75;
-        const size = 0.7 + depth * 1.5;
-
-        ctx.globalAlpha = alpha;
+      // Points are bucketed by depth into a few alpha bands rather than
+      // setting globalAlpha per point. Changing globalAlpha forces a canvas
+      // state flush, so doing it 900x/frame at 60fps was ~54k state changes
+      // a second -- by far the most expensive thing here. Batching into
+      // bands gets the same visual falloff for ~6 state changes instead.
+      const BANDS = 6;
+      for (let b = 0; b < BANDS; b++) {
+        const bandDepthLo = b / BANDS;
+        const bandDepthHi = (b + 1) / BANDS;
+        const midDepth = (bandDepthLo + bandDepthHi) / 2;
+        ctx.globalAlpha = 0.12 + midDepth * 0.75;
         ctx.fillStyle = color;
-        ctx.fillRect(sx - size / 2, sy - size / 2, size, size);
+        ctx.beginPath();
+        for (let i = 0; i < SPHERE_POINTS.length; i++) {
+          const p = SPHERE_POINTS[i];
+          const px = p[0], py = p[1], pz = p[2];
+          const x1 = px * cosY - pz * sinY;
+          const z1 = px * sinY + pz * cosY;
+          const y2 = py * cosX - z1 * sinX;
+          const z2 = py * sinX + z1 * cosX;
+          const depth = (z2 + 1) / 2;
+          if (depth < bandDepthLo || depth >= bandDepthHi) continue;
+          const scale = 0.55 + depth * 0.45;
+          const size = 0.7 + depth * 1.5;
+          ctx.rect(cx + x1 * R * scale - size / 2, cy + y2 * R * scale - size / 2, size, size);
+        }
+        ctx.fill();
       }
       ctx.globalAlpha = 1;
 
-      // faint containing ring + tick dial around the sphere
+      // faint containing ring
       ctx.save();
       ctx.strokeStyle = `${color}33`;
       ctx.lineWidth = 1;
@@ -321,22 +341,33 @@
       ctx.arc(cx, cy, R * 1.28, 0, Math.PI * 2);
       ctx.stroke();
 
+      // Tick dial: batched into two paths (major/minor) instead of a
+      // beginPath+stroke per tick, which was 60 separate draw calls a frame.
       const dialR = R * 1.42;
       const ticks = 60;
-      for (let i = 0; i < ticks; i++) {
-        const a = (i / ticks) * Math.PI * 2 + t * 0.1;
-        const major = i % 5 === 0;
-        const len = major ? 8 : 3;
+      for (const major of [false, true]) {
         ctx.strokeStyle = major ? `${color}77` : `${color}2a`;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(a) * dialR, cy + Math.sin(a) * dialR);
-        ctx.lineTo(cx + Math.cos(a) * (dialR + len), cy + Math.sin(a) * (dialR + len));
+        for (let i = 0; i < ticks; i++) {
+          if ((i % 5 === 0) !== major) continue;
+          const a = (i / ticks) * Math.PI * 2 + t * 0.1;
+          const len = major ? 8 : 3;
+          const ca = Math.cos(a), sa = Math.sin(a);
+          ctx.moveTo(cx + ca * dialR, cy + sa * dialR);
+          ctx.lineTo(cx + ca * (dialR + len), cy + sa * (dialR + len));
+        }
         ctx.stroke();
       }
       ctx.restore();
 
-      updateEqBars();
+      // The EQ bars write 32 DOM style properties per call. At 60fps that's
+      // ~1900 style writes a second, which is far more expensive than the
+      // canvas work and was the main source of general page lag. 20fps is
+      // visually indistinguishable for an audio meter.
+      eqFrameCounter++;
+      if (eqFrameCounter % 3 === 0) updateEqBars();
+
       raf = requestAnimationFrame(draw);
     }
 
@@ -648,7 +679,16 @@
     orb.setAccent(jarvisSettings.jarvis_accent_color);
     orb.start();
     startNotifyPoll({ log });
-    window.stopJarvisSession = () => { orb.stop(); currentOrb = null; stopNotifyPoll(); };
+    // The mouse FX overlay is a second full-screen canvas running
+    // continuously -- pointless behind this opaque full-page panel, and two
+    // of them at once is a real cause of page lag.
+    if (window.MouseFX) MouseFX.pause();
+    window.stopJarvisSession = () => {
+      orb.stop();
+      currentOrb = null;
+      stopNotifyPoll();
+      if (window.MouseFX) MouseFX.resume();
+    };
 
     document.querySelectorAll(".jarvis-tab").forEach((tabBtn) => {
       tabBtn.addEventListener("click", () => {
@@ -793,6 +833,7 @@
       orb.stop();
       currentOrb = null;
       stopNotifyPoll();
+      if (window.MouseFX) MouseFX.resume();
     };
 
     function handleResult(text) {

@@ -37,6 +37,10 @@
   let particles = [];
   let ripples = [];
   let lastSpawn = 0;
+  // Lets heavy full-screen views (the Jarvis panel) pause this overlay --
+  // running two continuous full-screen canvases at once is a real source of
+  // page lag, and this one is invisible behind an opaque panel anyway.
+  let paused = false;
 
   window.addEventListener("mousemove", (e) => {
     cursor.x = e.clientX;
@@ -69,6 +73,11 @@
   });
 
   function frame() {
+    if (paused) {
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      requestAnimationFrame(frame);
+      return;
+    }
     ctx.clearRect(0, 0, innerWidth, innerHeight);
 
     // lagging glow orb
@@ -122,4 +131,9 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  window.MouseFX = {
+    pause() { paused = true; particles = []; ripples = []; },
+    resume() { paused = false; },
+  };
 })();
