@@ -450,6 +450,13 @@
         <label>Wake word</label>
         <input id="js-wakeword" placeholder="hey jarvis" value="${val("jarvis_wake_word")}"/>
 
+        <label>On open</label>
+        <select id="js-greetmode">
+          <option value="walkthrough" ${val("jarvis_greeting_mode", "walkthrough") === "walkthrough" ? "selected" : ""}>Full walkthrough — talk me through the numbers</option>
+          <option value="brief" ${val("jarvis_greeting_mode") === "brief" ? "selected" : ""}>Brief — just flag problems</option>
+          <option value="silent" ${val("jarvis_greeting_mode") === "silent" ? "selected" : ""}>Silent — say nothing</option>
+        </select>
+
         <label>Custom greeting</label>
         <input id="js-greeting" placeholder="Hey, I'm here." value="${val("jarvis_greeting")}"/>
 
@@ -480,6 +487,7 @@
         jarvis_model: $("#js-model").value,
         jarvis_wake_word: $("#js-wakeword").value.trim(),
         jarvis_greeting: $("#js-greeting").value.trim(),
+        jarvis_greeting_mode: $("#js-greetmode").value,
         jarvis_accent_color: $("#js-accent").value,
         jarvis_read_aloud: $("#js-readaloud").checked ? "true" : "false",
         jarvis_notifications: $("#js-notify").checked ? "true" : "false",
@@ -517,6 +525,7 @@
         jarvis_read_aloud: val("jarvis_read_aloud", "true") !== "false",
         jarvis_accent_color: val("jarvis_accent_color", "#00e8ff"),
         jarvis_personality: val("jarvis_personality", "butler"),
+        jarvis_greeting_mode: val("jarvis_greeting_mode", "walkthrough"),
         jarvis_model: val("jarvis_model", "claude-haiku-4-5-20251001"),
         has_elevenlabs: !!val("elevenlabs_api_key"),
       };
@@ -752,30 +761,54 @@
       loadSettingsIntoTab(settingsPanel);
     }
 
-    // Greet immediately on open rather than waiting to be spoken to first --
-    // and make it a real status update (what's running, what finished) rather
-    // than a generic hello, since "tell me what's going on" is the main thing
-    // you'd open this for anyway.
+    // Greet on open using the real briefing endpoint. Mode is user-controlled:
+    //   walkthrough - full spoken briefing + a metrics strip
+    //   brief       - one short spoken line, no metrics panel
+    //   silent      - nothing spoken, nothing shown
     (async () => {
-      let greeting = greetingText || "Systems online.";
+      const mode = (jarvisSettings && jarvisSettings.jarvis_greeting_mode) || "walkthrough";
+      if (mode === "silent") return;
+
       try {
-        const jobs = await fetch("/api/jobs").then((r) => r.json());
-        const active = jobs.filter((j) => !["published", "ready_for_review", "failed"].includes(j.status));
-        const failed = jobs.filter((j) => j.status === "failed").length;
-        const ready = jobs.filter((j) => j.status === "ready_for_review").length;
+        const b = await fetch("/api/jarvis/briefing").then((r) => r.json());
+        const custom = greetingText ? `${greetingText} ` : "";
 
-        const bits = [];
-        if (active.length) bits.push(`${active.length} video${active.length === 1 ? "" : "s"} in progress`);
-        if (ready) bits.push(`${ready} ready for review`);
-        if (failed) bits.push(`${failed} failed`);
-        greeting = bits.length
-          ? `${greetingText || "Systems online."} You've got ${bits.join(", ")}.`
-          : `${greetingText || "Systems online."} Nothing running right now.`;
-      } catch (_) { /* fall back to the plain greeting if the status check fails */ }
+        if (mode === "brief") {
+          const short = b.issues.length
+            ? `${custom}${b.issues.length} thing${b.issues.length === 1 ? "" : "s"} need your attention.`
+            : `${custom}All clear.`;
+          log.appendChild(bubble("assistant", short));
+          log.scrollTop = log.scrollHeight;
+          speak(short);
+          return;
+        }
 
-      log.appendChild(bubble("assistant", greeting));
-      log.scrollTop = log.scrollHeight;
-      speak(greeting);
+        // walkthrough: show the numbers alongside the narration
+        const m = b.metrics;
+        const card = document.createElement("div");
+        card.className = "jarvis-brief-card";
+        const rows = [
+          ["SUBSCRIBERS", m.subscribers === null ? "—" : m.subscribers.toLocaleString()],
+          ["VIEWS", m.views === null ? "—" : m.views.toLocaleString()],
+          ["RENDERING", String(m.in_progress)],
+          ["READY", String(m.ready_for_review)],
+          ["PUBLISHED", String(m.published)],
+          ["FAILED", String(m.failed)],
+        ];
+        card.innerHTML = rows
+          .map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`)
+          .join("");
+        log.appendChild(card);
+
+        const spoken = custom + b.spoken;
+        log.appendChild(bubble("assistant", spoken));
+        log.scrollTop = log.scrollHeight;
+        speak(spoken);
+      } catch (_) {
+        const fallback = greetingText || "Ready when you are.";
+        log.appendChild(bubble("assistant", fallback));
+        speak(fallback);
+      }
     })();
 
     const smsUrlEl = $("#jarvis-sms-url");

@@ -30,6 +30,7 @@ KNOWN_KEYS = {
     "jarvis_accent_color": False,   # hex color for the Jarvis panel's accent/orb
     "jarvis_greeting": False,       # custom greeting shown when the panel opens
     "jarvis_agent_token": True,     # secret pairing token for the local computer-control agent
+    "jarvis_greeting_mode": False,  # "brief" | "walkthrough" | "silent" -- how much Jarvis says on panel open
 }
 
 

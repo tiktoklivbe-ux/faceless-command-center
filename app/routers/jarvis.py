@@ -908,6 +908,76 @@ def speak(body: SpeakIn, db: Session = Depends(get_db)):
     return Response(content=resp.content, media_type="audio/mpeg")
 
 
+@router.get("/briefing")
+def briefing(db: Session = Depends(get_db)):
+    """Everything Jarvis says (and shows) when the panel opens.
+
+    Returns both a spoken line and structured metrics so the UI can display
+    numbers alongside the narration. Deliberately reports only what's actually true:
+    if YouTube isn't connected there are no real subscriber numbers, and it
+    says so rather than showing zeros that would read as real data.
+    """
+    channels = db.query(models.Channel).all()
+    jobs = db.query(models.VideoJob).all()
+
+    active = [j for j in jobs if j.status not in (
+        models.JobStatus.PUBLISHED, models.JobStatus.READY, models.JobStatus.FAILED)]
+    ready = [j for j in jobs if j.status == models.JobStatus.READY]
+    failed = [j for j in jobs if j.status == models.JobStatus.FAILED]
+    published = [j for j in jobs if j.status == models.JobStatus.PUBLISHED]
+
+    metrics = {
+        "channels": len(channels),
+        "in_progress": len(active),
+        "ready_for_review": len(ready),
+        "failed": len(failed),
+        "published": len(published),
+        "subscribers": None,
+        "views": None,
+    }
+
+    for ch in channels:
+        if ch.youtube_connected and ch.youtube_refresh_token_enc:
+            try:
+                from .. import crypto
+                from ..pipeline import publish_youtube
+                token = publish_youtube.refresh_access_token(db, crypto.decrypt(ch.youtube_refresh_token_enc))
+                stats = publish_youtube.fetch_channel_stats(token)
+                metrics["subscribers"] = (metrics["subscribers"] or 0) + stats["subscribers"]
+                metrics["views"] = (metrics["views"] or 0) + stats["views"]
+            except Exception:
+                pass
+
+    issues = []
+    if failed:
+        issues.append(f"{len(failed)} failed video{'s' if len(failed) != 1 else ''}")
+    if not channels:
+        issues.append("no channels set up yet")
+    for ch in channels:
+        if not ch.youtube_connected:
+            issues.append(f"{ch.name} isn't connected to YouTube")
+        elif not ch.auto_enabled:
+            issues.append(f"automation is off for {ch.name}")
+
+    parts = []
+    if metrics["subscribers"] is not None:
+        parts.append(f"{metrics['subscribers']:,} subscribers and {metrics['views']:,} views")
+    if active:
+        parts.append(f"{len(active)} video{'s' if len(active) != 1 else ''} rendering")
+    if ready:
+        parts.append(f"{len(ready)} ready for review")
+
+    spoken = "Welcome back."
+    if parts:
+        spoken += " You've got " + ", ".join(parts) + "."
+    if issues:
+        spoken += " Worth knowing: " + ", ".join(issues) + "."
+    if not parts and not issues:
+        spoken += " Everything's quiet -- nothing running and nothing broken."
+
+    return {"spoken": spoken, "metrics": metrics, "issues": issues}
+
+
 @router.get("/voices")
 def list_voices(db: Session = Depends(get_db)):
     """For the Settings voice picker. Returns an empty list (not an error)

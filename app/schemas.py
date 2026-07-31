@@ -75,3 +75,4 @@ class SettingsIn(BaseModel):
     jarvis_notifications: Optional[str] = None
     jarvis_accent_color: Optional[str] = None
     jarvis_greeting: Optional[str] = None
+    jarvis_greeting_mode: Optional[str] = None
