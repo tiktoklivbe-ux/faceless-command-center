@@ -425,9 +425,20 @@
     ]);
     const val = (k, d = "") => (settingsResp[k] && settingsResp[k].value) || d;
 
+    const savedVoice = val("jarvis_voice_id");
+    // Mark the saved voice selected during render rather than assigning
+    // .value afterwards. Assigning a value that isn't among the options
+    // fails silently and leaves the first option showing, which looks
+    // exactly like "my choice got reset".
     const voiceOptionsHtml = voicesResp.voices.length
-      ? voicesResp.voices.map((v) => `<option value="${v.voice_id}">${v.name}</option>`).join("")
-      : `<option value="">— add an ElevenLabs key in Settings to pick a voice —</option>`;
+      ? voicesResp.voices
+          .map((v) => `<option value="${v.voice_id}" ${v.voice_id === savedVoice ? "selected" : ""}>${v.name}</option>`)
+          .join("")
+      : `<option value="">— add an ElevenLabs key below to pick a voice —</option>`;
+    // If a voice was saved but is no longer in the account's list, say so
+    // instead of quietly showing something else.
+    const savedVoiceMissing =
+      savedVoice && voicesResp.voices.length && !voicesResp.voices.some((v) => v.voice_id === savedVoice);
 
     container.innerHTML = `
       <div class="jarvis-settings-grid">
@@ -471,14 +482,45 @@
       </div>
       <div class="bp-sub" style="margin:10px 0">Notifications only fire while this panel is open, and only for jobs finishing/failing — not a background service yet.</div>
       <button class="btn" id="js-save">Save Jarvis Settings</button>
-      <div class="bp-sub" id="js-save-status" style="margin-top:8px"></div>
+      <button class="btn secondary" id="js-testvoice" style="margin-left:8px">🔊 Test Voice</button>
+      <div class="bp-sub" id="js-save-status" style="margin-top:8px">${
+        savedVoiceMissing
+          ? "⚠ The previously saved voice isn't in your ElevenLabs library anymore — pick another one and save."
+          : ""
+      }</div>
     `;
 
-    if (voicesResp.voices.length) {
-      const sel = $("#js-voice");
-      const current = val("jarvis_voice_id");
-      if (current) sel.value = current;
-    }
+    $("#js-testvoice").addEventListener("click", async () => {
+      const status = $("#js-save-status");
+      status.textContent = "Saving voice, then testing…";
+      // Save first, so the test genuinely exercises what's stored rather than
+      // whatever was stored before -- otherwise "test" tells you nothing about
+      // whether your pick took effect.
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jarvis_voice_id: $("#js-voice").value }),
+        });
+        const resp = await fetch("/api/jarvis/speak", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "Voice test. This is how I'll sound." }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          status.textContent = `Couldn't play: ${err.detail || resp.status}`;
+          return;
+        }
+        const blob = await resp.blob();
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.play();
+        const picked = $("#js-voice").options[$("#js-voice").selectedIndex]?.text || "that voice";
+        status.textContent = `Saved and playing: ${picked}`;
+      } catch (e) {
+        status.textContent = "Test failed — check the ElevenLabs key.";
+      }
+    });
 
     $("#js-save").addEventListener("click", async () => {
       const payload = {
@@ -502,14 +544,16 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        $("#js-save-status").textContent = "Saved.";
+        const picked = $("#js-voice").options[$("#js-voice").selectedIndex]?.text;
+        $("#js-save-status").textContent = picked ? `Saved. Voice set to ${picked}.` : "Saved.";
         await applySettings();
         if (payload.jarvis_notifications === "true" && "Notification" in window && Notification.permission === "default") {
           Notification.requestPermission();
         }
         toast("Jarvis settings saved.");
-        // If a key was just added, reload this tab so the voice picker can
-        // actually populate from ElevenLabs instead of staying empty.
+        // Only re-render when a NEW ElevenLabs key was just added, since the
+        // voice list can't populate until then. Re-rendering otherwise wipes
+        // the user's visible selections and reads as "it reset itself".
         if (elKey) loadSettingsIntoTab(container);
       } catch (_) {
         $("#js-save-status").textContent = "Couldn't save — try again.";
