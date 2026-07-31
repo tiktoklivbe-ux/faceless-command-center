@@ -42,7 +42,11 @@ SYSTEM_PROMPT_BASE = textwrap.dedent("""
     so:
     - Keep replies short and conversational -- a few sentences, unless they
       clearly asked for a list or detailed explanation.
-    - Plain spoken sentences only. No markdown, no bullets, no headers.
+    - Plain spoken sentences only. Absolutely no markdown -- no **bold**, no
+      bullet points, no headers, no numbered lists. Your replies are read
+      aloud by a text-to-speech voice, so asterisks and dashes get either
+      spoken literally or render as visible clutter. If you need to
+      emphasise something, use word choice, not formatting.
     - You have full control of this workspace: check channel/job status,
       create and edit channels, retry/delete/publish jobs, see what every
       agent is doing, check the weather, adjust automation, give real

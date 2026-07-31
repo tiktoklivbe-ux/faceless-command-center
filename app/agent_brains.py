@@ -33,6 +33,12 @@ STAGE_TIMING = {
 # against the job's error_message and recent log lines.
 FAILURE_PATTERNS = {
     "script": [
+        {"match": ["unterminated string", "expecting ',' delimiter", "expecting value", "unexpected end"],
+         "cause": ("The script response was cut off mid-way, so the JSON couldn't be parsed. This is a "
+                   "response-length ceiling being hit, NOT the model returning garbage -- the script was "
+                   "fine, it just ran out of room before finishing."),
+         "fix": "Already addressed by raising the limit and adding salvage for partial responses. Retry the job.",
+         "who": "auto"},
         {"match": ["401", "invalid x-api-key", "authentication"],
          "cause": "The Anthropic API key is missing, wrong, or was revoked.",
          "fix": "Add a valid Claude key in Settings. Get one at console.anthropic.com under API Keys.",

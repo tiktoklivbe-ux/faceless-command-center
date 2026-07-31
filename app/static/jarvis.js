@@ -45,6 +45,22 @@
   let wakePhrases = DEFAULT_WAKE_PHRASES.slice();
   let jarvisSettings = null; // cached copy of the jarvis_* settings, refreshed on panel open and after saving
 
+  /** Strips markdown that slips through despite the system prompt. Belt and
+   * braces: a prompt instruction is a strong nudge, not a guarantee, and
+   * literal asterisks either get read aloud by the TTS voice or show up as
+   * visible clutter in the transcript. */
+  function stripMarkdown(text) {
+    return (text || "")
+      .replace(/\*\*\*(.+?)\*\*\*/g, "$1")
+      .replace(/\*\*(.+?)\*\*/g, "$1")
+      .replace(/(^|\s)\*(\S.*?\S|\S)\*(?=\s|$)/g, "$1$2")
+      .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      .trim();
+  }
+
   function bubble(role, text) {
     const div = document.createElement("div");
     div.className = `jarvis-msg jarvis-${role}`;
@@ -200,11 +216,12 @@
         throw new Error(err.detail || `Request failed (${resp.status})`);
       }
       const data = await resp.json();
+      const clean = stripMarkdown(data.reply);
       thinking.remove();
-      log.appendChild(bubble("assistant", data.reply));
+      log.appendChild(bubble("assistant", clean));
       log.scrollTop = log.scrollHeight;
-      history.push({ role: "assistant", content: data.reply });
-      speak(data.reply);
+      history.push({ role: "assistant", content: clean });
+      speak(clean);
     } catch (e) {
       thinking.remove();
       log.appendChild(bubble("assistant", `Error: ${e.message}`));

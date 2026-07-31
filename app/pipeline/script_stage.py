@@ -11,6 +11,7 @@ configured yet, falls back to a local template generator so you can test the
 rest of the pipeline before wiring up billing.
 """
 import json
+import logging
 import re
 import textwrap
 from sqlalchemy.orm import Session
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session
 import requests
 
 from ..settings_store import get_setting
+
+log = logging.getLogger("script_stage")
 
 SYSTEM_PROMPT = textwrap.dedent("""
     You write short-form narration scripts for a faceless YouTube/TikTok channel.
@@ -221,14 +224,37 @@ def generate_script(db: Session, niche: str, topic: str, style_notes: str) -> di
     callers = {"anthropic": _call_anthropic, "openai": _call_openai, "gemini": _call_gemini}
     have = {"anthropic": has_anthropic, "openai": has_openai, "gemini": has_gemini}
 
-    try:
+    def _pick():
         if provider in callers and have.get(provider):
-            return callers[provider](db, prompt)
-        # provider preference not configured with a key -- try whichever key exists
+            return provider, callers[provider]
         for name, fn in callers.items():
             if have[name]:
-                return fn(db, prompt)
-    except Exception as e:
-        raise RuntimeError(f"Script generation via {provider} failed: {e}")
+                return name, fn
+        return None, None
 
-    return _template_fallback(niche, topic)
+    name, fn = _pick()
+    if fn is None:
+        return _template_fallback(niche, topic)
+
+    # A malformed/truncated response is transient -- the same prompt usually
+    # comes back clean on a second attempt. Retrying here, inside the stage,
+    # means a hiccup costs a few seconds instead of failing the whole video
+    # and needing a manual retry later.
+    last_error = None
+    for attempt in range(3):
+        try:
+            return fn(db, prompt)
+        except ValueError as e:
+            # Raised by _extract_json / the max_tokens check -- specifically
+            # the recoverable "response came back unusable" class.
+            last_error = e
+            log.warning("Script attempt %d/3 via %s returned an unusable response: %s",
+                        attempt + 1, name, e)
+            continue
+        except Exception as e:
+            raise RuntimeError(f"Script generation via {name} failed: {e}")
+
+    raise RuntimeError(
+        f"Script generation via {name} failed after 3 attempts -- the response kept coming back "
+        f"unusable. Last error: {last_error}"
+    )
