@@ -357,7 +357,7 @@ def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[di
         },
         json={
             "model": model,
-            "max_tokens": 400,
+            "max_tokens": 300,
             "system": system_prompt,
             "messages": messages,
             "tools": TOOLS,

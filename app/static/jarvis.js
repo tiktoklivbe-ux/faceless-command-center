@@ -35,7 +35,6 @@
   let restartTimer = null;
   let sessionToken = 0;
   let currentOrb = null;
-  let sessionGreeted = false;
   let wakePhrases = DEFAULT_WAKE_PHRASES.slice();
   let jarvisSettings = null; // cached copy of the jarvis_* settings, refreshed on panel open and after saving
 
@@ -477,45 +476,81 @@
     }
   }
 
-  // ---------------------------------------------------------------- job-finish notifications
-  // Real, working, but scoped: only checks while this panel is open (every
-  // 20s), and only for jobs transitioning INTO a finished state (published,
-  // ready_for_review, failed) that weren't already in that state last time
-  // we checked. Not a background service -- closing the panel stops it,
-  // same as everything else here.
-  const _FINISHED_STATUSES = new Set(["published", "ready_for_review", "failed"]);
+  // ---------------------------------------------------------------- proactive job updates
+  // Polls while the panel is open and announces real status changes in the
+  // transcript + out loud. Closing the panel stops it -- not a background
+  // service.
   let notifyPoll = null;
   let knownJobStatuses = new Map(); // job id -> last-seen status
 
+  /**
+   * Watches your jobs and speaks up when something actually changes --
+   * a video finishing, failing, or starting. This is the "keep me updated"
+   * behavior: it announces in the transcript AND out loud (if read-aloud
+   * is on), rather than only firing a browser notification you might never
+   * see. Desktop notifications are still sent as a bonus when enabled and
+   * permitted, for when the tab isn't focused.
+   *
+   * Only announces genuine transitions -- the first poll just records
+   * current state so you don't get a burst of stale announcements every
+   * time you open the panel.
+   */
+  let announceTarget = null; // {log} -- set by the panel so this can write into the transcript
+
+  function _describeJob(j) {
+    const name = j.title || j.topic || "a video";
+    if (j.status === "failed") return `Heads up — "${name}" failed. ${j.error_message ? "Reason: " + j.error_message : ""}`;
+    if (j.status === "published") return `"${name}" is published.`;
+    if (j.status === "ready_for_review") return `"${name}" is finished and ready for review.`;
+    if (j.status === "publishing") return `Publishing "${name}" now.`;
+    return null;
+  }
+
   async function notifyTick() {
     try {
-      const s = await fetch("/api/settings").then((r) => r.json());
-      if (!s.jarvis_notifications || s.jarvis_notifications.value !== "true") return;
-      if (!("Notification" in window) || Notification.permission !== "granted") return;
-
       const jobs = await fetch("/api/jobs").then((r) => r.json());
+      const announcements = [];
+
       for (const j of jobs) {
         const prev = knownJobStatuses.get(j.id);
         knownJobStatuses.set(j.id, j.status);
-        if (prev === undefined) continue; // first time seeing this job -- don't notify retroactively
-        if (prev !== j.status && _FINISHED_STATUSES.has(j.status)) {
-          const label = j.status === "failed" ? "failed" : "is ready";
-          new Notification("Faceless Command Center", {
-            body: `"${j.title || j.topic || "A video"}" ${label}.`,
-          });
-        }
+        if (prev === undefined) continue;      // first sighting -- don't announce retroactively
+        if (prev === j.status) continue;       // nothing changed
+        const msg = _describeJob(j);
+        if (msg) announcements.push(msg);
       }
-    } catch (_) { /* silent -- this is a nice-to-have, not core functionality */ }
+
+      if (!announcements.length) return;
+
+      for (const msg of announcements) {
+        if (announceTarget && announceTarget.log) {
+          announceTarget.log.appendChild(bubble("assistant", msg));
+          announceTarget.log.scrollTop = announceTarget.log.scrollHeight;
+        }
+        speak(msg);
+      }
+
+      // desktop notification as a bonus when enabled + permitted
+      try {
+        const s = await fetch("/api/settings").then((r) => r.json());
+        if (s.jarvis_notifications && s.jarvis_notifications.value === "true" &&
+            "Notification" in window && Notification.permission === "granted") {
+          new Notification("Faceless Command Center", { body: announcements.join(" ") });
+        }
+      } catch (_) { /* notification is optional, never block the in-app announcement on it */ }
+    } catch (_) { /* silent -- polling failures shouldn't spam the transcript */ }
   }
 
-  function startNotifyPoll() {
+  function startNotifyPoll(target) {
+    announceTarget = target || null;
     if (notifyPoll) return;
-    notifyTick(); // seed knownJobStatuses immediately rather than waiting 20s
-    notifyPoll = setInterval(notifyTick, 20000);
+    notifyTick(); // seed knownJobStatuses immediately rather than waiting
+    notifyPoll = setInterval(notifyTick, 15000);
   }
   function stopNotifyPoll() {
     if (notifyPoll) { clearInterval(notifyPoll); notifyPoll = null; }
     knownJobStatuses = new Map();
+    announceTarget = null;
   }
 
   // ---------------------------------------------------------------- main panel
@@ -584,7 +619,6 @@
     `;
 
     const greetingText = await applySettings();
-    startNotifyPoll();
 
     const readout = $("#jarvis-readout");
     if (readout) {
@@ -608,6 +642,7 @@
     currentOrb = orb;
     orb.setAccent(jarvisSettings.jarvis_accent_color);
     orb.start();
+    startNotifyPoll({ log });
     window.stopJarvisSession = () => { orb.stop(); currentOrb = null; stopNotifyPoll(); };
 
     document.querySelectorAll(".jarvis-tab").forEach((tabBtn) => {
@@ -712,7 +747,7 @@
     function stopEverything() {
       mode = "off";
       awake = false;
-      sessionGreeted = false;
+
       sessionToken++;
       clearTimeout(restartTimer);
       wakeBtn.classList.remove("jarvis-mic-active");
@@ -729,38 +764,16 @@
       stopNotifyPoll();
     };
 
-    async function maybeGreet(logEl) {
-      if (sessionGreeted || !window.VoiceID) return;
-      sessionGreeted = true;
-      const sample = VoiceID.stopSamplingAndGet();
-      VoiceID.startSampling();
-      if (!sample) return;
-
-      const match = VoiceID.isLikelyMatch(sample);
-      if (match === null) return;
-      if (match) {
-        const greeting = "Hey sir.";
-        logEl.appendChild(bubble("assistant", greeting));
-        speak(greeting);
-        VoiceID.reportMatch(sample);
-      } else {
-        const guess = VoiceID.softGuess(sample.avg);
-        const greeting = `Hey there — this doesn't sound like Tom to me. I'm his assistant, Jarvis.` +
-          (guess ? ` Rough guess from pitch: ${guess}. Not a real ID, just a hint.` : "");
-        logEl.appendChild(bubble("assistant", greeting));
-        speak(greeting);
-      }
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
     function handleResult(text) {
       // Always-on: once ENGAGE is active, everything you say goes straight
-      // to Jarvis. No wake word needed per command, no button to hold --
-      // that friction was the main complaint about push-to-talk. The wake
-      // phrase is still stripped if you happen to say it out of habit.
+      // to Jarvis. No wake word needed per command, no button to hold.
+      // Note: this deliberately does NOT do a voice-ID greeting first --
+      // that fired a "Hey sir." before every session and, worse, blocked the
+      // real response behind an extra round-trip. Voice ID still exists for
+      // enrollment, it just doesn't gate or precede normal replies.
       const cleaned = containsWakePhrase(text) ? stripWakePhrase(text) : text;
       if (!cleaned.trim()) return;
-      maybeGreet(log).then(() => send(log, cleaned));
+      send(log, cleaned);
     }
 
     function startSession(continuous) {
