@@ -417,6 +417,9 @@
         audioCtx = null; analyser = null; micStream = null;
       },
       setListening(on) { listening = on; if (on) ensureMic(); },
+      // Exposed so speech endpointing can check whether you're still making
+      // sound before deciding you've finished talking.
+      getMicLevel: () => currentLevel(),
       setSpeaking(on, ampFn, barsFn) { speaking = on; getSpeakAmp = ampFn || null; getSpeakBars = barsFn || null; },
       setAccent(hex) { if (hex) accent = hex; },
     };
@@ -462,7 +465,14 @@
     container.innerHTML = `
       <div class="jarvis-settings-grid">
         <label>ElevenLabs API key</label>
-        <input id="js-elevenlabs" type="password" placeholder="${settingsResp.elevenlabs_api_key && settingsResp.elevenlabs_api_key.set ? "•••••• (saved — type to replace)" : "paste key to get a real voice"}"/>
+        <div>
+          <input id="js-elevenlabs" type="text" spellcheck="false" placeholder="${settingsResp.elevenlabs_api_key && settingsResp.elevenlabs_api_key.set ? "leave blank to keep the saved key" : "paste your key to get a real voice"}" style="width:100%"/>
+          <div class="bp-sub" style="margin-top:4px; font-size:11px">${
+            settingsResp.elevenlabs_api_key && settingsResp.elevenlabs_api_key.set
+              ? "✅ A key is saved and working — the box is blank because the key itself is never sent back to the browser."
+              : "⚠ No key saved — Jarvis will use the robotic browser voice until you add one."
+          }</div>
+        </div>
 
         <label>Personality</label>
         <select id="js-personality">
@@ -1161,14 +1171,32 @@
           const stillGrowing = trimmed.length > lastInterimLength;
           lastInterimLength = trimmed.length;
 
-          let waitMs = 1200;
-          if (endsIncomplete) waitMs = 2400;        // clearly mid-sentence
-          else if (words >= 8 && stillGrowing) waitMs = 2000;  // long and still going -- give room
-          else if (words >= 8) waitMs = 1500;       // long but paused
-          else if (words <= 2) waitMs = 2000;       // too short to be a real command yet
+          // Baseline wait. Deliberately generous -- being cut off mid-thought
+          // is far more annoying than waiting an extra second, so when in
+          // doubt this errs toward waiting.
+          let waitMs = 1800;
+          if (endsIncomplete) waitMs = 3000;                  // clearly mid-sentence
+          else if (stillGrowing) waitMs = 2600;               // actively still talking
+          else if (words <= 2) waitMs = 2600;                 // too short to be a real command
+          else if (words >= 12) waitMs = 2200;                // long thought, likely more coming
 
           silenceTimer = setTimeout(() => {
             if (myToken !== sessionToken) return;
+            // Final guard: if the mic is still picking up sound above a
+            // resting threshold, you're mid-sentence and just paused for
+            // breath -- reschedule instead of cutting in. This is what the
+            // word-count heuristics alone couldn't catch.
+            if (currentOrb && currentOrb.getMicLevel && currentOrb.getMicLevel() > 0.06) {
+              silenceTimer = setTimeout(() => {
+                if (myToken !== sessionToken) return;
+                const t2 = pendingText;
+                pendingText = "";
+                lastInterimLength = 0;
+                if (caption) caption.textContent = "";
+                if (t2 && t2.trim()) handleResult(t2);
+              }, 1200);
+              return;
+            }
             const toSend = pendingText;
             pendingText = "";
             lastInterimLength = 0;

@@ -56,7 +56,53 @@ def _user_prompt(niche: str, topic: str, style_notes: str) -> str:
 def _extract_json(text: str) -> dict:
     text = text.strip()
     text = re.sub(r"^```(json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # The usual cause is a response cut off mid-string, which produces an
+        # "Unterminated string" error and previously killed the whole video.
+        # A truncated script is still mostly usable: salvage every complete
+        # segment and drop the partial one, rather than throwing away good
+        # work over the last few words.
+        salvaged = _salvage_truncated(text)
+        if salvaged and salvaged.get("segments"):
+            return salvaged
+        raise ValueError(
+            f"The script came back malformed and couldn't be repaired ({e}). "
+            "Retrying usually fixes this."
+        ) from e
+
+
+def _salvage_truncated(text: str) -> dict | None:
+    """Recover what we can from a JSON object that was cut off mid-way.
+
+    Pulls out the title/description if present, then every fully-formed
+    {"narration": ..., "visual_prompt": ...} object, ignoring a trailing
+    partial one. Returns None if there's nothing usable.
+    """
+    try:
+        title_m = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        desc_m = re.search(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        seg_pattern = re.compile(
+            r'\{\s*"narration"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"visual_prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
+        )
+        segments = [
+            {"narration": _unescape(n), "visual_prompt": _unescape(v)}
+            for n, v in seg_pattern.findall(text)
+        ]
+        if not segments:
+            return None
+        return {
+            "title": _unescape(title_m.group(1)) if title_m else "",
+            "description": _unescape(desc_m.group(1)) if desc_m else "",
+            "segments": segments,
+        }
+    except re.error:
+        return None
+
+
+def _unescape(s: str) -> str:
+    return s.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
 
 
 def _call_anthropic(db: Session, prompt: str) -> dict:
@@ -71,14 +117,28 @@ def _call_anthropic(db: Session, prompt: str) -> dict:
         },
         json={
             "model": model,
-            "max_tokens": 1500,
+            # A 9-10 segment script carries narration + a visual prompt for
+            # every segment plus a title and description. At 1500 the response
+            # ran out of room mid-string, and the only symptom was a cryptic
+            # "Unterminated string at line 34" from the JSON parser -- the
+            # script was fine, it just got cut off. 4000 leaves real headroom.
+            "max_tokens": 4000,
             "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=60,
+        timeout=90,
     )
     resp.raise_for_status()
     data = resp.json()
+
+    # If the model stopped because it hit the ceiling, say THAT rather than
+    # letting it surface as an inscrutable JSON syntax error downstream.
+    if data.get("stop_reason") == "max_tokens":
+        raise ValueError(
+            "The script was cut off before it finished (hit the response length limit). "
+            "Try a shorter video or fewer segments."
+        )
+
     text = "".join(block.get("text", "") for block in data.get("content", []))
     return _extract_json(text)
 
