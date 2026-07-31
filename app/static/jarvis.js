@@ -528,6 +528,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ jarvis_voice_id: $("#js-voice").value }),
         });
+        initial.jarvis_voice_id = $("#js-voice").value; // keep the change-tracking baseline honest
         const resp = await fetch("/api/jarvis/speak", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -554,8 +555,25 @@
       }
     });
 
+    // Snapshot what was loaded, so we can send ONLY what the user actually
+    // changed. Previously every save sent every field -- which meant that if
+    // any control was displaying a stale value (as the voice picker was),
+    // changing something unrelated like the model would silently overwrite
+    // the real saved voice with whatever happened to be on screen.
+    const initial = {
+      jarvis_personality: val("jarvis_personality", "butler"),
+      jarvis_voice_id: savedVoice,
+      jarvis_model: val("jarvis_model", "claude-haiku-4-5-20251001"),
+      jarvis_wake_word: val("jarvis_wake_word"),
+      jarvis_greeting: val("jarvis_greeting"),
+      jarvis_greeting_mode: val("jarvis_greeting_mode", "walkthrough"),
+      jarvis_accent_color: val("jarvis_accent_color", "#00e8ff"),
+      jarvis_read_aloud: val("jarvis_read_aloud", "true") !== "false" ? "true" : "false",
+      jarvis_notifications: val("jarvis_notifications") === "true" ? "true" : "false",
+    };
+
     $("#js-save").addEventListener("click", async () => {
-      const payload = {
+      const current = {
         jarvis_personality: $("#js-personality").value,
         jarvis_voice_id: $("#js-voice").value,
         jarvis_model: $("#js-model").value,
@@ -566,18 +584,43 @@
         jarvis_read_aloud: $("#js-readaloud").checked ? "true" : "false",
         jarvis_notifications: $("#js-notify").checked ? "true" : "false",
       };
+
+      const payload = {};
+      const changedFields = [];
+      for (const [k, v] of Object.entries(current)) {
+        if (v !== initial[k]) {
+          payload[k] = v;
+          changedFields.push(k);
+        }
+      }
+
       // Only send the key if something was actually typed -- an empty field
       // means "leave whatever's saved alone", not "clear it".
       const elKey = $("#js-elevenlabs").value.trim();
       if (elKey) payload.elevenlabs_api_key = elKey;
+
+      if (!Object.keys(payload).length) {
+        $("#js-save-status").textContent = "Nothing changed.";
+        return;
+      }
       try {
         await fetch("/api/settings", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const picked = $("#js-voice").options[$("#js-voice").selectedIndex]?.text;
-        $("#js-save-status").textContent = picked ? `Saved. Voice set to ${picked}.` : "Saved.";
+        const labels = {
+          jarvis_personality: "personality", jarvis_voice_id: "voice", jarvis_model: "model",
+          jarvis_wake_word: "wake word", jarvis_greeting: "greeting",
+          jarvis_greeting_mode: "greeting mode", jarvis_accent_color: "accent colour",
+          jarvis_read_aloud: "read-aloud", jarvis_notifications: "notifications",
+          elevenlabs_api_key: "ElevenLabs key",
+        };
+        const names = Object.keys(payload).map((k) => labels[k] || k);
+        $("#js-save-status").textContent = `Saved: ${names.join(", ")}.`;
+        // Keep the baseline in sync so a second save doesn't resend the same
+        // fields (or think unchanged fields changed).
+        Object.assign(initial, payload);
         await applySettings();
         if (payload.jarvis_notifications === "true" && "Notification" in window && Notification.permission === "default") {
           Notification.requestPermission();
