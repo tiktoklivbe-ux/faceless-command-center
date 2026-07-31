@@ -26,9 +26,36 @@ def _log(db: Session, job: models.VideoJob, message: str):
     # Control's Live Activity Stream can show real relative times instead of
     # guessing from job.created_at. The Jobs panel's plain progress-log view
     # still reads fine with the prefix showing -- it's just a timestamp.
+    #
+    # This uses its OWN short-lived session rather than the caller's. The
+    # caller's session stays open for the whole multi-minute render, and
+    # committing progress lines through it kept a write transaction churning
+    # on that long-lived connection -- which is what made unrelated requests
+    # (Jarvis especially, since one turn makes several queries) stall behind
+    # it. A tiny open-write-close session here releases the lock immediately.
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    job.stage_log = (job.stage_log or "") + f"[{ts}] {message}\n"
-    db.commit()
+    line = f"[{ts}] {message}\n"
+    job_id = job.id
+    own = SessionLocal()
+    try:
+        fresh = own.get(models.VideoJob, job_id)
+        if fresh is not None:
+            fresh.stage_log = (fresh.stage_log or "") + line
+            own.commit()
+    except Exception:
+        own.rollback()
+    finally:
+        own.close()
+    # Do NOT assign job.stage_log here. Doing so would mark the attribute
+    # dirty on the caller's long-lived session, and its next commit would
+    # write that stale in-memory value back -- clobbering every line this
+    # function wrote through its own session. Expiring the attribute instead
+    # makes the caller re-read the real current value from the DB next time
+    # it's touched.
+    try:
+        db.expire(job, ["stage_log"])
+    except Exception:
+        pass
 
 
 def _agents(job: models.VideoJob) -> dict:
