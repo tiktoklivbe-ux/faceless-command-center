@@ -43,14 +43,18 @@ SYSTEM_PROMPT_BASE = textwrap.dedent("""
     - Keep replies short and conversational -- a few sentences, unless they
       clearly asked for a list or detailed explanation.
     - Plain spoken sentences only. No markdown, no bullets, no headers.
-    - You have tools to check real channel/job status, check the weather,
-      look at recent activity, adjust automation settings, start a new
-      video, and control the user's actual computer (open an app, type
-      text, click at a location, press a key combo, take a screenshot) via
-      the local Jarvis Agent. Only use computer_action when the user
-      clearly wants something done on their computer, not as a first resort
-      -- and if the agent isn't connected, tell them plainly rather than
-      pretending it worked.
+    - You have full control of this workspace: check channel/job status,
+      create and edit channels, retry/delete/publish jobs, see what every
+      agent is doing, check the weather, adjust automation, give real
+      channel growth advice, audit the whole setup for problems, and
+      control the user's actual computer (open an app, type, click, press
+      keys, screenshot) via the local Jarvis Agent. Use tools rather than
+      guessing whenever a question is about real state.
+    - Never read out API key values, even if asked -- workspace_status tells
+      you only whether a key is set, and that's all you should ever say.
+    - Only use computer_action when the user clearly wants something done on
+      their machine, and if the local agent isn't connected, say so plainly
+      instead of pretending it worked.
     - If a tool result shows an error or nothing found, say so plainly
       rather than inventing details.
 """).strip()
@@ -177,6 +181,46 @@ TOOLS = [
                 "goal_views": {"type": "integer", "description": "Optional target view count to estimate a timeline for."},
             },
         },
+    },
+    {
+        "name": "agent_status",
+        "description": "Report what every agent in the constellation is doing right now -- which are actively "
+                       "working on a job, which are idle, and which are scaffolding not yet wired to real "
+                       "logic. Use when asked about 'the agents' or what's running.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "manage_channel",
+        "description": "Create a new channel, or update an existing channel's niche or style notes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["create", "update"]},
+                "channel_name": {"type": "string", "description": "Name to create, or to find when updating."},
+                "niche": {"type": "string"},
+                "style_notes": {"type": "string"},
+            },
+            "required": ["operation", "channel_name"],
+        },
+    },
+    {
+        "name": "manage_job",
+        "description": "Act on an existing video job: retry a failed one, delete one, or publish one that's ready.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["retry", "delete", "publish"]},
+                "job_title": {"type": "string", "description": "Title or topic of the job; matched loosely."},
+            },
+            "required": ["operation"],
+        },
+    },
+    {
+        "name": "workspace_status",
+        "description": "Full workspace overview: which API keys are configured (never the values), automation "
+                       "settings per channel, job counts, and what's missing or misconfigured. Use for "
+                       "'is everything set up', 'what's broken', 'what am I missing'.",
+        "input_schema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -395,6 +439,154 @@ def _tool_channel_advice(db: Session, goal_subs: int | None, goal_views: int | N
     return out
 
 
+def _tool_agent_status(db: Session) -> dict:
+    from ..agents_registry import AGENTS, CORE
+    from ..pipeline.orchestrator import AGENT_NAMES
+
+    # Live per-stage status comes from whatever job is currently running.
+    active_job = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.status.notin_([
+            models.JobStatus.PUBLISHED, models.JobStatus.FAILED, models.JobStatus.READY,
+        ]))
+        .order_by(models.VideoJob.created_at.desc())
+        .first()
+    )
+    live = {}
+    if active_job and active_job.agent_status:
+        try:
+            live = json.loads(active_job.agent_status)
+        except (json.JSONDecodeError, TypeError):
+            live = {}
+
+    wired, scaffold = [], []
+    for a in AGENTS:
+        entry = {"name": a["name"], "role": a["title"]}
+        if a.get("stage") in AGENT_NAMES:
+            entry["status"] = live.get(a["stage"], "idle")
+            wired.append(entry)
+        else:
+            scaffold.append(entry)
+
+    return {
+        "core": CORE["name"],
+        "currently_working_on": (active_job.title or active_job.topic) if active_job else None,
+        "pipeline_agents": wired,
+        "scaffold_agents_not_yet_functional": [s["name"] for s in scaffold],
+        "note": "Scaffold agents are visual placeholders in the constellation -- they have no real logic behind them yet.",
+    }
+
+
+def _tool_manage_channel(db: Session, operation: str, channel_name: str, niche: str | None, style_notes: str | None) -> dict:
+    if operation == "create":
+        existing = db.query(models.Channel).filter(models.Channel.name.ilike(channel_name)).first()
+        if existing:
+            return {"error": f"A channel named '{channel_name}' already exists."}
+        ch = models.Channel(name=channel_name, niche=niche or "", style_notes=style_notes or "")
+        db.add(ch)
+        db.commit()
+        db.refresh(ch)
+        return {"created": True, "channel": ch.name, "niche": ch.niche}
+
+    ch = db.query(models.Channel).filter(models.Channel.name.ilike(f"%{channel_name}%")).first()
+    if not ch:
+        return {"error": f"No channel matching '{channel_name}'."}
+    changed = []
+    if niche is not None:
+        ch.niche = niche
+        changed.append("niche")
+    if style_notes is not None:
+        ch.style_notes = style_notes
+        changed.append("style_notes")
+    if not changed:
+        return {"error": "Nothing to update -- give a niche or style notes."}
+    db.commit()
+    return {"updated": True, "channel": ch.name, "fields_changed": changed}
+
+
+def _tool_manage_job(db: Session, background_tasks: BackgroundTasks, operation: str, job_title: str | None) -> dict:
+    q = db.query(models.VideoJob)
+    if job_title:
+        q = q.filter(
+            models.VideoJob.title.ilike(f"%{job_title}%") | models.VideoJob.topic.ilike(f"%{job_title}%")
+        )
+    job = q.order_by(models.VideoJob.created_at.desc()).first()
+    if not job:
+        return {"error": f"No job matching '{job_title}'." if job_title else "No jobs found."}
+
+    label = job.title or job.topic or job.id
+
+    if operation == "retry":
+        job.status = models.JobStatus.QUEUED
+        job.error_message = ""
+        db.commit()
+        background_tasks.add_task(orchestrator.run_job, job.id)
+        return {"retrying": True, "job": label}
+
+    if operation == "delete":
+        db.delete(job)
+        db.commit()
+        return {"deleted": True, "job": label}
+
+    if operation == "publish":
+        if job.status != models.JobStatus.READY:
+            return {"error": f"'{label}' isn't ready to publish (status: {job.status.value if hasattr(job.status, 'value') else job.status})."}
+        job.auto_publish = True
+        db.commit()
+        background_tasks.add_task(orchestrator.run_job, job.id)
+        return {"publishing": True, "job": label}
+
+    return {"error": f"Unknown operation '{operation}'."}
+
+
+def _tool_workspace_status(db: Session) -> dict:
+    # Report only whether keys are SET, never their values -- Jarvis's replies
+    # get spoken aloud and stored in chat history, which is the last place a
+    # secret should end up.
+    key_names = [
+        ("anthropic_api_key", "Claude (scripts + Jarvis)"),
+        ("elevenlabs_api_key", "ElevenLabs (voice)"),
+        ("gemini_api_key", "Gemini (images)"),
+        ("openai_api_key", "OpenAI"),
+        ("stability_api_key", "Stability (images)"),
+        ("jarvis_agent_token", "Computer control pairing"),
+    ]
+    keys = {label: bool(get_setting(db, k)) for k, label in key_names}
+
+    channels = db.query(models.Channel).all()
+    jobs = db.query(models.VideoJob).all()
+    by_status: dict[str, int] = {}
+    for j in jobs:
+        s = j.status.value if hasattr(j.status, "value") else str(j.status)
+        by_status[s] = by_status.get(s, 0) + 1
+
+    problems = []
+    if not keys["Claude (scripts + Jarvis)"]:
+        problems.append("No Claude key -- scripts and Jarvis itself can't run without it.")
+    if not keys["ElevenLabs (voice)"]:
+        problems.append("No ElevenLabs key -- narration and Jarvis's voice fall back to a robotic browser voice.")
+    if not channels:
+        problems.append("No channels configured yet.")
+    for c in channels:
+        if not c.youtube_connected:
+            problems.append(f"'{c.name}' isn't connected to YouTube, so it can't publish or report real stats.")
+        if not c.auto_enabled:
+            problems.append(f"'{c.name}' has automation turned off -- no videos will be made on a schedule.")
+    if by_status.get("failed", 0) > 2:
+        problems.append(f"{by_status['failed']} failed jobs -- worth checking why before scaling volume.")
+
+    return {
+        "api_keys_configured": keys,
+        "channels": [
+            {"name": c.name, "niche": c.niche, "auto_enabled": c.auto_enabled,
+             "videos_per_day": c.auto_per_day, "youtube_connected": c.youtube_connected}
+            for c in channels
+        ],
+        "jobs_by_status": by_status,
+        "problems": problems or ["Nothing obviously misconfigured."],
+    }
+
+
 def _tool_computer_action(db: Session, tool_input: dict) -> dict:
     if not get_setting(db, "jarvis_agent_token"):
         return {"error": "No local Jarvis Agent has been paired yet -- set one up in the Jarvis panel's More tab first."}
@@ -448,6 +640,17 @@ def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_in
         return _tool_computer_action(db, tool_input)
     if name == "channel_advice":
         return _tool_channel_advice(db, tool_input.get("goal_subscribers"), tool_input.get("goal_views"))
+    if name == "agent_status":
+        return _tool_agent_status(db)
+    if name == "manage_channel":
+        return _tool_manage_channel(
+            db, tool_input.get("operation", ""), tool_input.get("channel_name", ""),
+            tool_input.get("niche"), tool_input.get("style_notes"),
+        )
+    if name == "manage_job":
+        return _tool_manage_job(db, background_tasks, tool_input.get("operation", ""), tool_input.get("job_title"))
+    if name == "workspace_status":
+        return _tool_workspace_status(db)
     return {"error": f"Unknown tool '{name}'"}
 
 
