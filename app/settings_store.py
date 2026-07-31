@@ -38,7 +38,12 @@ def get_setting(db: Session, key: str, default: str = "") -> str:
     row = db.get(models.Setting, key)
     if not row or row.value_enc is None:
         return default
-    return crypto.decrypt(row.value_enc)
+    # decrypt() returns None when the encryption key has changed since this
+    # value was saved. Treat that as "not set" so the app degrades to its
+    # normal no-key behaviour (e.g. fall back to the browser voice) instead
+    # of handing None to code that expects a string.
+    value = crypto.decrypt(row.value_enc)
+    return default if value is None else value
 
 
 def set_setting(db: Session, key: str, value: str, is_secret: bool = None):

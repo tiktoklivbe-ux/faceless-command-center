@@ -885,11 +885,11 @@ def speak(body: SpeakIn, db: Session = Depends(get_db)):
     api_key = get_setting(db, "elevenlabs_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="No ElevenLabs key configured.")
-    voice_id = (
-        get_setting(db, "jarvis_voice_id")
-        or _resolve_voice_by_name(api_key, JARVIS_PREFERRED_VOICE_NAMES)
-        or FALLBACK_VOICE_ID
-    )
+    # An explicitly saved voice always wins and is never overridden -- that's
+    # the whole point of picking one in Settings. Name resolution and the
+    # hardcoded fallback only apply when nothing has been chosen yet.
+    chosen = get_setting(db, "jarvis_voice_id")
+    voice_id = chosen or _resolve_voice_by_name(api_key, JARVIS_PREFERRED_VOICE_NAMES) or FALLBACK_VOICE_ID
     try:
         resp = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
