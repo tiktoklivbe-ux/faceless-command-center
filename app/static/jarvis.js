@@ -38,6 +38,7 @@
   let lastSentText = "";
   let lastSentAt = 0;
   let jarvisSpeaking = false; // true while Jarvis's own audio is playing, so the mic doesn't feed his voice back in as a command
+  let lastSpokenText = "";    // what Jarvis last said, to recognize his own voice echoing back through the mic
   let sessionToken = 0;
   let currentOrb = null;
   let wakePhrases = DEFAULT_WAKE_PHRASES.slice();
@@ -84,8 +85,24 @@
     return data;
   }
 
+  /** Immediately silences Jarvis, whether he's mid-ElevenLabs-playback or
+   * mid-browser-TTS. Used for barge-in: the moment the user starts talking,
+   * he stops -- talking over someone who's trying to interrupt you is the
+   * single most annoying thing an assistant can do. */
+  function stopSpeaking() {
+    if (currentAudioEl) {
+      try { currentAudioEl.pause(); currentAudioEl.currentTime = 0; } catch (_) {}
+    }
+    if ("speechSynthesis" in window) {
+      try { window.speechSynthesis.cancel(); } catch (_) {}
+    }
+    jarvisSpeaking = false;
+    if (currentOrb) currentOrb.setSpeaking(false, null);
+  }
+
   async function speak(text) {
     if (jarvisSettings && jarvisSettings.jarvis_read_aloud === false) return;
+    lastSpokenText = text.toLowerCase();
 
     try {
       const resp = await fetch("/api/jarvis/speak", {
@@ -611,6 +628,7 @@
           <div class="bp-sub" id="jarvis-status" style="text-align:center; margin-top:6px"></div>
           <div class="jarvis-controls-row">
             <button class="icon-btn" id="jarvis-wake" title="Toggle always-listening">◉ ENGAGE</button>
+            <button class="icon-btn" id="jarvis-shush" title="Stop Jarvis talking">◼ STOP</button>
           </div>
           <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 32 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
           <div class="jarvis-input-row" style="margin-top:16px; width:100%; max-width:420px">
@@ -683,6 +701,8 @@
 
     const log = $("#jarvis-log");
     const wakeBtn = $("#jarvis-wake");
+    const shushBtn = $("#jarvis-shush");
+    if (shushBtn) shushBtn.addEventListener("click", () => stopSpeaking());
     const status = $("#jarvis-status");
     const orbCanvas = $("#jarvis-orb");
     const input = $("#jarvis-text");
@@ -797,8 +817,7 @@
       if (voiceStatus) voiceStatus.textContent = "Voice ID module didn't load.";
     }
 
-    const sentryToggle = $("#sentry-toggle");
-    const sentryState = $("#sentry-state");
+    const sentryToggle = $("#sentry-toggle");    const sentryState = $("#sentry-state");
     const sentrySens = $("#sentry-sens");
     const sentryLog = $("#sentry-log");
     if (sentryToggle && window.SentryMode) {
@@ -921,10 +940,13 @@
       const cleaned = containsWakePhrase(text) ? stripWakePhrase(text) : text;
       if (!cleaned.trim()) return;
 
-      // Ignore anything captured while Jarvis's own voice is playing --
-      // otherwise the mic picks up his reply and sends it straight back as
-      // your next "command", which makes him talk to himself in a loop.
-      if (jarvisSpeaking) return;
+      // Echo protection that doesn't block real interruptions. The old
+      // approach dropped everything while Jarvis was speaking, which also
+      // killed barge-in. Instead, check whether what came through the mic is
+      // actually a chunk of what Jarvis just said -- that's an echo. Anything
+      // else is a genuine interruption and goes through.
+      const lower = cleaned.toLowerCase();
+      if (lastSpokenText && lower.length > 8 && lastSpokenText.includes(lower)) return;
 
       // Guard against the same utterance arriving twice -- once from the
       // silence timer firing early, then again when the browser finally
@@ -952,6 +974,11 @@
         const caption = $("#jarvis-caption");
 
         if (!result.isFinal) {
+          // Barge-in: the first interim result means the user has started
+          // talking, so cut Jarvis off immediately rather than letting him
+          // finish over the top of them.
+          if (jarvisSpeaking && text.trim().length > 1) stopSpeaking();
+
           // Live caption -- shows what it's hearing in real time.
           if (caption) caption.textContent = text;
 
@@ -963,13 +990,24 @@
           // than waiting for the browser to catch up.
           pendingText = text;
           clearTimeout(silenceTimer);
+          // Adaptive pause length. A flat 900ms cut people off mid-thought:
+          // natural pauses (breathing, thinking of the next word) routinely
+          // exceed that. So wait longer when the phrase looks unfinished --
+          // trailing conjunctions, very short fragments -- and stay snappy
+          // when it sounds like a complete thought.
+          const trimmed = text.trim();
+          const words = trimmed.split(/\s+/).length;
+          const endsIncomplete = /\b(and|but|or|so|to|the|a|of|for|with|is|it|that|my|i|can|you|then|if|because|about|like)$/i.test(trimmed);
+          let waitMs = 1100;
+          if (endsIncomplete || words <= 2) waitMs = 2000; // clearly mid-sentence -- give them room
+          else if (words >= 8) waitMs = 900;              // long complete-sounding phrase -- act fast
           silenceTimer = setTimeout(() => {
             if (myToken !== sessionToken) return;
             const toSend = pendingText;
             pendingText = "";
             if (caption) caption.textContent = "";
             if (toSend && toSend.trim()) handleResult(toSend);
-          }, 900);
+          }, waitMs);
           return;
         }
 
