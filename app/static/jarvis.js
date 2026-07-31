@@ -33,6 +33,11 @@
   let awake = false;
   let history = [];
   let restartTimer = null;
+  let silenceTimer = null;
+  let pendingText = "";
+  let lastSentText = "";
+  let lastSentAt = 0;
+  let jarvisSpeaking = false; // true while Jarvis's own audio is playing, so the mic doesn't feed his voice back in as a command
   let sessionToken = 0;
   let currentOrb = null;
   let wakePhrases = DEFAULT_WAKE_PHRASES.slice();
@@ -57,9 +62,9 @@
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.02;
     u.pitch = 0.95;
-    u.onstart = () => { if (currentOrb) currentOrb.setSpeaking(true, null); };
-    u.onend = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
-    u.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
+    u.onstart = () => { jarvisSpeaking = true; if (currentOrb) currentOrb.setSpeaking(true, null); };
+    u.onend = () => { jarvisSpeaking = false; if (currentOrb) currentOrb.setSpeaking(false, null); };
+    u.onerror = () => { jarvisSpeaking = false; if (currentOrb) currentOrb.setSpeaking(false, null); };
     window.speechSynthesis.speak(u);
   }
 
@@ -112,9 +117,9 @@
         speechAnalyser = null;
       }
 
-      audio.onplay = () => { if (currentOrb) currentOrb.setSpeaking(true, getSpeechAmplitude, getSpeechBars); };
-      audio.onended = () => { if (currentOrb) currentOrb.setSpeaking(false, null); URL.revokeObjectURL(url); };
-      audio.onerror = () => { if (currentOrb) currentOrb.setSpeaking(false, null); };
+      audio.onplay = () => { jarvisSpeaking = true; if (currentOrb) currentOrb.setSpeaking(true, getSpeechAmplitude, getSpeechBars); };
+      audio.onended = () => { jarvisSpeaking = false; if (currentOrb) currentOrb.setSpeaking(false, null); URL.revokeObjectURL(url); };
+      audio.onerror = () => { jarvisSpeaking = false; if (currentOrb) currentOrb.setSpeaking(false, null); };
       await audio.play();
     } catch (_) {
       speakViaBrowser(text);
@@ -750,6 +755,8 @@
 
       sessionToken++;
       clearTimeout(restartTimer);
+      clearTimeout(silenceTimer);
+      pendingText = "";
       wakeBtn.classList.remove("jarvis-mic-active");
       status.textContent = "";
       orb.setListening(false);
@@ -773,6 +780,20 @@
       // enrollment, it just doesn't gate or precede normal replies.
       const cleaned = containsWakePhrase(text) ? stripWakePhrase(text) : text;
       if (!cleaned.trim()) return;
+
+      // Ignore anything captured while Jarvis's own voice is playing --
+      // otherwise the mic picks up his reply and sends it straight back as
+      // your next "command", which makes him talk to himself in a loop.
+      if (jarvisSpeaking) return;
+
+      // Guard against the same utterance arriving twice -- once from the
+      // silence timer firing early, then again when the browser finally
+      // marks it final. Same text within a few seconds is a duplicate.
+      const now = Date.now();
+      if (cleaned === lastSentText && now - lastSentAt < 4000) return;
+      lastSentText = cleaned;
+      lastSentAt = now;
+
       send(log, cleaned);
     }
 
@@ -788,14 +809,35 @@
         if (myToken !== sessionToken) return;
         const result = e.results[e.results.length - 1];
         const text = result[0].transcript;
+        const caption = $("#jarvis-caption");
+
         if (!result.isFinal) {
-          // live caption -- shows what it's hearing in real time, not just
-          // after you finish talking
-          const caption = $("#jarvis-caption");
+          // Live caption -- shows what it's hearing in real time.
           if (caption) caption.textContent = text;
+
+          // Silence endpointing: in continuous mode the browser can take
+          // several seconds to mark a phrase "final", which felt like Jarvis
+          // just sitting there ignoring you. Instead, every time new interim
+          // text arrives we restart a short timer -- when it actually elapses
+          // (i.e. you've stopped talking for ~900ms), send immediately rather
+          // than waiting for the browser to catch up.
+          pendingText = text;
+          clearTimeout(silenceTimer);
+          silenceTimer = setTimeout(() => {
+            if (myToken !== sessionToken) return;
+            const toSend = pendingText;
+            pendingText = "";
+            if (caption) caption.textContent = "";
+            if (toSend && toSend.trim()) handleResult(toSend);
+          }, 900);
           return;
         }
-        const caption = $("#jarvis-caption");
+
+        // Browser gave us a final result -- cancel any pending silence timer.
+        // handleResult's duplicate guard handles the case where the silence
+        // timer already sent this same utterance moments ago.
+        clearTimeout(silenceTimer);
+        pendingText = "";
         if (caption) caption.textContent = "";
         handleResult(text);
       };
