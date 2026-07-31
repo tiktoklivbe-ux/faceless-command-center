@@ -674,7 +674,31 @@
       loadSettingsIntoTab(settingsPanel);
     }
 
-    log.appendChild(bubble("assistant", greetingText || "Standing by. Hit ENGAGE, then just talk — no button holding."));
+    // Greet immediately on open rather than waiting to be spoken to first --
+    // and make it a real status update (what's running, what finished) rather
+    // than a generic hello, since "tell me what's going on" is the main thing
+    // you'd open this for anyway.
+    (async () => {
+      let greeting = greetingText || "Systems online.";
+      try {
+        const jobs = await fetch("/api/jobs").then((r) => r.json());
+        const active = jobs.filter((j) => !["published", "ready_for_review", "failed"].includes(j.status));
+        const failed = jobs.filter((j) => j.status === "failed").length;
+        const ready = jobs.filter((j) => j.status === "ready_for_review").length;
+
+        const bits = [];
+        if (active.length) bits.push(`${active.length} video${active.length === 1 ? "" : "s"} in progress`);
+        if (ready) bits.push(`${ready} ready for review`);
+        if (failed) bits.push(`${failed} failed`);
+        greeting = bits.length
+          ? `${greetingText || "Systems online."} You've got ${bits.join(", ")}.`
+          : `${greetingText || "Systems online."} Nothing running right now.`;
+      } catch (_) { /* fall back to the plain greeting if the status check fails */ }
+
+      log.appendChild(bubble("assistant", greeting));
+      log.scrollTop = log.scrollHeight;
+      speak(greeting);
+    })();
 
     const smsUrlEl = $("#jarvis-sms-url");
     if (smsUrlEl) smsUrlEl.textContent = `${window.location.origin}/api/jarvis/sms`;

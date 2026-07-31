@@ -21,6 +21,7 @@ Reuses the same Anthropic key already configured in Settings.
 import json
 import textwrap
 import time
+from datetime import datetime
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -156,6 +157,19 @@ TOOLS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "channel_advice",
+        "description": "Analyze the user's real channel stats and give concrete growth advice, plus math on "
+                       "how long a subscriber or view goal would take at the current rate. Use this whenever "
+                       "they ask what to do to grow, how they're doing, or when they'll hit a target.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_subscribers": {"type": "integer", "description": "Optional target subscriber count to estimate a timeline for."},
+                "goal_views": {"type": "integer", "description": "Optional target view count to estimate a timeline for."},
+            },
+        },
+    },
 ]
 
 
@@ -279,6 +293,100 @@ def _tool_get_activity_feed(db: Session, limit: int | None) -> dict:
     return {"recent_activity": lines[: (limit or 10)] or ["Nothing logged yet."]}
 
 
+def _tool_channel_advice(db: Session, goal_subs: int | None, goal_views: int | None) -> dict:
+    from .. import crypto
+    from ..pipeline import publish_youtube
+
+    channels = db.query(models.Channel).all()
+    if not channels:
+        return {"error": "No channels configured yet."}
+
+    jobs = db.query(models.VideoJob).all()
+    published = [j for j in jobs if j.status == models.JobStatus.PUBLISHED]
+
+    # Real stats come from a live YouTube API call (same path Mission Control
+    # uses) -- there are no cached counts on the Channel row to read.
+    total_subs = 0
+    total_views = 0
+    stats_available = False
+    stats_error = None
+    for ch in channels:
+        if ch.youtube_connected and ch.youtube_refresh_token_enc:
+            try:
+                access_token = publish_youtube.refresh_access_token(
+                    db, crypto.decrypt(ch.youtube_refresh_token_enc)
+                )
+                stats = publish_youtube.fetch_channel_stats(access_token)
+                total_subs += stats["subscribers"]
+                total_views += stats["views"]
+                stats_available = True
+            except Exception as e:
+                stats_error = str(e)[:120]
+
+    oldest = min((j.created_at for j in jobs if j.created_at), default=None)
+    days_active = max((datetime.utcnow() - oldest).days, 1) if oldest else 1
+
+    out: dict = {
+        "channels": [c.name for c in channels],
+        "videos_published": len(published),
+        "days_active": days_active,
+        "videos_per_day": round(len(published) / days_active, 2),
+    }
+    if stats_available:
+        out["subscribers"] = total_subs
+        out["views"] = total_views
+    else:
+        out["stats_note"] = (
+            f"Live YouTube stats unavailable ({stats_error})." if stats_error
+            else "No YouTube account connected yet, so there are no real subscriber/view numbers to work from."
+        )
+
+    if goal_subs or goal_views:
+        if not stats_available:
+            out["goal_estimate"] = "Can't estimate a timeline without real channel stats connected."
+        elif days_active < 7 or (total_subs == 0 and total_views == 0):
+            out["goal_estimate"] = (
+                "Not enough history to project honestly yet -- needs about a week of real "
+                "data and some actual growth to extrapolate from. Anything calculated now "
+                "would be a guess dressed up as math."
+            )
+        else:
+            subs_per_day = total_subs / days_active
+            views_per_day = total_views / days_active
+            est = {}
+            if goal_subs:
+                if subs_per_day <= 0:
+                    est["subscribers"] = f"Not gaining subscribers currently, so {goal_subs:,} isn't reachable at this rate -- the rate has to change first."
+                else:
+                    days = max(int((goal_subs - total_subs) / subs_per_day), 0)
+                    est["subscribers"] = (
+                        f"Roughly {days:,} days to {goal_subs:,} subscribers at the current "
+                        f"{subs_per_day:.1f}/day -- assumes a flat rate, which rarely holds."
+                    )
+            if goal_views:
+                if views_per_day <= 0:
+                    est["views"] = f"Not gaining views currently, so {goal_views:,} isn't reachable at this rate."
+                else:
+                    days = max(int((goal_views - total_views) / views_per_day), 0)
+                    est["views"] = (
+                        f"Roughly {days:,} days to {goal_views:,} views at the current "
+                        f"{views_per_day:.0f}/day, same caveat."
+                    )
+            out["goal_estimate"] = est
+
+    advice = []
+    if len(published) < 10:
+        advice.append("Volume is the main lever right now -- under 10 published videos is too small for the algorithm to learn who to show you to, or for you to tell what's working.")
+    if stats_available and total_views > 0 and (total_subs / max(total_views, 1)) < 0.005:
+        advice.append("Views are coming but few convert to subscribers -- usually means the hook lands and the payoff doesn't, or there's no reason given to subscribe. Ask explicitly at the strongest moment, not the end.")
+    if out["videos_per_day"] < 1:
+        advice.append("Under one video a day; Shorts and TikTok both reward consistent daily volume, so raising cadence likely beats polishing individual videos.")
+    advice.append("Check retention in YouTube Studio -- where viewers drop off tells you far more than total views. First 3 seconds matter most for Shorts.")
+    advice.append("Cross-post the same video to Shorts, TikTok, and Reels -- same asset, three audiences, no extra production cost.")
+    out["advice"] = advice
+    return out
+
+
 def _tool_computer_action(db: Session, tool_input: dict) -> dict:
     if not get_setting(db, "jarvis_agent_token"):
         return {"error": "No local Jarvis Agent has been paired yet -- set one up in the Jarvis panel's More tab first."}
@@ -330,6 +438,8 @@ def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_in
         return _tool_get_activity_feed(db, tool_input.get("limit"))
     if name == "computer_action":
         return _tool_computer_action(db, tool_input)
+    if name == "channel_advice":
+        return _tool_channel_advice(db, tool_input.get("goal_subscribers"), tool_input.get("goal_views"))
     return {"error": f"Unknown tool '{name}'"}
 
 
