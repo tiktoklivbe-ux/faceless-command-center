@@ -50,6 +50,13 @@ SYSTEM_PROMPT_BASE = textwrap.dedent("""
       control the user's actual computer (open an app, type, click, press
       keys, screenshot) via the local Jarvis Agent. Use tools rather than
       guessing whenever a question is about real state.
+    - When something's broken, use diagnose_job first -- it identifies the
+      failing stage, the real cause, and whether you can fix it or the user
+      must. If a job comes back marked who_can_fix "auto", just retry it with
+      manage_job rather than asking permission. If it's marked "user", tell
+      them the exact step and where -- e.g. which key to get and which site
+      to get it from. Never say you'll fix something you can't; an API key
+      the user doesn't have is not something you can conjure.
     - Never read out API key values, even if asked -- workspace_status tells
       you only whether a key is set, and that's all you should ever say.
     - Only use computer_action when the user clearly wants something done on
@@ -215,6 +222,19 @@ TOOLS = [
                 "job_title": {"type": "string", "description": "Title or topic of the job; matched loosely."},
             },
             "required": ["operation"],
+        },
+    },
+    {
+        "name": "diagnose_job",
+        "description": "Deep-diagnose a video job: identify which stage failed or stalled, the actual cause "
+                       "matched against known failure modes, a specific fix, whether you can fix it yourself "
+                       "or the user has to, and an ETA if it's still running. Use for 'why did this fail', "
+                       "'what's wrong', 'how long will this take', 'fix my videos'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_title": {"type": "string", "description": "Title/topic to match; omit to diagnose all failed jobs."},
+            },
         },
     },
     {
@@ -541,6 +561,107 @@ def _tool_manage_job(db: Session, background_tasks: BackgroundTasks, operation: 
     return {"error": f"Unknown operation '{operation}'."}
 
 
+def _tool_diagnose_job(db: Session, job_title: str | None) -> dict:
+    from .. import agent_brains
+
+    q = db.query(models.VideoJob)
+    if job_title:
+        q = q.filter(
+            models.VideoJob.title.ilike(f"%{job_title}%") | models.VideoJob.topic.ilike(f"%{job_title}%")
+        )
+        jobs = q.order_by(models.VideoJob.created_at.desc()).limit(3).all()
+    else:
+        # No title given -- look at what's actually wrong right now: failures
+        # first, then anything currently running.
+        jobs = (
+            q.filter(models.VideoJob.status == models.JobStatus.FAILED)
+            .order_by(models.VideoJob.created_at.desc()).limit(5).all()
+        )
+        if not jobs:
+            jobs = (
+                db.query(models.VideoJob)
+                .filter(models.VideoJob.status.notin_([
+                    models.JobStatus.PUBLISHED, models.JobStatus.READY, models.JobStatus.FAILED]))
+                .order_by(models.VideoJob.created_at.desc()).limit(3).all()
+            )
+
+    if not jobs:
+        return {"result": "No failed or in-progress jobs to diagnose."}
+
+    # Map JobStatus -> the brain's stage names.
+    status_to_stage = {
+        models.JobStatus.SCRIPT: "script",
+        models.JobStatus.VOICE: "voice",
+        models.JobStatus.VISUALS: "visuals",
+        models.JobStatus.CAPTIONS: "assembly",
+        models.JobStatus.ASSEMBLING: "assembly",
+        models.JobStatus.PUBLISHING: "publish",
+    }
+
+    out = []
+    for j in jobs:
+        label = j.title or j.topic or j.id
+        log_tail = "\n".join((j.stage_log or "").splitlines()[-6:])
+        combined_error = f"{j.error_message or ''}\n{log_tail}"
+
+        # Work out which stage it was in. For a failed job the status is
+        # FAILED, so infer the stage from the last thing the log mentions.
+        stage = status_to_stage.get(j.status)
+        if stage is None:
+            low = log_tail.lower()
+            for candidate, marker in [
+                ("publish", "publish agent"), ("assembly", "assembly agent"),
+                ("visuals", "visual agent"), ("voice", "voice agent"), ("script", "script agent"),
+            ]:
+                if marker in low:
+                    stage = candidate
+                    break
+            stage = stage or "assembly"
+
+        entry = {"job": label, "status": j.status.value if hasattr(j.status, "value") else str(j.status)}
+
+        if j.status == models.JobStatus.FAILED:
+            # A failed job with NO error message at all is its own signature:
+            # the code always writes "FAILED: <reason>" when it catches an
+            # exception, so an empty error means the process was killed before
+            # it could -- a restart or an OOM, not a code error. Without this,
+            # the most common real-world failure falls through to a useless
+            # "no recognized pattern".
+            has_real_error = bool((j.error_message or "").strip())
+            log_has_failure = "failed:" in (j.stage_log or "").lower()
+            if not has_real_error and not log_has_failure:
+                entry["diagnosis"] = {
+                    "stage": stage,
+                    "cause": ("The process was killed part-way through -- it stopped without recording any error. "
+                              "Almost always a redeploy or host restart landing mid-render, or the container "
+                              "running out of memory."),
+                    "fix": "Retry it. This kind of failure is transient, not a bug in the video itself.",
+                    "who_can_fix": "auto",
+                }
+            else:
+                entry["diagnosis"] = agent_brains.diagnose(stage, combined_error)
+            entry["raw_error"] = (j.error_message or "")[:300] or "(no error message recorded)"
+        else:
+            elapsed = (datetime.utcnow() - (j.updated_at or j.created_at or datetime.utcnow())).total_seconds()
+            entry["timing"] = agent_brains.timing_verdict(stage, elapsed)
+            entry["eta"] = agent_brains.estimate_remaining(stage)
+            if entry["timing"]["verdict"] == "stalled":
+                entry["diagnosis"] = agent_brains.diagnose(stage, "killed")
+
+        out.append(entry)
+
+    fixable_by_jarvis = [
+        e["job"] for e in out
+        if e.get("diagnosis", {}).get("who_can_fix") == "auto"
+    ]
+    return {
+        "jobs": out,
+        "jarvis_can_retry": fixable_by_jarvis,
+        "note": ("Anything listed in jarvis_can_retry can be fixed right now with the manage_job retry "
+                 "operation. Items marked who_can_fix='user' need the user to act -- say exactly what and where."),
+    }
+
+
 def _tool_workspace_status(db: Session) -> dict:
     # Report only whether keys are SET, never their values -- Jarvis's replies
     # get spoken aloud and stored in chat history, which is the last place a
@@ -653,6 +774,8 @@ def _run_tool(db: Session, background_tasks: BackgroundTasks, name: str, tool_in
         return _tool_manage_job(db, background_tasks, tool_input.get("operation", ""), tool_input.get("job_title"))
     if name == "workspace_status":
         return _tool_workspace_status(db)
+    if name == "diagnose_job":
+        return _tool_diagnose_job(db, tool_input.get("job_title"))
     return {"error": f"Unknown tool '{name}'"}
 
 
