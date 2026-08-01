@@ -1045,24 +1045,58 @@ def speak(body: SpeakIn, db: Session = Depends(get_db)):
     # hardcoded fallback only apply when nothing has been chosen yet.
     chosen = get_setting(db, "jarvis_voice_id")
     voice_id = chosen or _resolve_voice_by_name(api_key, JARVIS_PREFERRED_VOICE_NAMES) or FALLBACK_VOICE_ID
-    try:
-        resp = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-            headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
-            json={
-                "text": body.text,
-                "model_id": "eleven_turbo_v2_5",  # low-latency model -- matters for a live voice assistant
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "?"
-        raise HTTPException(status_code=502, detail=f"ElevenLabs error ({status}).")
-    except requests.RequestException:
-        raise HTTPException(status_code=502, detail="Couldn't reach ElevenLabs.")
-    return Response(content=resp.content, media_type="audio/mpeg")
+    # Retry transient failures. ElevenLabs occasionally returns a 5xx or times
+    # out under load, and a one-off blip shouldn't surface to the user as a
+    # dead-end error when trying again a second later usually works.
+    last_detail = "Couldn't reach ElevenLabs."
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
+                json={
+                    "text": body.text,
+                    "model_id": "eleven_turbo_v2_5",  # low-latency model -- matters for a live voice assistant
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return Response(content=resp.content, media_type="audio/mpeg")
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            # Report what actually went wrong rather than an opaque 502 --
+            # "out of credits" and "network blip" need completely different
+            # responses from the user.
+            body_text = ""
+            try:
+                body_text = (e.response.text or "")[:200]
+            except Exception:
+                pass
+            if status == 401:
+                last_detail = "ElevenLabs rejected the API key -- it may be invalid or revoked."
+            elif status == 402 or "quota" in body_text.lower() or "credit" in body_text.lower():
+                last_detail = "ElevenLabs is out of credits for this billing period."
+            elif status == 404:
+                last_detail = "That voice no longer exists in your ElevenLabs library -- pick another in Settings."
+            elif status == 422:
+                last_detail = f"ElevenLabs rejected the request: {body_text}"
+            elif status == 429:
+                last_detail = "ElevenLabs rate limit hit."
+            elif status and 500 <= status < 600:
+                last_detail = f"ElevenLabs server error ({status})."
+                continue  # transient -- worth another go
+            else:
+                last_detail = f"ElevenLabs error ({status}). {body_text}".strip()
+            break  # anything else won't be fixed by retrying
+        except requests.Timeout:
+            last_detail = "ElevenLabs timed out."
+            continue
+        except requests.RequestException as e:
+            last_detail = f"Couldn't reach ElevenLabs: {e}"
+            continue
+
+    raise HTTPException(status_code=502, detail=last_detail)
 
 
 # ---------------------------------------------------------------- conversation history

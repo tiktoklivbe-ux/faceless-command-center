@@ -677,6 +677,7 @@ button.msc-link-card { cursor: pointer; }
   font-family: var(--font-mono); font-size: 12px; outline: none;
 }
 .jarvis-input-row input:focus { border-color: var(--cyan); }
+#jarvis-watch.jarvis-mic-active,
 #jarvis-wake.jarvis-mic-active {
   border-color: var(--pink); color: var(--pink);
   box-shadow: 0 0 18px rgba(255,47,158,0.5);

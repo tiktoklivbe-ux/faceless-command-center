@@ -829,6 +829,10 @@
     return null;
   }
 
+  const _FINISHED = new Set(["published", "ready_for_review", "failed"]);
+  let lastPeriodicUpdate = 0;
+  let periodicUpdatesOn = false;
+
   async function notifyTick() {
     try {
       const jobs = await fetch("/api/jobs").then((r) => r.json());
@@ -841,6 +845,22 @@
         if (prev === j.status) continue;       // nothing changed
         const msg = _describeJob(j);
         if (msg) announcements.push(msg);
+      }
+
+      // Periodic "how's it going" updates while something is actually
+      // running. Jarvis can't set his own timers -- he only acts when spoken
+      // to -- so this browser-side poll is what makes unprompted check-ins
+      // possible at all. Only fires while work is in flight, so it doesn't
+      // narrate an idle system at you.
+      if (periodicUpdatesOn && !announcements.length) {
+        const active = jobs.filter((j) => !_FINISHED.has(j.status));
+        const now = Date.now();
+        if (active.length && now - lastPeriodicUpdate > 30000) {
+          lastPeriodicUpdate = now;
+          const j = active[0];
+          const name = j.title || j.topic || "the video";
+          announcements.push(`Still working on ${name} — currently ${String(j.status).replace(/_/g, " ")}.`);
+        }
       }
 
       if (!announcements.length) return;
@@ -868,7 +888,7 @@
     announceTarget = target || null;
     if (notifyPoll) return;
     notifyTick(); // seed knownJobStatuses immediately rather than waiting
-    notifyPoll = setInterval(notifyTick, 15000);
+    notifyPoll = setInterval(notifyTick, 10000);
   }
   function stopNotifyPoll() {
     if (notifyPoll) { clearInterval(notifyPoll); notifyPoll = null; }
@@ -898,6 +918,7 @@
           <div class="jarvis-controls-row">
             <button class="icon-btn" id="jarvis-wake" title="Toggle always-listening">◉ ENGAGE</button>
             <button class="icon-btn" id="jarvis-shush" title="Stop Jarvis talking">◼ STOP</button>
+            <button class="icon-btn" id="jarvis-watch" title="Unprompted updates every ~30s while a video is rendering">◷ WATCH</button>
           </div>
           <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 32 }).map(() => '<div class="jarvis-eq-bar"></div>').join("")}</div>
           <div class="jarvis-input-row" style="margin-top:16px; width:100%; max-width:420px">
@@ -977,6 +998,22 @@
     const wakeBtn = $("#jarvis-wake");
     const shushBtn = $("#jarvis-shush");
     if (shushBtn) shushBtn.addEventListener("click", () => stopSpeaking());
+
+    const watchBtn = $("#jarvis-watch");
+    if (watchBtn) {
+      watchBtn.addEventListener("click", () => {
+        periodicUpdatesOn = !periodicUpdatesOn;
+        lastPeriodicUpdate = 0; // so the first update comes promptly, not 30s later
+        watchBtn.classList.toggle("jarvis-mic-active", periodicUpdatesOn);
+        watchBtn.textContent = periodicUpdatesOn ? "◷ WATCHING" : "◷ WATCH";
+        const msg = periodicUpdatesOn
+          ? "Watch mode on. I'll check in while videos are rendering."
+          : "Watch mode off.";
+        log.appendChild(bubble("assistant", msg));
+        log.scrollTop = log.scrollHeight;
+        speak(msg);
+      });
+    }
     const status = $("#jarvis-status");
     const orbCanvas = $("#jarvis-orb");
     const input = $("#jarvis-text");
