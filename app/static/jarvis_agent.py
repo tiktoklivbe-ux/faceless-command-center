@@ -160,10 +160,19 @@ def press_keys(params):
 
 
 def screenshot(params):
-    img = pyautogui.screenshot()
+    # Screenshots need Pillow/pyscreeze, which sometimes fail to install
+    # cleanly alongside pyautogui. That shouldn't disable clicking, typing,
+    # and app-launching -- so this fails on its own rather than at import.
+    try:
+        img = pyautogui.screenshot()
+    except Exception as e:
+        raise RuntimeError(
+            f"Screenshots unavailable ({e}). Everything else still works. "
+            "Fix with: pip install --upgrade pillow pyscreeze"
+        )
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    base64.b64encode(buf.getvalue()).decode("ascii")  # captured but not relayed yet -- see note below
+    base64.b64encode(buf.getvalue()).decode("ascii")  # captured but not relayed yet
     return {"width": img.width, "height": img.height, "note": "Screenshot captured (image data not yet relayed into chat)."}
 
 

@@ -739,11 +739,24 @@ def _tool_computer_action(db: Session, tool_input: dict) -> dict:
             result = json.loads(cmd.result_json) if cmd.result_json else {}
             return {"executed": True, "action": action, "result": result}
         if cmd.status == "failed":
-            return {"executed": False, "action": action, "error": cmd.error_message or "The local agent reported failure."}
+            return {
+                "executed": False, "action": action,
+                "agent_connected": True,
+                "error": cmd.error_message or "The local agent reported failure.",
+                "note": ("The agent IS running and received this -- the action itself failed. "
+                         "Report the error as-is; don't tell the user the agent is disconnected."),
+            }
+        if cmd.status == "sent":
+            # Picked up but no result yet -- the agent is definitely alive.
+            return {
+                "executed": False, "action": action, "agent_connected": True,
+                "error": "The agent picked this up but hasn't reported back yet. It may still be working.",
+            }
         time.sleep(0.4)
 
     return {
         "executed": False, "action": action,
+        "agent_connected": False,
         "error": "No response from the local Jarvis Agent -- it may not be running right now.",
     }
 
