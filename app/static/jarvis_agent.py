@@ -138,6 +138,11 @@ def _focus_window_windows(app_name: str):
 
 def type_text(params):
     text = params.get("text", "")
+    # Hard cap. An unbounded string types forever with no way to interrupt it
+    # from the app side, which locks you out of your own keyboard.
+    MAX_CHARS = 2000
+    if len(text) > MAX_CHARS:
+        raise ValueError(f"Refusing to type {len(text)} characters (limit {MAX_CHARS}).")
     pyautogui.write(text, interval=0.02)
     return {"typed_chars": len(text)}
 
@@ -146,15 +151,64 @@ def click_at(params):
     x, y = params.get("x"), params.get("y")
     if x is None or y is None:
         raise ValueError("click_at needs both x and y.")
+    # Reject coordinates outside the actual screen -- a bad value can send the
+    # cursor somewhere unrecoverable.
+    try:
+        sw, sh = pyautogui.size()
+        if not (0 <= int(x) < sw and 0 <= int(y) < sh):
+            raise ValueError(f"Coordinates ({x}, {y}) are off-screen (screen is {sw}x{sh}).")
+    except ValueError:
+        raise
+    except Exception:
+        pass  # if screen size can't be read, don't block the click on that alone
     pyautogui.click(x, y)
     return {"clicked": [x, y]}
+
+
+# Key combinations that can lock, sleep, log out of, or otherwise take over the
+# machine in ways that are hard or impossible to recover from remotely. A voice
+# assistant driven by speech-to-text WILL eventually mishear something, and the
+# cost of a wrong guess here is losing control of your computer -- so these are
+# refused outright rather than trusted to good intentions upstream.
+BLOCKED_KEY_COMBOS = {
+    frozenset(["ctrl", "alt", "delete"]),   # security screen -- can appear as a black screen
+    frozenset(["ctrl", "shift", "esc"]),
+    frozenset(["alt", "f4"]),               # closes the focused window, including the agent itself
+    frozenset(["win", "l"]),                # locks the machine
+    frozenset(["win", "d"]),
+    frozenset(["win", "m"]),
+    frozenset(["ctrl", "alt", "f4"]),
+    frozenset(["ctrl", "w"]),               # closes browser tabs, including the Jarvis one
+    frozenset(["alt", "tab"]),              # rapid repeats can wedge the window manager
+    frozenset(["ctrl", "shift", "q"]),
+    frozenset(["win", "p"]),                # display-mode switch -- a genuine black-screen cause
+    frozenset(["ctrl", "alt", "f1"]),
+    frozenset(["ctrl", "alt", "f2"]),
+}
+BLOCKED_SINGLE_KEYS = {"f4"}
 
 
 def press_keys(params):
     combo = params.get("keys", "")
     if not combo:
         raise ValueError("No keys given.")
-    keys = [k.strip() for k in combo.replace("+", " ").split()]
+    keys = [k.strip().lower() for k in combo.replace("+", " ").split() if k.strip()]
+    if not keys:
+        raise ValueError("No usable keys in that combo.")
+    if len(keys) > 4:
+        raise ValueError("Refusing a combo with more than 4 keys.")
+
+    key_set = frozenset(keys)
+    if key_set in BLOCKED_KEY_COMBOS or (len(keys) == 1 and keys[0] in BLOCKED_SINGLE_KEYS):
+        raise ValueError(
+            f"Refusing '{combo}' -- that combination can lock, black out, or take over the machine. "
+            "Blocked deliberately for safety."
+        )
+    # Also block anything combining the Windows key with a single letter, since
+    # that space is full of display/session shortcuts and mishearing one is easy.
+    if "win" in key_set and len(keys) == 2:
+        raise ValueError(f"Refusing '{combo}' -- Windows-key shortcuts are blocked for safety.")
+
     pyautogui.hotkey(*keys)
     return {"pressed": keys}
 
@@ -202,6 +256,35 @@ ACTIONS = {
     "screenshot": screenshot,
 }
 
+# Rate limiting. Nothing upstream guarantees commands arrive one at a time, and
+# a burst of input events -- especially clicks or hotkeys -- can wedge a
+# desktop session badly enough to need a hard restart. A minimum gap between
+# actions plus a per-minute ceiling keeps that from being possible at all.
+MIN_SECONDS_BETWEEN_ACTIONS = 0.6
+MAX_ACTIONS_PER_MINUTE = 30
+_last_action_at = 0.0
+_action_times: list[float] = []
+
+
+def _rate_limit_check():
+    """Raises if we're going too fast. Called before every action."""
+    global _last_action_at
+    now = time.time()
+
+    _action_times[:] = [t for t in _action_times if now - t < 60]
+    if len(_action_times) >= MAX_ACTIONS_PER_MINUTE:
+        raise RuntimeError(
+            f"Rate limit: {MAX_ACTIONS_PER_MINUTE} actions/minute exceeded. "
+            "Refusing further actions for a moment as a safety measure."
+        )
+
+    gap = now - _last_action_at
+    if gap < MIN_SECONDS_BETWEEN_ACTIONS:
+        time.sleep(MIN_SECONDS_BETWEEN_ACTIONS - gap)
+
+    _last_action_at = time.time()
+    _action_times.append(_last_action_at)
+
 
 def main():
     server, token = _get_config()
@@ -228,6 +311,7 @@ def main():
                 try:
                     if not fn:
                         raise ValueError(f"Unknown action '{action_name}'")
+                    _rate_limit_check()
                     result = fn(cmd["params"])
                     session.post(
                         f"{server}/api/jarvis/agent/report", params={"token": token},
