@@ -575,6 +575,24 @@ async function renderJobDetail(body, jobId) {
       if (pn) pn.addEventListener("click", async () => { pn.disabled = true; pn.textContent = "Publishing…"; try { await API(`/api/jobs/${j.id}/publish`, { method: "POST" }); draw(); } catch (e) { toast(e.message); } });
     }
     body.appendChild(el(renderJobStatusCard(j)));
+    body.appendChild(el(`<div class="card"><h2>Is it the machine or a bug?</h2>
+      <div class="hint">Renders one test clip and reports how fast this server actually is. Use this when a video is taking far longer than expected.</div>
+      <button class="btn secondary" id="run-bench" style="margin-top:10px">Run Speed Test</button>
+      <div id="bench-out" class="hint" style="margin-top:10px"></div>
+    </div>`));
+    const bb = document.getElementById("run-bench");
+    if (bb) bb.addEventListener("click", async () => {
+      const out = document.getElementById("bench-out");
+      bb.disabled = true; out.textContent = "Rendering a test clip…";
+      try {
+        const r = await API("/api/jobs/benchmark");
+        out.innerHTML = r.render_succeeded
+          ? `<b>${r.verdict.toUpperCase()}</b> — one clip took ${r.single_clip_seconds}s on ${r.cpu_count} CPU(s).
+             A full video should take about ${r.projected_full_video_human}.<br><br>${r.advice}`
+          : `Test render failed: ${r.error}`;
+      } catch (e) { out.textContent = "Couldn't run the speed test."; }
+      bb.disabled = false;
+    });
     body.appendChild(el(`<div class="card"><h2>What Each Agent Does</h2>
       <div class="agent-legend">
         <div><b>Script (Athena)</b><span>Writes the script and picks the topic. One Claude call, ~10-20s.</span></div>
