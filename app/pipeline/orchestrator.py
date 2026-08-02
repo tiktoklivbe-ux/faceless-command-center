@@ -8,6 +8,7 @@ running on a small box (individual stages still parallelize internally --
 see assemble_stage's Voice/Visual concurrency).
 """
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -121,7 +122,8 @@ def _run_job_inner(job_id: str):
             # --- Stage 1: script ---
             job.status = models.JobStatus.SCRIPT
             set_agent("script", "running")
-            _log(db, job, "Script Agent: writing script…")
+            _log(db, job, "Script Agent (Athena): writing the script — one call to Claude, usually 10-20s.")
+            _t = time.time()
             script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes)
             job.title = script.get("title", "")[:200]
             job.description = script.get("description", "")
@@ -129,7 +131,15 @@ def _run_job_inner(job_id: str):
             job.script_text = "\n".join(s["narration"] for s in segments)
             db.commit()
             set_agent("script", "done")
-            _log(db, job, f"Script Agent: done — '{job.title}' ({len(segments)} segments)")
+            _log(db, job, f"Script Agent: done in {time.time()-_t:.0f}s — '{job.title}' ({len(segments)} segments)")
+
+            # A rough up-front expectation, so a slow run is recognisable as
+            # slow rather than just unknown. Refined per-segment once real
+            # timings come in.
+            est = len(segments) * 12 + 30
+            _log(db, job, f"Estimated total: about {est//60}m {est%60}s for {len(segments)} segments. "
+                          f"Next: each segment gets narration (ElevenLabs) and an image generated in parallel, "
+                          f"then rendered into a clip. Finally all clips are stitched and captions burned in.")
 
             # --- Stages 2-5: voice, visuals, ken-burns, captions, assembly ---
             job.status = models.JobStatus.ASSEMBLING

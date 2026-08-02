@@ -9,6 +9,7 @@ After every segment is done, all clips are concatenated and captions burned
 in.
 """
 import shutil
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,16 +27,33 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
 
     clip_paths = []
     timed_segments = []
+    # Real measured timings, so the log shows where the time actually goes
+    # rather than leaving you guessing which agent is the slow one.
+    seg_times: list[float] = []
+    total_voice = total_visual = total_render = 0.0
+    job_started = time.time()
 
     set_agent("voice", "running")
     set_agent("visuals", "running")
 
+    n = len(segments)
     with ThreadPoolExecutor(max_workers=2) as pool:
         for i, seg in enumerate(segments):
+            seg_start = time.time()
             audio_path = clips_dir / f"seg_{i:02d}.mp3"
             image_path = clips_dir / f"seg_{i:02d}.png"
 
-            log(f"Segment {i+1}/{len(segments)}: Voice Agent + Visual Agent working in parallel…")
+            # Once a couple of segments are done, the average is a far better
+            # ETA than any hardcoded guess -- it reflects this job's actual
+            # API latency and this machine's actual speed.
+            eta_note = ""
+            if seg_times:
+                avg = sum(seg_times) / len(seg_times)
+                remaining = avg * (n - i)
+                eta_note = f" (~{int(remaining)}s left at {avg:.0f}s/segment)"
+            log(f"Segment {i+1}/{n}: Voice Agent narrating + Visual Agent generating image, in parallel…{eta_note}")
+
+            par_start = time.time()
             voice_future = pool.submit(voice_stage.narrate_segment, db, seg["narration"], channel.voice_id, audio_path)
             visual_future = pool.submit(visuals_stage.generate_image, db, seg["visual_prompt"], channel.visual_style, image_path)
 
@@ -47,29 +65,54 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             # rather than hanging.
             duration = voice_future.result(timeout=180)   # raises if the Voice Agent failed
             visual_future.result(timeout=180)             # raises if the Visual Agent failed
+            par_elapsed = time.time() - par_start
+            total_voice += par_elapsed  # voice+visuals run together, so this is their shared wall time
+            log(f"Segment {i+1}/{n}: Voice + Visual done in {par_elapsed:.1f}s (narration is {duration:.1f}s long)")
 
             set_agent("assembly", "running")
-            log(f"Segment {i+1}/{len(segments)}: Assembly Agent rendering {duration:.1f}s clip…")
+            render_start = time.time()
+            log(f"Segment {i+1}/{n}: Assembly Agent rendering the {duration:.1f}s clip…")
             clip_path = clips_dir / f"seg_{i:02d}.mp4"
             ffmpeg_utils.ken_burns_clip(image_path, audio_path, duration, clip_path,
                                          zoom_in=(i % 2 == 0))
+            render_elapsed = time.time() - render_start
+            total_render += render_elapsed
+            log(f"Segment {i+1}/{n}: clip rendered in {render_elapsed:.1f}s")
+
             clip_paths.append(clip_path)
             timed_segments.append({"narration": seg["narration"], "duration": duration})
+            seg_times.append(time.time() - seg_start)
 
     set_agent("voice", "done")
     set_agent("visuals", "done")
 
-    log("Assembly Agent: concatenating segments…")
+    t = time.time()
+    log("Assembly Agent: stitching all clips together…")
     joined_path = job_dir / "joined.mp4"
     ffmpeg_utils.concat_clips(clip_paths, joined_path)
+    concat_elapsed = time.time() - t
 
-    log("Assembly Agent: building captions…")
+    t = time.time()
+    log("Assembly Agent: building caption timings…")
     srt_path = job_dir / "captions.srt"
     captions_stage.build_srt(timed_segments, srt_path)
 
-    log("Assembly Agent: burning in captions…")
+    log("Assembly Agent: burning captions into the video (final encode — the slowest single step)…")
     final_path = job_dir / "final.mp4"
     ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path)
+    finalize_elapsed = time.time() - t
+
+    # A breakdown of where the time actually went. This is what makes "it's
+    # taking too long" answerable -- you can see whether the API calls or the
+    # rendering are the bottleneck instead of guessing.
+    total = time.time() - job_started
+    size_mb = final_path.stat().st_size / 1024 / 1024 if final_path.exists() else 0
+    log(
+        f"Assembly complete in {total:.0f}s total — "
+        f"voice+images {total_voice:.0f}s, clip rendering {total_render:.0f}s, "
+        f"stitching {concat_elapsed:.0f}s, final encode {finalize_elapsed:.0f}s. "
+        f"Output {size_mb:.1f}MB across {n} segments."
+    )
 
     # Clean up intermediates now that final.mp4 exists. Without this every
     # job permanently leaves behind a PNG + MP3 + MP4 per segment plus the

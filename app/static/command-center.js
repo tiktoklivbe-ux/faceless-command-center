@@ -525,6 +525,16 @@ async function renderJobDetail(body, jobId) {
       const pn = $("#pub-now");
       if (pn) pn.addEventListener("click", async () => { pn.disabled = true; pn.textContent = "Publishing…"; try { await API(`/api/jobs/${j.id}/publish`, { method: "POST" }); draw(); } catch (e) { toast(e.message); } });
     }
+    body.appendChild(el(`<div class="card"><h2>What Each Agent Does</h2>
+      <div class="agent-legend">
+        <div><b>Script (Athena)</b><span>Writes the script and picks the topic. One Claude call, ~10-20s.</span></div>
+        <div><b>Voice (Orpheus)</b><span>Turns each line into narration via ElevenLabs. Runs alongside Visual.</span></div>
+        <div><b>Visual (Iris)</b><span>Generates an image per segment. Usually the slowest API step.</span></div>
+        <div><b>Assembly (Hephaestus)</b><span>Ken Burns pan/zoom per clip, stitches them, burns in captions.</span></div>
+        <div><b>Publish (Hermes)</b><span>Uploads to YouTube/TikTok if auto-publish is on.</span></div>
+      </div>
+      <div class="hint">The log below shows real elapsed time per step, so you can see which stage is actually slow.</div>
+    </div>`));
     body.appendChild(el(`<div class="card"><h2>Progress Log</h2><div class="log-box">${(j.stage_log || "").trim() || "Queued…"}</div></div>`));
     if (j.script_text) body.appendChild(el(`<div class="card"><h2>Script</h2><div style="white-space:pre-wrap;font-size:14px;line-height:1.6">${j.script_text}</div></div>`));
     if (["published", "failed", "ready_for_review"].includes(j.status) && jobPoll) { clearInterval(jobPoll); jobPoll = null; }
