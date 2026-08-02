@@ -27,7 +27,7 @@
   window.addEventListener("resize", resize);
   resize();
 
-  const COLORS = ["#00e8ff", "#b26bff", "#ff2f9e", "#39ffa0"];
+  const COLORS = ["#e8ecef", "#a8b0b8", "#cfd6dc", "#b8c0c6"];
   const prefersReducedMotion = window.matchMedia(
     "(prefers-reduced-motion: reduce)"
   ).matches;
@@ -84,8 +84,8 @@
     orb.x += (cursor.x - orb.x) * 0.16;
     orb.y += (cursor.y - orb.y) * 0.16;
     const g = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, 70);
-    g.addColorStop(0, "rgba(0,232,255,0.16)");
-    g.addColorStop(1, "rgba(0,232,255,0)");
+    g.addColorStop(0, "rgba(232,236,239,0.16)");
+    g.addColorStop(1, "rgba(232,236,239,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(orb.x, orb.y, 70, 0, Math.PI * 2);

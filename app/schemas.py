@@ -67,13 +67,3 @@ class SettingsIn(BaseModel):
     youtube_client_secret: Optional[str] = None
     tiktok_client_key: Optional[str] = None
     tiktok_client_secret: Optional[str] = None
-    jarvis_model: Optional[str] = None
-    jarvis_voice_id: Optional[str] = None
-    jarvis_personality: Optional[str] = None
-    jarvis_wake_word: Optional[str] = None
-    jarvis_read_aloud: Optional[str] = None
-    jarvis_notifications: Optional[str] = None
-    jarvis_accent_color: Optional[str] = None
-    jarvis_greeting: Optional[str] = None
-    jarvis_greeting_mode: Optional[str] = None
-    jarvis_speech_rate: Optional[str] = None

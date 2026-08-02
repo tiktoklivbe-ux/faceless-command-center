@@ -21,7 +21,7 @@
     document.body.appendChild(canvas);
     const ctx = canvas.getContext("2d");
 
-    const colors = ["#00e8ff", "#b26bff", "#ff2f9e", "#39ffa0", "#ffd23d"];
+    const colors = ["#e8ecef", "#a8b0b8", "#cfd6dc", "#b8c0c6", "#8d959c"];
     const pieces = Array.from({ length: 160 }, () => ({
       x: innerWidth / 2,
       y: innerHeight / 2,
@@ -97,17 +97,17 @@
     `;
     overlay.innerHTML = `
       <div style="
-        background:#070d1c; border:1px solid rgba(0,232,255,0.25); border-radius:12px;
-        padding:24px 28px; min-width:280px; box-shadow:0 0 40px rgba(0,232,255,0.15);
+        background:#070d1c; border:1px solid rgba(232,236,239,0.25); border-radius:12px;
+        padding:24px 28px; min-width:280px; box-shadow:0 0 40px rgba(232,236,239,0.15);
         font-family:'Rajdhani',sans-serif; color:#d8e6ff;
       ">
-        <div style="font-family:'Orbitron',sans-serif; font-size:15px; letter-spacing:1px; margin-bottom:14px; color:#00e8ff;">
+        <div style="font-family:'Orbitron',sans-serif; font-size:15px; letter-spacing:1px; margin-bottom:14px; color:#e8ecef;">
           KEYBOARD SHORTCUTS
         </div>
         ${SHORTCUTS.map(([key, desc]) => `
           <div style="display:flex; justify-content:space-between; gap:24px; padding:6px 0; font-size:13px; border-bottom:1px solid rgba(120,150,220,0.1);">
             <span style="color:#7c8db5;">${desc}</span>
-            <kbd style="background:rgba(0,232,255,0.1); border:1px solid rgba(0,232,255,0.3); border-radius:4px; padding:2px 8px; font-family:'Share Tech Mono',monospace; color:#00e8ff;">${key}</kbd>
+            <kbd style="background:rgba(232,236,239,0.1); border:1px solid rgba(232,236,239,0.3); border-radius:4px; padding:2px 8px; font-family:'Share Tech Mono',monospace; color:#e8ecef;">${key}</kbd>
           </div>`).join("")}
         <div style="margin-top:14px; font-size:11px; color:#7c8db5; text-align:center;">press ? or Esc to close</div>
       </div>
@@ -160,7 +160,7 @@
     function step() {
       ctx.fillStyle = "rgba(1,3,10,0.15)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#39ffa0";
+      ctx.fillStyle = "#b8c0c6";
       ctx.font = "14px monospace";
       drops.forEach((y, i) => {
         const ch = chars[Math.floor(Math.random() * chars.length)];

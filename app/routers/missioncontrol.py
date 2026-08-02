@@ -42,7 +42,7 @@ def _agent_for_line(text: str):
             meta = _STAGE_TO_AGENT_META.get(stage)
             if meta:
                 best_pos, best_meta = pos, meta
-    return best_meta or {"id": "aether", "name": "AETHER", "icon": "✦", "color": "#00e8ff"}
+    return best_meta or {"id": "aether", "name": "AETHER", "icon": "✦", "color": "#e8ecef"}
 
 
 @router.get("/overview")

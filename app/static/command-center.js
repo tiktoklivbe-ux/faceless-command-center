@@ -70,7 +70,7 @@ function initStarfield() {
       sh.x += sh.vx; sh.y += sh.vy; sh.life -= 0.012;
       const grad = ctx.createLinearGradient(sh.x, sh.y, sh.x - sh.vx * 8, sh.y - sh.vy * 8);
       grad.addColorStop(0, `rgba(0,232,255,${Math.max(sh.life, 0)})`);
-      grad.addColorStop(1, "rgba(0,232,255,0)");
+      grad.addColorStop(1, "rgba(232,236,239,0)");
       ctx.strokeStyle = grad; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.lineTo(sh.x - sh.vx * 8, sh.y - sh.vy * 8); ctx.stroke();
     }
@@ -150,7 +150,7 @@ function updateConstellation(dt, now) {
         line.setAttribute("stroke-opacity", "0.5");
       } else {
         pulse.style.opacity = "0";
-        line.setAttribute("stroke", "rgba(0,232,255,0.16)");
+        line.setAttribute("stroke", "rgba(232,236,239,0.16)");
       }
     }
   }
@@ -218,16 +218,8 @@ function tickCamera(dt) {
 function mainLoop(now) {
   const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
   mainLoop._last = now;
-  // Skip all the constellation/camera work when a full-page panel (Jarvis)
-  // is covering it -- it's completely invisible behind an opaque overlay,
-  // and running it alongside that panel's own canvas made the page lag.
-  const inner = document.getElementById("bigpanel-inner");
-  const covered = inner && inner.classList.contains("fullpage") &&
-                  document.getElementById("bigpanel").classList.contains("open");
-  if (!covered) {
-    tickCamera(dt);
-    updateConstellation(dt, now);
-  }
+  tickCamera(dt);
+  updateConstellation(dt, now);
   requestAnimationFrame(mainLoop);
 }
 
@@ -401,25 +393,21 @@ function initSparks() {
 function stopAllPanelPolls() {
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
-  if (window.stopJarvisSession) window.stopJarvisSession();
 }
 async function openBigPanel(which) {
   stopAllPanelPolls();
   const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
   inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
   inner.classList.toggle("wide", which === "missioncontrol");
-  inner.classList.toggle("fullpage", which === "jarvis");
   bp.classList.add("open");
   const body = $("#bp-body");
   if (which === "settings") return renderSettingsPanel(body);
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
   if (which === "missioncontrol") return renderMissionControlPanel(body);
-  if (which === "jarvis") return renderJarvisPanel(body);
 }
 const SIDE_MAP = {
   "side-missioncontrol": "missioncontrol",
-  "side-jarvis": "jarvis",
   "side-jobs": "jobs",
   "side-channels": "channels",
   "side-settings": "settings",
@@ -579,10 +567,10 @@ function generateMediaKit(overview) {
   ctx.fillStyle = bg; ctx.fillRect(0, 0, 1200, 630);
 
   // subtle border glow
-  ctx.strokeStyle = "rgba(0,232,255,0.35)"; ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(232,236,239,0.35)"; ctx.lineWidth = 2;
   ctx.strokeRect(20, 20, 1160, 590);
 
-  ctx.fillStyle = "#00e8ff";
+  ctx.fillStyle = "#e8ecef";
   ctx.font = "bold 28px sans-serif";
   ctx.fillText("FACELESS COMMAND CENTER", 60, 90);
   ctx.fillStyle = "#7c8db5";
@@ -606,7 +594,7 @@ function generateMediaKit(overview) {
     ctx.fillText(label.toUpperCase(), x, y + 28);
   });
 
-  ctx.fillStyle = "#39ffa0";
+  ctx.fillStyle = "#b8c0c6";
   ctx.font = "14px sans-serif";
   ctx.fillText("Numbers pulled live from connected YouTube/TikTok accounts.", 60, 590);
 
@@ -772,7 +760,7 @@ async function renderSettingsPanel(body) {
         <option value="claude-haiku-4-5-20251001" ${s.anthropic_model?.value === "claude-haiku-4-5-20251001" ? "selected" : ""}>Haiku 4.5 — fastest, cheapest</option>
         <option value="claude-opus-4-8" ${s.anthropic_model?.value === "claude-opus-4-8" ? "selected" : ""}>Opus 4.8 — most capable, slower/pricier</option>
       </select>
-      <div class="hint">Affects both script generation (Athena) and Jarvis. Haiku is a good pick if you want snappier, cheaper responses and don't notice a quality drop.</div>
+      <div class="hint">Used by Athena for script generation. Haiku is cheapest; Sonnet gives better scripts.</div>
       ${field("gemini_api_key", "Gemini key", "AIza…")}
       ${field("openai_api_key", "OpenAI key", "sk-…")}
       <div class="hint">No key yet? Athena falls back to a placeholder script so the whole pipeline still runs.</div>
