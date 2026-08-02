@@ -145,7 +145,7 @@ TOOLS = [
     },
     {
         "name": "update_automation",
-        "description": "Change a channel's Chronos automation settings -- how many videos per day, or turn automation on/off.",
+        "description": "Change a channel's automation: videos per day, or on/off.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -165,10 +165,7 @@ TOOLS = [
     },
     {
         "name": "computer_action",
-        "description": "Control the user's actual computer through the local Jarvis Agent: open an application (brought to the front so it's visible), focus an already-open window, "
-                       "type text at the current cursor focus, click at a screen coordinate, press a key combo, "
-                       "or take a screenshot. Requires the local agent to be running and paired -- if it's not "
-                       "connected, this will report that clearly instead of pretending to work.",
+        "description": "Control the user's computer via the local agent: open/focus an app, type, click, press keys, screenshot. Reports clearly if the agent isn't running.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -184,9 +181,7 @@ TOOLS = [
     },
     {
         "name": "channel_advice",
-        "description": "Analyze the user's real channel stats and give concrete growth advice, plus math on "
-                       "how long a subscriber or view goal would take at the current rate. Use this whenever "
-                       "they ask what to do to grow, how they're doing, or when they'll hit a target.",
+        "description": "Real channel stats, growth advice, and goal timeline math. Use for how-to-grow or when-will-I-hit questions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -197,9 +192,7 @@ TOOLS = [
     },
     {
         "name": "agent_status",
-        "description": "Report what every agent in the constellation is doing right now -- which are actively "
-                       "working on a job, which are idle, and which are scaffolding not yet wired to real "
-                       "logic. Use when asked about 'the agents' or what's running.",
+        "description": "What each agent is doing now: active, idle, or non-functional scaffolding.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -218,7 +211,7 @@ TOOLS = [
     },
     {
         "name": "manage_job",
-        "description": "Act on an existing video job: retry a failed one, delete one, or publish one that's ready.",
+        "description": "Retry, delete, or publish a video job.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -230,10 +223,7 @@ TOOLS = [
     },
     {
         "name": "diagnose_job",
-        "description": "Deep-diagnose a video job: identify which stage failed or stalled, the actual cause "
-                       "matched against known failure modes, a specific fix, whether you can fix it yourself "
-                       "or the user has to, and an ETA if it's still running. Use for 'why did this fail', "
-                       "'what's wrong', 'how long will this take', 'fix my videos'.",
+        "description": "Diagnose a job: failing stage, cause, fix, who can fix it, and ETA. Use for why-did-this-fail or fix-my-videos.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -243,9 +233,7 @@ TOOLS = [
     },
     {
         "name": "workspace_status",
-        "description": "Full workspace overview: which API keys are configured (never the values), automation "
-                       "settings per channel, job counts, and what's missing or misconfigured. Use for "
-                       "'is everything set up', 'what's broken', 'what am I missing'.",
+        "description": "Workspace audit: which keys are set (never values), channel automation, job counts, and what's misconfigured.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
@@ -812,7 +800,55 @@ class ChatOut(BaseModel):
     conversation_id: str | None = None
 
 
-def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[dict]) -> dict:
+def _relevant_tools(message: str, history: list[dict]) -> list[dict]:
+    """Pick which tool definitions to send for this turn.
+
+    Every tool definition is re-sent on EVERY API call, and the tool-use loop
+    means several calls per question -- so all 13 definitions cost roughly
+    1,500 tokens per call, multiplied by however many round-trips a question
+    takes. That was the dominant cost of running Jarvis, far more than video
+    scripts.
+
+    Most messages need at most a couple of tools. This sends a small always-on
+    core plus anything the message actually hints at, and falls back to
+    everything only when a message is genuinely ambiguous -- so the common case
+    gets much cheaper without losing capability.
+    """
+    text = (message or "").lower()
+    for turn in history[-2:]:
+        content = turn.get("content")
+        if isinstance(content, str):
+            text += " " + content.lower()
+
+    keep = {"list_channels", "list_recent_jobs"}  # cheap, and relevant constantly
+
+    groups = {
+        "start_video":     ["make a video", "new video", "create a video", "start a video", "another video", "generate"],
+        "check_weather":   ["weather", "temperature", "raining", "forecast", "outside"],
+        "update_automation": ["automation", "per day", "videos a day", "schedule", "turn on", "turn off", "auto"],
+        "get_activity_feed": ["activity", "what's happening", "whats happening", "recent", "log"],
+        "computer_action": ["open ", "type ", "click", "press", "screenshot", "my computer", "launch", "focus"],
+        "channel_advice":  ["grow", "growth", "advice", "subscriber", "views", "goal", "how am i doing", "monetiz", "sponsor"],
+        "agent_status":    ["agent", "constellation", "who's working", "whos working"],
+        "manage_channel":  ["channel", "niche", "style"],
+        "manage_job":      ["retry", "delete", "publish", "cancel"],
+        "diagnose_job":    ["fail", "broke", "broken", "wrong", "error", "stuck", "diagnose", "fix", "why did", "eta", "how long"],
+        "workspace_status": ["set up", "setup", "configured", "missing", "everything ok", "what's broken", "whats broken", "api key"],
+    }
+
+    for tool_name, triggers in groups.items():
+        if any(t in text for t in triggers):
+            keep.add(tool_name)
+
+    # Ambiguous/short message with no signal -- send everything rather than
+    # guessing wrong and losing a capability mid-conversation.
+    if len(keep) <= 2 and len(text.split()) > 3:
+        return TOOLS
+
+    return [t for t in TOOLS if t["name"] in keep]
+
+
+def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[dict], tools: list[dict]) -> dict:
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -825,7 +861,7 @@ def _call_claude(api_key: str, model: str, system_prompt: str, messages: list[di
             "max_tokens": 300,
             "system": system_prompt,
             "messages": messages,
-            "tools": TOOLS,
+            "tools": tools,
         },
         timeout=30,
     )
@@ -850,9 +886,16 @@ def run_jarvis_turn(db: Session, background_tasks: BackgroundTasks, messages: li
     personality = get_setting(db, "jarvis_personality", DEFAULT_PERSONALITY)
     system_prompt = build_system_prompt(personality)
 
+    # Chosen once per turn from the opening message, then reused for the whole
+    # tool loop -- switching the tool set mid-loop would invalidate tool_use
+    # ids already in the conversation.
+    user_msg = next((m["content"] for m in reversed(messages)
+                     if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+    tools = _relevant_tools(user_msg, messages[:-1])
+
     for _ in range(4):
         try:
-            data = _call_claude(api_key, model, system_prompt, messages)
+            data = _call_claude(api_key, model, system_prompt, messages, tools)
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else "?"
             if status == 401:
