@@ -39,8 +39,14 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             voice_future = pool.submit(voice_stage.narrate_segment, db, seg["narration"], channel.voice_id, audio_path)
             visual_future = pool.submit(visuals_stage.generate_image, db, seg["visual_prompt"], channel.visual_style, image_path)
 
-            duration = voice_future.result()   # raises if the Voice Agent failed
-            visual_future.result()             # raises if the Visual Agent failed
+            # Timeouts here matter: without them a worker that never returns
+            # (a hung HTTP call that slipped past its own timeout, or a stuck
+            # subprocess) blocks this thread forever, and the job sits with no
+            # error and no log movement. The underlying API calls have 60-120s
+            # timeouts, so 180s is a generous outer bound that still fails
+            # rather than hanging.
+            duration = voice_future.result(timeout=180)   # raises if the Voice Agent failed
+            visual_future.result(timeout=180)             # raises if the Visual Agent failed
 
             set_agent("assembly", "running")
             log(f"Segment {i+1}/{len(segments)}: Assembly Agent rendering {duration:.1f}s clip…")

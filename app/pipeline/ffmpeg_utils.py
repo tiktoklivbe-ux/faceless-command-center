@@ -2,10 +2,30 @@ import json
 import subprocess
 from pathlib import Path
 
+# No ffmpeg operation here should take anywhere near this long -- a full
+# 9-segment assembly measures well under a minute. Without a timeout a hung
+# ffmpeg (corrupt input, or one waiting on stdin) blocks the entire render
+# thread indefinitely, which surfaces as a job stuck for hours with no error
+# and nothing in the log. A ceiling turns that into a clean, diagnosable
+# failure that the retry logic can act on.
+FFMPEG_TIMEOUT_SECONDS = 600
 
-def run(cmd: list[str]):
+
+def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
     """Run an ffmpeg/ffprobe command, raising with full stderr on failure."""
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            # Explicitly close stdin. ffmpeg will silently wait forever for
+            # input in some situations if it inherits an open stdin, which is
+            # a classic cause of "it just hangs and never finishes".
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"ffmpeg timed out after {timeout}s and was killed: {' '.join(cmd[:6])}... "
+            "This usually means a corrupt or truncated input file from an earlier stage."
+        )
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}\n--- stderr ---\n{proc.stderr[-4000:]}")
     return proc
