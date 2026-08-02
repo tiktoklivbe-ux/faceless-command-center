@@ -731,3 +731,13 @@ button.msc-link-card { cursor: pointer; }
 .agent-legend div { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid var(--border-soft); }
 .agent-legend b { font-size: 12px; color: var(--ink); }
 .agent-legend span { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+
+/* ---------------- plain-English job status ---------------- */
+.job-status-card { text-align: center; padding: 22px 20px; }
+.job-headline { font-family: var(--font-head); font-size: 20px; color: var(--ink); margin-bottom: 6px; }
+.job-detail { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+.job-bar { height: 6px; border-radius: 3px; background: rgba(232,236,239,0.08); overflow: hidden; }
+.job-bar-fill { height: 100%; background: var(--cyan); transition: width 0.6s ease; box-shadow: 0 0 12px rgba(232,236,239,0.3); }
+.job-meta { margin-top: 8px; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); letter-spacing: 1px; }
+.job-warn { margin-top: 14px; padding: 10px 12px; border-radius: 6px; font-size: 12px;
+            color: var(--red); border: 1px solid rgba(209,106,106,0.3); background: rgba(209,106,106,0.07); }

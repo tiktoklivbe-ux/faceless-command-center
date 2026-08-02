@@ -214,6 +214,55 @@ function tickCamera(dt) {
   $("#gridwash").style.transform = `translate(${state.mouse.x * -16}px, ${state.mouse.y * -16}px)`;
 }
 
+/**
+ * Plain-English status for a job -- big readable summary instead of making
+ * anyone parse timestamped log lines. Everything shown here is derived from
+ * the log the pipeline already writes, so it can't drift out of sync with
+ * what's actually happening.
+ */
+function renderJobStatusCard(j) {
+  const lines = (j.stage_log || "").trim().split("\n").filter(Boolean);
+  const last = lines[lines.length - 1] || "";
+  const started = j.created_at ? new Date(j.created_at) : null;
+  const elapsed = started ? Math.floor((Date.now() - started.getTime()) / 1000) : 0;
+  const mmss = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
+
+  // How many segments are done, and how many there are in total.
+  const totalMatch = /Segment \d+\/(\d+)/.exec(j.stage_log || "");
+  const total = totalMatch ? parseInt(totalMatch[1], 10) : null;
+  const doneCount = ((j.stage_log || "").match(/clip rendered in/g) || []).length;
+
+  let headline, detail, pct = 0;
+  const status = String(j.status || "");
+
+  if (status === "published")            { headline = "✅ Published";        detail = "This one's live."; pct = 100; }
+  else if (status === "ready_for_review"){ headline = "✅ Done";             detail = "Ready to watch or publish."; pct = 100; }
+  else if (status === "failed")          { headline = "❌ Failed";           detail = j.error_message || "No error recorded."; pct = 0; }
+  else if (status === "queued")          { headline = "⏳ Waiting in line";  detail = "Another video is rendering. Videos run one at a time on purpose."; }
+  else if (/Script Agent/.test(last))    { headline = "✍️ Writing the script"; detail = "Usually 10-20 seconds."; pct = 5; }
+  else if (/Voice Agent|Visual Agent/.test(last) || /clip rendered|Assembly Agent rendering/.test(last)) {
+    pct = total ? Math.round(5 + (doneCount / total) * 80) : 30;
+    headline = total ? `🎬 Building clip ${Math.min(doneCount + 1, total)} of ${total}` : "🎬 Building clips";
+    detail = "Making narration, generating an image, and rendering each clip.";
+  }
+  else if (/stitching|captions/i.test(last)) { headline = "🔗 Final touches"; detail = "Joining clips and burning in captions."; pct = 92; }
+  else                                       { headline = "⏳ Starting up";   detail = "Getting going."; }
+
+  // Flag a genuinely stuck job rather than letting it silently spin.
+  const stalled = !["published","ready_for_review","failed","queued"].includes(status) && elapsed > 900;
+  const warn = stalled
+    ? `<div class="job-warn">⚠️ Running ${mmss(elapsed)} — much longer than expected. It'll be auto-retried, or you can retry it yourself.</div>`
+    : "";
+
+  return `<div class="card job-status-card">
+    <div class="job-headline">${headline}</div>
+    <div class="job-detail">${detail}</div>
+    <div class="job-bar"><div class="job-bar-fill" style="width:${pct}%"></div></div>
+    <div class="job-meta">${pct}% · running ${mmss(elapsed)}</div>
+    ${warn}
+  </div>`;
+}
+
 // ============================================================ MAIN LOOP
 function mainLoop(now) {
   const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
@@ -525,6 +574,7 @@ async function renderJobDetail(body, jobId) {
       const pn = $("#pub-now");
       if (pn) pn.addEventListener("click", async () => { pn.disabled = true; pn.textContent = "Publishing…"; try { await API(`/api/jobs/${j.id}/publish`, { method: "POST" }); draw(); } catch (e) { toast(e.message); } });
     }
+    body.appendChild(el(renderJobStatusCard(j)));
     body.appendChild(el(`<div class="card"><h2>What Each Agent Does</h2>
       <div class="agent-legend">
         <div><b>Script (Athena)</b><span>Writes the script and picks the topic. One Claude call, ~10-20s.</span></div>
