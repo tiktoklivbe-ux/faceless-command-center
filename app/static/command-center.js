@@ -220,11 +220,28 @@ function tickCamera(dt) {
  * the log the pipeline already writes, so it can't drift out of sync with
  * what's actually happening.
  */
+/** Parses a server timestamp as UTC. The API returns naive datetimes with no
+ * timezone suffix, so plain `new Date(...)` reads them as LOCAL time -- which
+ * produced negative elapsed durations for anyone west of UTC. */
+function asUTC(ts) {
+  if (!ts) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(ts);
+  const d = new Date(hasZone ? ts : ts + "Z");
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function renderJobStatusCard(j) {
   const lines = (j.stage_log || "").trim().split("\n").filter(Boolean);
   const last = lines[lines.length - 1] || "";
-  const started = j.created_at ? new Date(j.created_at) : null;
-  const elapsed = started ? Math.floor((Date.now() - started.getTime()) / 1000) : 0;
+  // Timestamps come back as naive UTC (no timezone suffix), so `new Date(...)`
+  // would interpret them as LOCAL time and produce a negative elapsed for
+  // anyone west of UTC. Appending Z forces correct UTC parsing. This also
+  // broke the stall warning below, since `elapsed > 900` can never be true
+  // when elapsed is negative.
+  const started = asUTC(j.created_at);
+  // Clamp at 0: a small clock skew between server and browser shouldn't
+  // render as a negative duration.
+  const elapsed = started ? Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000)) : 0;
   const mmss = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
 
   // How many segments are done, and how many there are in total.
@@ -550,7 +567,7 @@ async function renderJobsPanel(body) {
     const ch = channels.find((c) => c.id === j.channel_id);
     const row = el(`<div class="job-row"><div>
       <div class="job-title">${j.title || "(generating…)"}</div>
-      <div class="job-meta">${ch ? ch.name : "?"} · ${new Date(j.created_at).toLocaleString()}</div></div>
+      <div class="job-meta">${ch ? ch.name : "?"} · ${(asUTC(j.created_at) || new Date()).toLocaleString()}</div></div>
       <span class="badge ${j.status}">${j.status.replace(/_/g, " ")}</span></div>`);
     row.addEventListener("click", () => renderJobDetail(body, j.id));
     list.appendChild(row);
