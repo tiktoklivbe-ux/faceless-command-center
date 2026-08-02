@@ -117,10 +117,16 @@ def _channel_due(db: Session, channel: models.Channel) -> bool:
         return False
 
     today_start = _today_start()
+    # Failed jobs must NOT count toward the daily quota. Counting them meant a
+    # day where 3 renders failed looked "complete" to Chronos, so it created
+    # nothing further -- you'd end the day with zero videos and no retries.
+    # The quota should track videos actually produced (or still in progress),
+    # not attempts made.
     todays_jobs = (
         db.query(models.VideoJob)
         .filter(models.VideoJob.channel_id == channel.id)
         .filter(models.VideoJob.created_at >= today_start)
+        .filter(models.VideoJob.status != models.JobStatus.FAILED)
         .count()
     )
     if todays_jobs >= channel.auto_per_day:
@@ -129,6 +135,7 @@ def _channel_due(db: Session, channel: models.Channel) -> bool:
     last_job = (
         db.query(models.VideoJob)
         .filter(models.VideoJob.channel_id == channel.id)
+        .filter(models.VideoJob.status != models.JobStatus.FAILED)
         .order_by(models.VideoJob.created_at.desc())
         .first()
     )
