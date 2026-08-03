@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import JOBS_DIR
 from ..database import SessionLocal
+from ..settings_store import get_setting
 
 log = logging.getLogger("orchestrator")
 from .. import render_gate
@@ -109,6 +110,51 @@ def run_job(job_id: str):
         render_gate.release(job_id)
 
 
+def _preflight(db: Session, channel) -> list[str]:
+    """Check configuration BEFORE burning time on a render.
+
+    Without this, a missing or undecryptable API key doesn't surface until the
+    stage that needs it -- as a raw 401, minutes in, which reads like a
+    mysterious failure rather than "you need to enter a key". An empty key
+    string produces exactly the same 401 as a wrong one, so the distinction
+    has to be made here.
+    """
+    problems = []
+
+    provider = get_setting(db, "llm_provider", "anthropic")
+    llm_keys = {
+        "anthropic": get_setting(db, "anthropic_api_key"),
+        "openai": get_setting(db, "openai_api_key"),
+        "gemini": get_setting(db, "gemini_api_key"),
+    }
+    if not any(llm_keys.values()):
+        problems.append(
+            "No working script-writing key. Add an Anthropic, OpenAI, or Gemini key in Settings. "
+            "(If you entered one already, it may have become unreadable after an encryption-key "
+            "change -- re-enter it and it'll stick.)"
+        )
+    elif not llm_keys.get(provider):
+        available = [k for k, v in llm_keys.items() if v]
+        problems.append(
+            f"Settings say to use '{provider}' for scripts, but that key isn't readable. "
+            f"Working keys: {', '.join(available)}. Either re-enter the {provider} key or switch provider."
+        )
+
+    img_provider = get_setting(db, "image_provider", "placeholder")
+    if img_provider != "placeholder":
+        img_key = {
+            "openai": "openai_api_key",
+            "stability": "stability_api_key",
+            "gemini": "gemini_api_key",
+        }.get(img_provider)
+        if img_key and not get_setting(db, img_key):
+            problems.append(
+                f"Image provider is '{img_provider}' but that key isn't readable. Re-enter it, "
+                f"or set the image provider to 'placeholder' to keep producing videos meanwhile."
+            )
+    return problems
+
+
 def _run_job_inner(job_id: str):
     db = SessionLocal()
     try:
@@ -123,6 +169,11 @@ def _run_job_inner(job_id: str):
             set_agent(name, "idle")
 
         try:
+            # Fail fast on misconfiguration rather than minutes into a render.
+            issues = _preflight(db, channel)
+            if issues:
+                raise RuntimeError("Can't start: " + " | ".join(issues))
+
             # --- Stage 1: script ---
             job.status = models.JobStatus.SCRIPT
             set_agent("script", "running")
