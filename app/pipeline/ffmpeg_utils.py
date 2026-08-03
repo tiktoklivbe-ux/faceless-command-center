@@ -48,50 +48,47 @@ def make_silence(out_path: Path, duration: float):
 
 
 def ken_burns_clip(image_path: Path, audio_path: Path, duration: float, out_path: Path,
-                    width: int = 1080, height: int = 1920, zoom_in: bool = True):
+                    width: int = 1080, height: int = 1920, zoom_in: bool = True,
+                    fast_mode: bool = False):
     """
     Turn a single still image + its narration audio into a short vertical video clip
     with a slow pan/zoom (the classic 'faceless channel' motion effect), synced to the
     exact duration of that segment's audio.
+
+    fast_mode skips the pan/zoom entirely and just renders the still. zoompan is by
+    far the most CPU-expensive filter in the pipeline -- it re-renders every frame at
+    a scaled-up size. On an underpowered instance that's the difference between a
+    video finishing and a job appearing to hang, so it's worth having a mode that
+    trades the motion effect for actually completing.
     """
-    # 24fps rather than 30. These are still images with a slow pan -- there's
-    # no motion detail that 30fps captures and 24 doesn't, and 24 is standard
-    # cinematic framerate anyway. Measured ~36% faster to render, which
-    # compounds across every segment of every video.
     fps = 24
     frames = max(int(duration * fps), 1)
-    # zoompan needs headroom above the output size so panning has room to move,
-    # but only as much as the zoom actually uses (max 1.3x here).
-    #
-    # This is the single most expensive step in the whole pipeline: zoompan
-    # processes EVERY frame at the scaled-up size before downscaling to the
-    # output. Working at 1.4x output (1512x2688) meant ~4M pixels per frame
-    # when the result is only 1080x1920. Dropping to 1.1x gives the 1.3x zoom
-    # all the room it needs while cutting the per-frame pixel work by ~40%.
-    scale_w, scale_h = int(width * 1.1), int(height * 1.1)
-    if zoom_in:
-        zoom_expr = f"min(zoom+0.0007,1.3)"
+
+    if fast_mode:
+        vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+              f"crop={width}:{height},format=yuv420p")
     else:
-        zoom_expr = f"if(lte(zoom,1.0),1.3,max(zoom-0.0007,1.0))"
-    vf = (
-        f"scale={scale_w}:{scale_h},"
-        f"zoompan=z='{zoom_expr}':d={frames}:s={width}x{height}:fps={fps},"
-        f"format=yuv420p"
-    )
+        # zoompan needs headroom above the output size so panning has room to move,
+        # but only as much as the zoom actually uses (max 1.3x here).
+        scale_w, scale_h = int(width * 1.1), int(height * 1.1)
+        if zoom_in:
+            zoom_expr = f"min(zoom+0.0007,1.3)"
+        else:
+            zoom_expr = f"if(lte(zoom,1.0),1.3,max(zoom-0.0007,1.0))"
+        vf = (
+            f"scale={scale_w}:{scale_h},"
+            f"zoompan=z='{zoom_expr}':d={frames}:s={width}x{height}:fps={fps},"
+            f"format=yuv420p"
+        )
+
     run([
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
         "-vf", vf,
+        "-r", str(fps),
         "-t", str(duration),
-        # ultrafast over veryfast: for a 1080x1920 clip built from a still
-        # image there's very little visible quality difference, and it's
-        # roughly 2.5x faster. File size grows somewhat, which doesn't matter
-        # for an intermediate that gets re-encoded at concat anyway.
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        # NOTE: no -threads cap. That was added while chasing an OOM theory
-        # that later proved wrong, and it forced ffmpeg onto a single core --
-        # a straight multiple-times slowdown on any multi-core host.
         "-c:a", "aac", "-b:a", "160k",
         "-shortest",
         str(out_path),

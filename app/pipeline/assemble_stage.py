@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from ..settings_store import get_setting
 from . import voice_stage, visuals_stage, captions_stage, ffmpeg_utils
 
 
@@ -32,6 +33,11 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     seg_times: list[float] = []
     total_voice = total_visual = total_render = 0.0
     job_started = time.time()
+    # Skipping the pan/zoom is the single biggest render saving available, so
+    # it's exposed as a setting for instances that can't keep up.
+    fast_render = get_setting(db, "fast_render", "false") == "true"
+    if fast_render:
+        log("Fast render mode is ON — skipping the Ken Burns pan/zoom to save CPU.")
 
     set_agent("voice", "running")
     set_agent("visuals", "running")
@@ -74,7 +80,7 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             log(f"Segment {i+1}/{n}: Assembly Agent rendering the {duration:.1f}s clip…")
             clip_path = clips_dir / f"seg_{i:02d}.mp4"
             ffmpeg_utils.ken_burns_clip(image_path, audio_path, duration, clip_path,
-                                         zoom_in=(i % 2 == 0))
+                                         zoom_in=(i % 2 == 0), fast_mode=fast_render)
             render_elapsed = time.time() - render_start
             total_render += render_elapsed
             log(f"Segment {i+1}/{n}: clip rendered in {render_elapsed:.1f}s")

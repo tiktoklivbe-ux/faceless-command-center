@@ -862,6 +862,14 @@ async function renderSettingsPanel(body) {
     </div>
     <div class="card"><h2>Voice — ElevenLabs</h2>${field("elevenlabs_api_key", "ElevenLabs key", "")}
       <div class="hint">No key? Orpheus renders timed silence so you can still test assembly + captions.</div></div>
+    <div class="card"><h2>Render Speed</h2>
+      <label>Fast render mode</label>
+      <select id="st-fast_render">
+        <option value="false" ${(s.fast_render && s.fast_render.value) !== "true" ? "selected" : ""}>Off — Ken Burns pan/zoom (looks better)</option>
+        <option value="true" ${(s.fast_render && s.fast_render.value) === "true" ? "selected" : ""}>On — static images, much faster</option>
+      </select>
+      <div class="hint">The pan/zoom effect is the most CPU-heavy part of rendering. Turn this on if videos are taking too long on your server.</div>
+    </div>
     <div class="card"><h2>Visuals</h2>
       <label>Provider</label>
       <select id="st-image_provider">
@@ -879,7 +887,7 @@ async function renderSettingsPanel(body) {
     <button class="btn" id="st-save">Save Settings</button>`;
   $("#st-save").addEventListener("click", async () => {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
-      "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret"];
+      "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });

@@ -20,6 +20,7 @@ KNOWN_KEYS = {
     "youtube_client_secret": True,
     "tiktok_client_key": True,
     "tiktok_client_secret": True,
+    "fast_render": False,          # "true" skips the Ken Burns pan/zoom -- much cheaper on slow instances
 }
 
 

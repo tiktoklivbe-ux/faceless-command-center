@@ -67,3 +67,4 @@ class SettingsIn(BaseModel):
     youtube_client_secret: Optional[str] = None
     tiktok_client_key: Optional[str] = None
     tiktok_client_secret: Optional[str] = None
+    fast_render: Optional[str] = None
