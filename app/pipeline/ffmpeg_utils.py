@@ -1,4 +1,6 @@
 import json
+import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -12,23 +14,110 @@ FFMPEG_TIMEOUT_SECONDS = 600
 
 
 def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
-    """Run an ffmpeg/ffprobe command, raising with full stderr on failure."""
+    """Run an ffmpeg/ffprobe command, raising with full stderr on failure.
+
+    Uses Popen + explicit kill rather than subprocess.run(timeout=...). That
+    matters more than it looks: subprocess.run raising TimeoutExpired does NOT
+    terminate the child -- it abandons it. A hung ffmpeg therefore keeps
+    running forever, still consuming CPU, and every retry spawns another one.
+    They accumulate until the machine is saturated and NOTHING completes,
+    including operations that would normally take seconds. That failure mode
+    looks exactly like "the server got mysteriously slow".
+
+    The process is started in its own process group so the whole tree can be
+    killed -- ffmpeg can spawn helpers that would otherwise survive.
+    """
+    popen_kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "stdin": subprocess.DEVNULL,  # inherited stdin is a classic silent-hang cause
+        "text": True,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True  # own process group, so killpg gets children too
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
-            # Explicitly close stdin. ffmpeg will silently wait forever for
-            # input in some situations if it inherits an open stdin, which is
-            # a classic cause of "it just hangs and never finishes".
-            stdin=subprocess.DEVNULL,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        # Reap it so it doesn't linger as a zombie.
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
         raise RuntimeError(
-            f"ffmpeg timed out after {timeout}s and was killed: {' '.join(cmd[:6])}... "
-            "This usually means a corrupt or truncated input file from an earlier stage."
+            f"ffmpeg exceeded {timeout}s and was killed: {' '.join(cmd[:6])}... "
+            "The process was terminated rather than left running."
         )
+
     if proc.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n--- stderr ---\n{proc.stderr[-4000:]}")
-    return proc
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n--- stderr ---\n{(stderr or '')[-4000:]}")
+
+    class _Result:
+        pass
+    result = _Result()
+    result.stdout = stdout
+    result.stderr = stderr
+    result.returncode = proc.returncode
+    return result
+
+
+def _kill_tree(proc: subprocess.Popen):
+    """Terminate a process and any children it spawned."""
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.kill()
+    except Exception:
+        pass
+
+
+def kill_orphaned_ffmpeg(max_age_seconds: int = 900) -> int:
+    """Kill ffmpeg processes that have been running far too long.
+
+    Necessary cleanup for orphans left behind by the previous timeout bug,
+    where a hung ffmpeg was abandoned rather than killed. Those accumulate,
+    each holding CPU, until the machine is saturated and even trivial renders
+    never finish. Called before each render so a fresh job isn't competing
+    with the corpses of old ones.
+
+    Deliberately conservative: only ffmpeg/ffprobe, only processes older than
+    the cutoff (well beyond any legitimate render), never the current process.
+    """
+    if os.name != "posix":
+        return 0
+    killed = 0
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid,etimes,comm"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except Exception:
+        return 0
+
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_s, etimes_s, comm = parts
+        if comm.strip() not in ("ffmpeg", "ffprobe"):
+            continue
+        try:
+            pid, etimes = int(pid_s), int(etimes_s)
+        except ValueError:
+            continue
+        if pid == os.getpid() or etimes < max_age_seconds:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return killed
 
 
 def probe_duration(path: Path) -> float:

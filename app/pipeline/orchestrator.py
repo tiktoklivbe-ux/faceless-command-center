@@ -23,7 +23,7 @@ from ..settings_store import get_setting
 
 log = logging.getLogger("orchestrator")
 from .. import render_gate
-from . import script_stage, assemble_stage, publish_youtube, publish_tiktok
+from . import script_stage, assemble_stage, ffmpeg_utils, publish_youtube, publish_tiktok
 
 AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
 
@@ -170,6 +170,13 @@ def _run_job_inner(job_id: str):
 
         try:
             # Fail fast on misconfiguration rather than minutes into a render.
+            # Clear out any ffmpeg processes orphaned by earlier hung renders.
+            # They hold CPU indefinitely and are why a machine can end up
+            # unable to finish even a trivial render.
+            reaped = ffmpeg_utils.kill_orphaned_ffmpeg()
+            if reaped:
+                _log(db, job, f"Cleaned up {reaped} stuck ffmpeg process(es) left over from earlier renders.")
+
             issues = _preflight(db, channel)
             if issues:
                 raise RuntimeError("Can't start: " + " | ".join(issues))
