@@ -127,6 +127,52 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@router.post("/{job_id}/cancel", response_model=schemas.JobOut)
+def cancel_job(job_id: str, db: Session = Depends(get_db)):
+    """Force a stuck job to FAILED so it stops blocking the render slot.
+
+    Renders are serialised (one at a time), so a job wedged in an active
+    state holds the slot and every queued video waits behind it forever.
+    This releases that. It also kills any orphaned ffmpeg processes, since a
+    wedged render usually left one behind still burning CPU.
+    """
+    from ..pipeline import ffmpeg_utils
+    from .. import render_gate
+
+    job = db.get(models.VideoJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    already_finished = job.status in (
+        models.JobStatus.PUBLISHED, models.JobStatus.READY, models.JobStatus.FAILED,
+    )
+    if already_finished:
+        raise HTTPException(status_code=400, detail=f"That job isn't running (status: {job.status.value}).")
+
+    reaped = ffmpeg_utils.kill_orphaned_ffmpeg(max_age_seconds=0)  # this job's ffmpeg, whatever its age
+    render_gate.release(job_id)  # free the slot even if this job never held it cleanly
+
+    # Clear "running" agents -- otherwise Voice/Visual/Assembly stay lit
+    # forever and look permanently busy.
+    try:
+        import json as _json
+        agents = _json.loads(job.agent_status or "{}")
+        job.agent_status = _json.dumps({k: ("idle" if v == "running" else v) for k, v in agents.items()})
+    except Exception:
+        pass
+
+    job.status = models.JobStatus.FAILED
+    job.error_message = "Cancelled manually."
+    job.stage_log = (job.stage_log or "") + (
+        f"\n[cancelled] Stopped by hand. "
+        f"{f'Killed {reaped} running ffmpeg process(es). ' if reaped else ''}"
+        f"The render slot is now free for the next video.\n"
+    )
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 @router.get("/{job_id}/video")
 def get_job_video(job_id: str, db: Session = Depends(get_db)):
     job = db.get(models.VideoJob, job_id)

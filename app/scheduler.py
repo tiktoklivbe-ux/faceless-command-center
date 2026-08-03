@@ -22,6 +22,7 @@ an external uptime pinger hitting the site every ~10 minutes to keep the free
 tier awake.
 """
 import asyncio
+import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,19 @@ def clear_stuck_jobs(db: Session) -> int:
         .all()
     )
     for job in stuck_jobs:
+        # Clear any agents left marked "running". They're stuck-looking because
+        # the job died mid-segment, not because those agents are at fault --
+        # but leaving them lit makes it look like Voice/Visual/Assembly are
+        # permanently busy and hides which agents are genuinely active.
+        try:
+            agents = json.loads(job.agent_status or "{}")
+            if any(v == "running" for v in agents.values()):
+                job.agent_status = json.dumps(
+                    {k: ("idle" if v == "running" else v) for k, v in agents.items()}
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+
         attempts = (job.stage_log or "").count("[watchdog] retrying")
         if attempts < MAX_AUTO_RETRIES:
             # Don't dispatch a retry while another render is in flight. Doing

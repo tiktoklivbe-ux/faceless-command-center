@@ -592,6 +592,30 @@ async function renderJobDetail(body, jobId) {
       if (pn) pn.addEventListener("click", async () => { pn.disabled = true; pn.textContent = "Publishing…"; try { await API(`/api/jobs/${j.id}/publish`, { method: "POST" }); draw(); } catch (e) { toast(e.message); } });
     }
     body.appendChild(el(renderJobStatusCard(j)));
+    // Cancel is only meaningful for a job that's actually still running.
+    if (!["published","ready_for_review","failed"].includes(String(j.status))) {
+      const cancelCard = el(`<div class="card">
+        <h2>Stuck?</h2>
+        <div class="hint">Stops this job and frees the render slot so queued videos can start. Renders run one at a time, so a wedged job blocks everything behind it.</div>
+        <button class="btn danger" id="cancel-job" style="margin-top:10px">Cancel This Video</button>
+        <div class="hint" id="cancel-out" style="margin-top:8px"></div>
+      </div>`);
+      body.appendChild(cancelCard);
+      cancelCard.querySelector("#cancel-job").addEventListener("click", async () => {
+        const btn = cancelCard.querySelector("#cancel-job");
+        const out = cancelCard.querySelector("#cancel-out");
+        btn.disabled = true; out.textContent = "Cancelling…";
+        try {
+          await API(`/api/jobs/${j.id}/cancel`, { method: "POST" });
+          out.textContent = "Cancelled. The render slot is free.";
+          // The detail view polls on a timer, so the next tick redraws with
+          // the updated status -- no manual re-render needed.
+        } catch (e) {
+          out.textContent = "Couldn't cancel — it may have already finished.";
+          btn.disabled = false;
+        }
+      });
+    }
     body.appendChild(el(`<div class="card"><h2>Is it the machine or a bug?</h2>
       <div class="hint">Renders one test clip and reports how fast this server actually is. Use this when a video is taking far longer than expected.</div>
       <button class="btn secondary" id="run-bench" style="margin-top:10px">Run Speed Test</button>
