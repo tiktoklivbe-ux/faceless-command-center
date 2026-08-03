@@ -12,7 +12,10 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 @router.get("")
 def get_settings(db: Session = Depends(get_db)):
-    return all_settings_masked(db)
+    from ..settings_store import storage_health
+    data = all_settings_masked(db)
+    data["_health"] = storage_health(db)
+    return data
 
 
 @router.get("/diagnostics")

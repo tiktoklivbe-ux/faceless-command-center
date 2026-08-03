@@ -3,8 +3,34 @@ Thin helper around the Setting table so the rest of the app can do
 get_setting("elevenlabs_api_key") instead of touching SQLAlchemy directly.
 Values are transparently encrypted/decrypted with app.crypto.
 """
+import os
+
 from sqlalchemy.orm import Session
 from . import models, crypto
+
+# Settings that can also be supplied as environment variables. An env var
+# ALWAYS wins over the stored value.
+#
+# Why this exists: storing secrets encrypted in the database has two failure
+# modes that both present as "my keys randomly stopped working" -- if the
+# encryption key file is lost, every stored secret becomes undecryptable; and
+# if PERSIST_DIR is missing on a deploy, the app quietly points at a different
+# folder with a different database. Neither announces itself; the app just
+# behaves as though no key was ever entered.
+#
+# An environment variable has neither problem. It's re-supplied by the host on
+# every start, so it cannot be lost to disk or encryption issues.
+ENV_OVERRIDES = {
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "openai_api_key": "OPENAI_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
+    "elevenlabs_api_key": "ELEVENLABS_API_KEY",
+    "stability_api_key": "STABILITY_API_KEY",
+    "youtube_client_id": "YOUTUBE_CLIENT_ID",
+    "youtube_client_secret": "YOUTUBE_CLIENT_SECRET",
+    "tiktok_client_key": "TIKTOK_CLIENT_KEY",
+    "tiktok_client_secret": "TIKTOK_CLIENT_SECRET",
+}
 
 # Every key the app knows how to store, and whether it should be masked in the UI.
 KNOWN_KEYS = {
@@ -25,6 +51,14 @@ KNOWN_KEYS = {
 
 
 def get_setting(db: Session, key: str, default: str = "") -> str:
+    # Environment variable wins -- it can't be lost to a disk or
+    # encryption-key problem, unlike the stored copy.
+    env_name = ENV_OVERRIDES.get(key)
+    if env_name:
+        env_val = os.environ.get(env_name, "").strip()
+        if env_val:
+            return env_val
+
     row = db.get(models.Setting, key)
     if not row or row.value_enc is None:
         return default
@@ -48,6 +82,30 @@ def set_setting(db: Session, key: str, value: str, is_secret: bool = None):
         row = models.Setting(key=key, value_enc=enc, is_secret=is_secret)
         db.add(row)
     db.commit()
+
+
+def storage_health(db: Session) -> dict:
+    """Whether stored secrets are actually readable, and which keys are coming
+    from environment variables. Surfaced in the UI so a broken store is
+    obvious instead of silently behaving like nothing was ever entered."""
+    from .config import DATA_DIR
+
+    unreadable = []
+    for key, is_secret in KNOWN_KEYS.items():
+        if not is_secret:
+            continue
+        row = db.get(models.Setting, key)
+        if row and row.value_enc and crypto.decrypt(row.value_enc) is None:
+            unreadable.append(key)
+
+    from_env = [k for k, envname in ENV_OVERRIDES.items() if os.environ.get(envname, "").strip()]
+    return {
+        "unreadable_keys": unreadable,
+        "keys_from_env": from_env,
+        "persist_dir_set": bool(os.environ.get("PERSIST_DIR")),
+        "secret_key_set": bool(os.environ.get("SECRET_KEY")),
+        "data_dir": str(DATA_DIR),
+    }
 
 
 def all_settings_masked(db: Session) -> dict:

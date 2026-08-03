@@ -491,7 +491,29 @@ function setActiveSideItem(panelName) {
 window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); setActiveSideItem(null); };
 
 async function renderChannelsPanel(body) {
-  body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
+  const h = s._health || {};
+  const healthBanner = (h.unreadable_keys && h.unreadable_keys.length)
+    ? `<div class="card" style="border-color:rgba(209,106,106,0.4)">
+         <h2 style="color:var(--red)">⚠ Saved keys can't be read</h2>
+         <div class="hint">These keys are stored but unreadable, so the app behaves as if they were never entered:
+         <b>${h.unreadable_keys.join(", ")}</b>. This happens when the encryption key changes.
+         <br><br><b>Permanent fix:</b> set them as environment variables in Render instead
+         (ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc). Env vars can't be lost this way and always win over stored values.</div>
+       </div>`
+    : "";
+  const envBanner = (h.keys_from_env && h.keys_from_env.length)
+    ? `<div class="card"><h2>✅ Keys from environment</h2>
+         <div class="hint">These are supplied by environment variables and can't be lost: <b>${h.keys_from_env.join(", ")}</b>.
+         Editing them below has no effect while the env var is set.</div></div>`
+    : "";
+  const persistWarn = (!h.persist_dir_set || !h.secret_key_set)
+    ? `<div class="card" style="border-color:rgba(209,106,106,0.3)"><h2>Storage isn't fully durable</h2>
+         <div class="hint">${!h.persist_dir_set ? "PERSIST_DIR isn't set — data may live on disposable storage. " : ""}
+         ${!h.secret_key_set ? "SECRET_KEY isn't set — saved keys become unreadable if the disk changes. " : ""}
+         Set these in Render → Environment.</div></div>`
+    : "";
+
+  body.innerHTML = healthBanner + envBanner + persistWarn + `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
   const channels = await API("/api/channels");
   const list = $("#ch-list");
   channels.forEach((c) => {
