@@ -9,6 +9,8 @@ see assemble_stage's Voice/Visual concurrency).
 """
 import json
 import time
+import traceback
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +19,8 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import JOBS_DIR
 from ..database import SessionLocal
+
+log = logging.getLogger("orchestrator")
 from .. import render_gate
 from . import script_stage, assemble_stage, publish_youtube, publish_tiktok
 
@@ -160,12 +164,24 @@ def _run_job_inner(job_id: str):
                 set_agent("publish", "idle")
 
         except Exception as e:
+            # str(e) alone is frequently empty or useless -- plenty of
+            # exceptions carry no message, which produced "failed" with no
+            # explanation and made every failure a guessing game. Capture the
+            # type, the message, and the traceback tail so the actual cause is
+            # always visible in the UI without needing server log access.
+            tb = traceback.format_exc()
+            detail = str(e).strip() or "(no message)"
             job.status = models.JobStatus.FAILED
-            job.error_message = str(e)
+            job.error_message = f"{type(e).__name__}: {detail}"[:500]
             for name in AGENT_NAMES:
                 if _agents(job).get(name) == "running":
                     set_agent(name, "error")
-            _log(db, job, f"FAILED: {e}")
+            _log(db, job, f"FAILED — {type(e).__name__}: {detail}")
+            # Last few traceback frames: enough to pinpoint the failing line,
+            # short enough not to bury the log.
+            tb_tail = "\n".join(tb.strip().splitlines()[-6:])
+            _log(db, job, f"Technical detail:\n{tb_tail}")
+            log.exception("Job %s failed", job.id)
             db.commit()
     finally:
         db.close()
