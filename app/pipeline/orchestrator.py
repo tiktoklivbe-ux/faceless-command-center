@@ -30,19 +30,33 @@ AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
 
 def _log(db: Session, job: models.VideoJob, message: str):
     # Each line gets an ISO-8601 UTC timestamp prefix in brackets so Mission
-    # Control's Live Activity Stream can show real relative times instead of
-    # guessing from job.created_at. The Jobs panel's plain progress-log view
-    # still reads fine with the prefix showing -- it's just a timestamp.
+    # Control's Live Activity Stream can show real relative times.
     #
-    # This uses its OWN short-lived session rather than the caller's. The
-    # caller's session stays open for the whole multi-minute render, and
-    # committing progress lines through it kept a write transaction churning
-    # on that long-lived connection -- which is what made unrelated requests
-    # (Jarvis especially, since one turn makes several queries) stall behind
-    # it. A tiny open-write-close session here releases the lock immediately.
+    # DEADLOCK HAZARD, and the reason this is written so carefully:
+    # the caller's session stays open across the whole multi-minute render.
+    # If it holds an open transaction (which SQLAlchemy starts implicitly on
+    # the first query and keeps until commit/rollback), and this function
+    # opens a SECOND connection to write, SQLite blocks -- the writer waits
+    # for the reader's transaction to end, and the reader is the thing that
+    # called the writer. Neither yields. The job then hangs forever with no
+    # error, no timeout, and the log frozen mid-render.
+    #
+    # Releasing the caller's connection first is what makes the second write
+    # able to acquire the lock.
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"[{ts}] {message}\n"
     job_id = job.id
+
+    # End any transaction the caller is holding and hand its connection back
+    # to the pool. Cheap, and the caller re-acquires transparently on next use.
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
     own = SessionLocal()
     try:
         fresh = own.get(models.VideoJob, job_id)
@@ -50,15 +64,16 @@ def _log(db: Session, job: models.VideoJob, message: str):
             fresh.stage_log = (fresh.stage_log or "") + line
             own.commit()
     except Exception:
-        own.rollback()
+        try:
+            own.rollback()
+        except Exception:
+            pass
     finally:
         own.close()
-    # Do NOT assign job.stage_log here. Doing so would mark the attribute
-    # dirty on the caller's long-lived session, and its next commit would
-    # write that stale in-memory value back -- clobbering every line this
-    # function wrote through its own session. Expiring the attribute instead
-    # makes the caller re-read the real current value from the DB next time
-    # it's touched.
+
+    # Don't assign job.stage_log on the caller's session -- that marks it
+    # dirty and its next commit would write the stale in-memory value back,
+    # clobbering lines written here. Expiring forces a fresh read instead.
     try:
         db.expire(job, ["stage_log"])
     except Exception:
