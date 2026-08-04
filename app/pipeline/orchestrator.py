@@ -96,6 +96,38 @@ def _make_set_agent(db: Session, job: models.VideoJob):
     return set_agent
 
 
+def dispatch_job(job_id: str):
+    """Start a render WITHOUT tying it to the web server's worker.
+
+    Previously this went through FastAPI's BackgroundTasks, which runs the
+    work inside the web process. A video render is minutes of heavy ffmpeg
+    CPU and memory -- running that in the process that also serves HTTP
+    starves the request handlers, and the host's health check then fails and
+    returns 502. Same reason the UI became unresponsive during renders.
+
+    A separate process isolates all of that: the web server stays responsive,
+    and a render that dies takes nothing else with it.
+    """
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")  # fresh interpreter, no inherited DB handles
+    proc = ctx.Process(target=_run_job_entry, args=(job_id,), daemon=False)
+    proc.start()
+    log.info("Dispatched job %s to worker process pid=%s", job_id, proc.pid)
+    return proc.pid
+
+
+def _run_job_entry(job_id: str):
+    """Entry point inside the worker process. Re-imports rather than relying
+    on inherited state, since spawn doesn't carry the parent's memory."""
+    try:
+        from .orchestrator import run_job as _rj
+        _rj(job_id)
+    except Exception:
+        import logging
+        logging.getLogger("orchestrator").exception("Worker process failed for job %s", job_id)
+
+
 def run_job(job_id: str):
     """Entry point invoked in the background. Opens its own DB session so it
     doesn't share one with the request that triggered it.

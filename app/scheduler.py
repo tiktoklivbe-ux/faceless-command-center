@@ -108,7 +108,7 @@ def clear_stuck_jobs(db: Session) -> int:
             job.status = models.JobStatus.QUEUED
             job.error_message = ""
             db.commit()
-            threading.Thread(target=orchestrator.run_job, args=(job.id,), daemon=True).start()
+            orchestrator.dispatch_job(job.id)
         else:
             log.warning("Chronos watchdog: giving up on job %s after %d retries", job.id, attempts)
             job.status = models.JobStatus.FAILED
@@ -186,7 +186,7 @@ def _tick():
         )
         if queued:
             log.info("Chronos: picking up queued job %s", queued.id)
-            threading.Thread(target=orchestrator.run_job, args=(queued.id,), daemon=True).start()
+            orchestrator.dispatch_job(queued.id)
             return
 
         channels = db.query(models.Channel).filter(models.Channel.auto_enabled == True).all()  # noqa: E712
@@ -205,7 +205,7 @@ def _tick():
                     # Dispatched on a thread -- calling run_job directly here
                     # blocked the entire scheduler loop for the whole render,
                     # so the watchdog couldn't run and nothing else ticked.
-                    threading.Thread(target=orchestrator.run_job, args=(job.id,), daemon=True).start()
+                    orchestrator.dispatch_job(job.id)
                     return  # one render at a time; the next tick handles the rest
             except Exception:
                 log.exception("Chronos: failed to process channel %s", channel.id)

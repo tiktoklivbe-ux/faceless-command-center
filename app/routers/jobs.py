@@ -33,7 +33,9 @@ def create_job(payload: schemas.JobCreate, background_tasks: BackgroundTasks,
     db.add(job)
     db.commit()
     db.refresh(job)
-    background_tasks.add_task(orchestrator.run_job, job.id)
+    # Dispatched to a separate process -- running a render inside the web
+    # worker starved HTTP handling and made the host return 502.
+    orchestrator.dispatch_job(job.id)
     return job
 
 

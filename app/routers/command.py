@@ -115,7 +115,7 @@ def run_command(payload: CommandIn, background_tasks: BackgroundTasks, db: Sessi
         db.add(job)
         db.commit()
         db.refresh(job)
-        background_tasks.add_task(orchestrator.run_job, job.id)
+        orchestrator.dispatch_job(job.id)
         return {
             "action": "job_created",
             "job_id": job.id,
