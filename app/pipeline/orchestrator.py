@@ -8,6 +8,7 @@ running on a small box (individual stages still parallelize internally --
 see assemble_stage's Voice/Visual concurrency).
 """
 import json
+import os
 import time
 import traceback
 import logging
