@@ -491,29 +491,7 @@ function setActiveSideItem(panelName) {
 window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); setActiveSideItem(null); };
 
 async function renderChannelsPanel(body) {
-  const h = s._health || {};
-  const healthBanner = (h.unreadable_keys && h.unreadable_keys.length)
-    ? `<div class="card" style="border-color:rgba(209,106,106,0.4)">
-         <h2 style="color:var(--red)">⚠ Saved keys can't be read</h2>
-         <div class="hint">These keys are stored but unreadable, so the app behaves as if they were never entered:
-         <b>${h.unreadable_keys.join(", ")}</b>. This happens when the encryption key changes.
-         <br><br><b>Permanent fix:</b> set them as environment variables in Render instead
-         (ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc). Env vars can't be lost this way and always win over stored values.</div>
-       </div>`
-    : "";
-  const envBanner = (h.keys_from_env && h.keys_from_env.length)
-    ? `<div class="card"><h2>✅ Keys from environment</h2>
-         <div class="hint">These are supplied by environment variables and can't be lost: <b>${h.keys_from_env.join(", ")}</b>.
-         Editing them below has no effect while the env var is set.</div></div>`
-    : "";
-  const persistWarn = (!h.persist_dir_set || !h.secret_key_set)
-    ? `<div class="card" style="border-color:rgba(209,106,106,0.3)"><h2>Storage isn't fully durable</h2>
-         <div class="hint">${!h.persist_dir_set ? "PERSIST_DIR isn't set — data may live on disposable storage. " : ""}
-         ${!h.secret_key_set ? "SECRET_KEY isn't set — saved keys become unreadable if the disk changes. " : ""}
-         Set these in Render → Environment.</div></div>`
-    : "";
-
-  body.innerHTML = healthBanner + envBanner + persistWarn + `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
+  body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
   const channels = await API("/api/channels");
   const list = $("#ch-list");
   channels.forEach((c) => {
@@ -886,7 +864,33 @@ async function renderSettingsPanel(body) {
   const field = (k, label, ph, type = "password") =>
     `<label>${label}${s[k] && s[k].set ? ` — set (${s[k].value})` : ""}</label>
      <input type="${type}" id="st-${k}" placeholder="${s[k] && s[k].set ? "leave blank to keep" : ph}"/>`;
-  body.innerHTML = `<h1>Control Panel</h1><div class="bp-sub">API keys are encrypted at rest and never shown in full.</div>
+  // Storage health banners. These belong here, next to the key fields they
+  // describe -- a key that's stored but unreadable behaves exactly like one
+  // that was never entered, which is impossible to diagnose without being
+  // told explicitly.
+  const h = s._health || {};
+  const healthBanner = (h.unreadable_keys && h.unreadable_keys.length)
+    ? `<div class="card" style="border-color:rgba(209,106,106,0.4)">
+         <h2 style="color:var(--red)">⚠ Saved keys can't be read</h2>
+         <div class="hint">These are stored but unreadable, so the app behaves as if they were never entered:
+         <b>${h.unreadable_keys.join(", ")}</b>. This happens when the encryption key changes.
+         <br><br><b>Permanent fix:</b> set them as environment variables in Render
+         (ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc). Env vars can't be lost this way and always win.</div>
+       </div>`
+    : "";
+  const envBanner = (h.keys_from_env && h.keys_from_env.length)
+    ? `<div class="card"><h2>✅ Keys from environment</h2>
+         <div class="hint">Supplied by environment variables, so they can't be lost: <b>${h.keys_from_env.join(", ")}</b>.
+         Editing them below has no effect while the env var is set.</div></div>`
+    : "";
+  const persistWarn = (h.persist_dir_set === false || h.secret_key_set === false)
+    ? `<div class="card" style="border-color:rgba(209,106,106,0.3)"><h2>Storage isn't fully durable</h2>
+         <div class="hint">${h.persist_dir_set === false ? "PERSIST_DIR isn't set — data may live on disposable storage. " : ""}
+         ${h.secret_key_set === false ? "SECRET_KEY isn't set — saved keys become unreadable if the disk changes. " : ""}
+         Set these in Render → Environment.</div></div>`
+    : "";
+
+  body.innerHTML = `<h1>Control Panel</h1><div class="bp-sub">API keys are encrypted at rest and never shown in full.</div>` + healthBanner + envBanner + persistWarn + `
     <div class="card"><h2>Script Writer</h2>
       <label>Provider</label>
       <select id="st-llm_provider">
