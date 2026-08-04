@@ -97,35 +97,56 @@ def _make_set_agent(db: Session, job: models.VideoJob):
 
 
 def dispatch_job(job_id: str):
-    """Start a render WITHOUT tying it to the web server's worker.
+    """Start a render in its own OS process, detached from the web server.
 
-    Previously this went through FastAPI's BackgroundTasks, which runs the
-    work inside the web process. A video render is minutes of heavy ffmpeg
-    CPU and memory -- running that in the process that also serves HTTP
-    starves the request handlers, and the host's health check then fails and
-    returns 502. Same reason the UI became unresponsive during renders.
+    Renders previously ran via FastAPI BackgroundTasks, i.e. inside the web
+    worker -- minutes of heavy ffmpeg work in the process that also serves
+    HTTP. That starved request handling and made the host return 502.
 
-    A separate process isolates all of that: the web server stays responsive,
-    and a render that dies takes nothing else with it.
+    Implemented with subprocess + an explicit module entry point rather than
+    multiprocessing. multiprocessing's "spawn" start method makes the child
+    re-import the parent's __main__ module, which under a real server is
+    uvicorn's entry point -- the child either crashes on import or re-runs the
+    whole application. Either way it dies instantly and silently, leaving the
+    job sitting in QUEUED forever with an empty log. "fork" avoids that but
+    inherits the parent's open SQLite handles and threads, which is its own
+    source of deadlocks. A plain subprocess running `python -m app.worker`
+    gets a clean interpreter with no inherited state and no __main__ games.
     """
-    import multiprocessing
+    import subprocess
+    import sys
 
-    ctx = multiprocessing.get_context("spawn")  # fresh interpreter, no inherited DB handles
-    proc = ctx.Process(target=_run_job_entry, args=(job_id,), daemon=False)
-    proc.start()
-    log.info("Dispatched job %s to worker process pid=%s", job_id, proc.pid)
-    return proc.pid
-
-
-def _run_job_entry(job_id: str):
-    """Entry point inside the worker process. Re-imports rather than relying
-    on inherited state, since spawn doesn't carry the parent's memory."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
     try:
-        from .orchestrator import run_job as _rj
-        _rj(job_id)
-    except Exception:
-        import logging
-        logging.getLogger("orchestrator").exception("Worker process failed for job %s", job_id)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "app.worker", job_id],
+            cwd=str(repo_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=(os.name == "posix"),  # survives if the web worker restarts
+        )
+        log.info("Dispatched job %s to worker process pid=%s", job_id, proc.pid)
+        return proc.pid
+    except Exception as e:
+        # If the process can't be started at all, fall back to running inline
+        # rather than silently doing nothing -- a slow render beats no render.
+        # Recorded on the job too, so this degraded mode is visible instead of
+        # looking like normal operation that mysteriously blocks the server.
+        log.exception("Couldn't spawn a worker process for job %s; running inline instead", job_id)
+        try:
+            db = SessionLocal()
+            try:
+                job = db.get(models.VideoJob, job_id)
+                if job:
+                    _log(db, job, f"Note: couldn't start a separate render process ({e}); "
+                                  f"running inline instead. The app may be slow to respond while this renders.")
+            finally:
+                db.close()
+        except Exception:
+            pass
+        run_job(job_id)
+        return None
 
 
 def run_job(job_id: str):
