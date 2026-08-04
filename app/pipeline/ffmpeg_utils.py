@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import signal
 import subprocess
 from pathlib import Path
@@ -36,20 +37,47 @@ def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True  # own process group, so killpg gets children too
 
+    # Write ffmpeg's output to files rather than pipes. With PIPE, ffmpeg
+    # blocks once the OS pipe buffer fills (~64KB) and nobody is draining it
+    # -- and communicate() only starts draining after the call, so a chatty
+    # ffmpeg can deadlock before producing any result. That deadlock looks
+    # exactly like "rendering the clip..." and then silence forever.
+    # Files have no such limit, and they also survive a kill, so the output
+    # is still readable afterwards to see where it stopped.
+    out_f = tempfile.TemporaryFile(mode="w+")
+    err_f = tempfile.TemporaryFile(mode="w+")
+    popen_kwargs["stdout"] = out_f
+    popen_kwargs["stderr"] = err_f
+
     proc = subprocess.Popen(cmd, **popen_kwargs)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
-        # Reap it so it doesn't linger as a zombie.
         try:
-            proc.communicate(timeout=5)
+            proc.wait(timeout=5)
         except Exception:
             pass
+        # Surface what ffmpeg actually managed to say before hanging -- this
+        # is the only visibility into where it got stuck.
+        try:
+            err_f.seek(0)
+            tail = err_f.read()[-1500:]
+        except Exception:
+            tail = "(couldn't read ffmpeg output)"
+        finally:
+            out_f.close(); err_f.close()
         raise RuntimeError(
-            f"ffmpeg exceeded {timeout}s and was killed: {' '.join(cmd[:6])}... "
-            "The process was terminated rather than left running."
+            f"ffmpeg exceeded {timeout}s and was killed.\n"
+            f"Command: {' '.join(cmd)}\n"
+            f"--- ffmpeg output before it hung ---\n{tail}"
         )
+
+    try:
+        out_f.seek(0); err_f.seek(0)
+        stdout, stderr = out_f.read(), err_f.read()
+    finally:
+        out_f.close(); err_f.close()
 
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}\n--- stderr ---\n{(stderr or '')[-4000:]}")

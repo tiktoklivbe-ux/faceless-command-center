@@ -43,6 +43,7 @@ CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 # those are retried and eventually failed.
 STUCK_JOB_TIMEOUT_MINUTES = 30
 MAX_AUTO_RETRIES = 2
+MAX_JOB_AGE_HOURS = 2  # absolute ceiling; past this a job is failed regardless of retries
 _ACTIVE_STATUSES = [
     models.JobStatus.QUEUED,
     models.JobStatus.SCRIPT,
@@ -74,7 +75,34 @@ def clear_stuck_jobs(db: Session) -> int:
         .filter(models.VideoJob.updated_at < cutoff)
         .all()
     )
+    # Hard ceiling on total job age. Retrying assumes the cause is transient,
+    # but if a job keeps hanging in the same place, retries just re-enter the
+    # same hang and it cycles indefinitely -- which is how a job ends up
+    # "running" overnight. Past this age it's failed outright and the render
+    # slot released, whatever the retry count says.
+    hard_cutoff = datetime.utcnow() - timedelta(hours=MAX_JOB_AGE_HOURS)
+
     for job in stuck_jobs:
+        created = job.created_at or datetime.utcnow()
+        if created < hard_cutoff:
+            log.warning("Chronos watchdog: job %s exceeded the %sh ceiling; failing it outright.",
+                        job.id, MAX_JOB_AGE_HOURS)
+            job.status = models.JobStatus.FAILED
+            job.error_message = (
+                f"Gave up after {MAX_JOB_AGE_HOURS}h. The render kept hanging at the same stage, "
+                "so retrying wasn't helping. See the progress log for the last stage reached."
+            )
+            try:
+                render_gate.release(job.id)
+            except Exception:
+                pass
+            try:
+                agents = json.loads(job.agent_status or "{}")
+                job.agent_status = json.dumps({k: ("idle" if v == "running" else v) for k, v in agents.items()})
+            except (json.JSONDecodeError, TypeError):
+                pass
+            continue
+
         # Clear any agents left marked "running". They're stuck-looking because
         # the job died mid-segment, not because those agents are at fault --
         # but leaving them lit makes it look like Voice/Visual/Assembly are
