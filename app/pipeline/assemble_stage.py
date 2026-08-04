@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from ..database import SessionLocal
 from ..settings_store import get_setting
 from . import voice_stage, visuals_stage, captions_stage, ffmpeg_utils
 
@@ -60,8 +61,28 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             log(f"Segment {i+1}/{n}: Voice Agent narrating + Visual Agent generating image, in parallel…{eta_note}")
 
             par_start = time.time()
-            voice_future = pool.submit(voice_stage.narrate_segment, db, seg["narration"], channel.voice_id, audio_path)
-            visual_future = pool.submit(visuals_stage.generate_image, db, seg["visual_prompt"], channel.visual_style, image_path)
+            # Each thread gets its OWN session. SQLAlchemy sessions are not
+            # thread-safe: two threads using one concurrently can corrupt its
+            # internal state or deadlock on the underlying connection, with no
+            # exception raised -- the threads simply never return, and the job
+            # freezes here with no error. Both of these only read settings, so
+            # separate short-lived sessions cost nothing.
+            def _voice_task():
+                s = SessionLocal()
+                try:
+                    return voice_stage.narrate_segment(s, seg["narration"], channel.voice_id, audio_path)
+                finally:
+                    s.close()
+
+            def _visual_task():
+                s = SessionLocal()
+                try:
+                    return visuals_stage.generate_image(s, seg["visual_prompt"], channel.visual_style, image_path)
+                finally:
+                    s.close()
+
+            voice_future = pool.submit(_voice_task)
+            visual_future = pool.submit(_visual_task)
 
             # Timeouts here matter: without them a worker that never returns
             # (a hung HTTP call that slipped past its own timeout, or a stuck
