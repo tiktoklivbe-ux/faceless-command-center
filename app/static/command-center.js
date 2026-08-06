@@ -680,6 +680,18 @@ async function renderJobDetail(body, jobId) {
       </div>
       <div class="hint">The log below shows real elapsed time per step, so you can see which stage is actually slow.</div>
     </div>`));
+    body.appendChild(el(`<div class="card"><h2>Worker Output <span style="font-weight:400;font-size:11px;opacity:0.7">(raw — shows crashes the progress log can't)</span></h2>
+      <button class="btn secondary" id="load-worker-log">Load Worker Output</button>
+      <div class="log-box" id="worker-log-box" style="margin-top:10px;display:none"></div></div>`));
+    const wlBtn = document.getElementById("load-worker-log");
+    if (wlBtn) wlBtn.addEventListener("click", async () => {
+      const box = document.getElementById("worker-log-box");
+      box.style.display = "block"; box.textContent = "Loading…";
+      try {
+        const r = await API(`/api/jobs/${j.id}/worker-log`);
+        box.textContent = r.log || r.note || "(empty)";
+      } catch (e) { box.textContent = "Couldn't load the worker output."; }
+    });
     body.appendChild(el(`<div class="card"><h2>Progress Log</h2><div class="log-box">${(j.stage_log || "").trim() || "Queued…"}</div></div>`));
     if (j.script_text) body.appendChild(el(`<div class="card"><h2>Script</h2><div style="white-space:pre-wrap;font-size:14px;line-height:1.6">${j.script_text}</div></div>`));
     if (["published", "failed", "ready_for_review"].includes(j.status) && jobPoll) { clearInterval(jobPoll); jobPoll = null; }

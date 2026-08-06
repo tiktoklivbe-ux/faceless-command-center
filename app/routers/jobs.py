@@ -179,6 +179,26 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)):
     return job
 
 
+@router.get("/{job_id}/worker-log")
+def worker_log(job_id: str, db: Session = Depends(get_db)):
+    """The render worker's raw stdout/stderr.
+
+    This is the only place a crash BEFORE the first database write can show
+    up -- the job's own progress log can't record something that killed the
+    worker before it got that far.
+    """
+    from ..config import JOBS_DIR
+
+    path = JOBS_DIR / job_id / "worker.log"
+    if not path.exists():
+        return {"exists": False, "log": "", "note": "No worker log yet -- the render may not have started."}
+    try:
+        text = path.read_text(errors="replace")
+    except OSError as e:
+        return {"exists": True, "log": "", "note": f"Couldn't read it: {e}"}
+    return {"exists": True, "log": text[-20000:], "size": len(text)}
+
+
 @router.get("/{job_id}/video")
 def get_job_video(job_id: str, db: Session = Depends(get_db)):
     job = db.get(models.VideoJob, job_id)

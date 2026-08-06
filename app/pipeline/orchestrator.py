@@ -118,12 +118,24 @@ def dispatch_job(job_id: str):
     import sys
 
     repo_root = Path(__file__).resolve().parent.parent.parent
+    worker_log = JOBS_DIR / job_id / "worker.log"
+    try:
+        worker_log.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = open(worker_log, "a", buffering=1)
+    except OSError:
+        log_handle = subprocess.DEVNULL
+
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", "app.worker", job_id],
             cwd=str(repo_root),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            # Capture the worker's output to a file per job. Sending it to
+            # DEVNULL threw away every traceback and log line the worker
+            # produced -- which is why a hung render left no trace anywhere,
+            # not in the job log and not in the server logs. This file is the
+            # only place a crash before the first DB write can show up.
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=(os.name == "posix"),  # survives if the web worker restarts
         )

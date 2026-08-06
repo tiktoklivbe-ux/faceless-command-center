@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import signal
 import subprocess
 from pathlib import Path
@@ -50,8 +51,26 @@ def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
     popen_kwargs["stderr"] = err_f
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    # Heartbeat while waiting. Printing progress to the worker log makes the
+    # difference between "ffmpeg is working slowly" and "ffmpeg is wedged"
+    # visible -- previously both looked identical from outside: silence.
+    _t0 = time.time()
     try:
-        proc.wait(timeout=timeout)
+        while True:
+            try:
+                proc.wait(timeout=15)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = time.time() - _t0
+                if elapsed >= timeout:
+                    raise
+                try:
+                    err_f.seek(0, 2)
+                    size = err_f.tell()
+                except Exception:
+                    size = -1
+                print(f"[ffmpeg] still running {elapsed:.0f}s/{timeout}s "
+                      f"(output {size} bytes) :: {' '.join(cmd[:4])}", flush=True)
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
         try:
