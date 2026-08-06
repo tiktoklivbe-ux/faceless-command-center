@@ -12,11 +12,15 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
 @router.get("", response_model=list[schemas.JobOut])
-def list_jobs(channel_id: str | None = None, db: Session = Depends(get_db)):
+def list_jobs(channel_id: str | None = None, limit: int = 50, db: Session = Depends(get_db)):
+    # Capped deliberately. This returned EVERY job ever created, each carrying
+    # its full script text and progress log -- a payload that grows without
+    # bound while the dashboard polls this endpoint continuously. The library
+    # only ever displays recent jobs anyway.
     q = db.query(models.VideoJob)
     if channel_id:
         q = q.filter(models.VideoJob.channel_id == channel_id)
-    return q.order_by(models.VideoJob.created_at.desc()).all()
+    return q.order_by(models.VideoJob.created_at.desc()).limit(min(limit, 200)).all()
 
 
 @router.post("", response_model=schemas.JobOut)

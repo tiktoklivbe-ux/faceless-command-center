@@ -24,14 +24,23 @@ router = APIRouter(prefix="/api", tags=["command"])
 def _live_agent_status(db: Session) -> dict:
     """Aggregate per-agent live status from every in-flight job."""
     status = {a["id"]: "idle" for a in AGENTS}
-    active_jobs = db.query(models.VideoJob).filter(
-        models.VideoJob.status.notin_([
-            models.JobStatus.PUBLISHED, models.JobStatus.FAILED, models.JobStatus.READY,
-        ])
-    ).all()
-    for job in active_jobs:
+    # Only the agent_status column is needed, not whole ORM objects -- this
+    # endpoint is polled constantly, and loading full rows (including the
+    # potentially large stage_log) on every call was needless work against a
+    # database the render pipeline also needs.
+    active_jobs = (
+        db.query(models.VideoJob.agent_status)
+        .filter(
+            models.VideoJob.status.notin_([
+                models.JobStatus.PUBLISHED, models.JobStatus.FAILED, models.JobStatus.READY,
+            ])
+        )
+        .limit(20)
+        .all()
+    )
+    for (agent_status_json,) in active_jobs:
         try:
-            agents = json.loads(job.agent_status or "{}")
+            agents = json.loads(agent_status_json or "{}")
         except (json.JSONDecodeError, TypeError):
             agents = {}
         for stage, st in agents.items():

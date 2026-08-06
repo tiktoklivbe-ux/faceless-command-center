@@ -9,6 +9,8 @@ import json
 import re
 from datetime import datetime, timezone
 
+import time
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -16,6 +18,37 @@ from .. import models, crypto
 from ..database import get_db
 from ..pipeline import publish_youtube
 from ..agents_registry import AGENTS
+
+# YouTube stats cache. This endpoint is polled continuously by the dashboard,
+# and every uncached call did TWO external round-trips (refresh the OAuth
+# token, then fetch stats) -- so an idle open tab was hammering Google's API
+# and blocking the request thread for hundreds of milliseconds each time.
+# Subscriber counts don't change meaningfully within minutes.
+_STATS_CACHE: dict[str, tuple[float, dict]] = {}
+_STATS_TTL_SECONDS = 300
+
+
+def _cached_channel_stats(db, channel):
+    """Fetch YouTube stats at most once per TTL per channel. On failure,
+    serves the last good value rather than showing nothing -- a transient
+    API blip shouldn't blank the dashboard."""
+    now = time.time()
+    hit = _STATS_CACHE.get(channel.id)
+    if hit and now - hit[0] < _STATS_TTL_SECONDS:
+        return hit[1], None
+
+    try:
+        access_token = publish_youtube.refresh_access_token(
+            db, crypto.decrypt(channel.youtube_refresh_token_enc)
+        )
+        stats = publish_youtube.fetch_channel_stats(access_token)
+        _STATS_CACHE[channel.id] = (now, stats)
+        return stats, None
+    except Exception as e:
+        if hit:
+            return hit[1], None  # stale but usable
+        return None, str(e)[:120]
+
 
 router = APIRouter(prefix="/api/missioncontrol", tags=["missioncontrol"])
 
@@ -59,18 +92,15 @@ def overview(db: Session = Depends(get_db)):
             "subscribers": None, "views": None,
         }
         if ch.youtube_connected and ch.youtube_refresh_token_enc:
-            try:
-                access_token = publish_youtube.refresh_access_token(
-                    db, crypto.decrypt(ch.youtube_refresh_token_enc)
-                )
-                stats = publish_youtube.fetch_channel_stats(access_token)
+            stats, err = _cached_channel_stats(db, ch)
+            if stats:
                 card["subscribers"] = stats["subscribers"]
                 card["views"] = stats["views"]
                 card["hidden_subs"] = stats.get("hidden_subs", False)
                 total_subs += stats["subscribers"]
                 total_views += stats["views"]
-            except Exception as e:
-                card["error"] = str(e)[:120]
+            elif err:
+                card["error"] = err
         channel_cards.append(card)
 
     all_jobs = db.query(models.VideoJob).all()

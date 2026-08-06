@@ -280,6 +280,29 @@ function renderJobStatusCard(j) {
   </div>`;
 }
 
+/**
+ * Wrapper around setInterval that skips work while the tab is hidden and
+ * backs off after repeated failures.
+ *
+ * The app was making ~65 background requests a minute forever, every one
+ * hitting the same SQLite database a render needs -- which both made the UI
+ * laggy and competed with the pipeline. Most of those requests were for a
+ * tab nobody was looking at.
+ */
+function pollInterval(fn, ms) {
+  let failures = 0;
+  return setInterval(async () => {
+    if (document.hidden) return;           // nobody's looking; don't ask the server
+    if (failures > 3 && Math.random() > 0.25) return;  // back off when the server is struggling
+    try {
+      await fn();
+      failures = 0;
+    } catch (e) {
+      failures++;
+    }
+  }, ms);
+}
+
 // ============================================================ MAIN LOOP
 function mainLoop(now) {
   const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
@@ -649,7 +672,7 @@ async function renderJobDetail(body, jobId) {
     if (["published", "failed", "ready_for_review"].includes(j.status) && jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   };
   await draw();
-  jobPoll = setInterval(draw, 3000);
+  jobPoll = pollInterval(draw, 8000);
   window.reopenJobs = () => { if (jobPoll) clearInterval(jobPoll); renderJobsPanel(body); };
 }
 
@@ -856,7 +879,7 @@ async function renderMissionControlPanel(body) {
     if (uplinkText) uplinkText.textContent = `AETHER CORE — ${overview.uplink}`;
   };
   await draw();
-  mcPoll = setInterval(draw, 6000);
+  mcPoll = pollInterval(draw, 20000);
 }
 
 async function renderSettingsPanel(body) {
@@ -1011,9 +1034,9 @@ async function init() {
   runBoot();
 
   // live loops
-  setInterval(refreshAgents, 2500);
-  setInterval(refreshStats, 6000);
-  setInterval(refreshRituals, 60000);
+  pollInterval(refreshAgents, 15000);
+  pollInterval(refreshStats, 30000);
+  pollInterval(refreshRituals, 60000);
   setInterval(tickRituals, 1000);
 }
 
