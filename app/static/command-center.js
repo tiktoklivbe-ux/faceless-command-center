@@ -13,6 +13,12 @@ const el = (h) => { const t = document.createElement("template"); t.innerHTML = 
 const $ = (s) => document.querySelector(s);
 
 // ---------------------------------------------------------------- world state
+// Panel poll handles. Declared at the top because several functions clear
+// them, and with `let` a reference before the declaration line is a
+// temporal-dead-zone crash -- which silently blanked whichever panel hit it.
+let jobPoll = null;
+let mcPoll = null;
+
 const state = {
   pan: { x: 0, y: 0 },      // user pan (WASD / drag)
   target: { x: 0, y: 0 },   // eased pan target
@@ -582,6 +588,10 @@ async function renderChannelsPanel(body) {
 }
 
 async function renderJobsPanel(body) {
+  // Kill any detail-view poll still running. Without this the old poll keeps
+  // firing and overwrites the library with the previous job's detail view --
+  // which looks like the tab going blank when you reopen it.
+  if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   body.innerHTML = `<h1>Video Library</h1><div class="bp-sub">Every video the constellation has produced.</div><div id="jb-list"></div>`;
   const [jobs, channels] = await Promise.all([API("/api/jobs"), API("/api/channels")]);
   const list = $("#jb-list");
@@ -597,9 +607,8 @@ async function renderJobsPanel(body) {
   });
 }
 
-let jobPoll = null;
 async function renderJobDetail(body, jobId) {
-  if (jobPoll) clearInterval(jobPoll);
+  if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   const draw = async () => {
     const j = await API(`/api/jobs/${jobId}`);
     body.innerHTML = `<button class="btn secondary" onclick="reopenJobs()">← Library</button>
@@ -628,14 +637,18 @@ async function renderJobDetail(body, jobId) {
         const btn = cancelCard.querySelector("#cancel-job");
         const out = cancelCard.querySelector("#cancel-out");
         btn.disabled = true; out.textContent = "Cancelling…";
+        // Stop the redraw poll first. This whole panel is rebuilt on every
+        // tick, so a redraw landing mid-request destroys this button and its
+        // handler -- which is why cancelling appeared to do nothing.
+        if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
         try {
           await API(`/api/jobs/${j.id}/cancel`, { method: "POST" });
           out.textContent = "Cancelled. The render slot is free.";
-          // The detail view polls on a timer, so the next tick redraws with
-          // the updated status -- no manual re-render needed.
+          await draw();  // redraw once, now showing the cancelled state
         } catch (e) {
           out.textContent = "Couldn't cancel — it may have already finished.";
           btn.disabled = false;
+          jobPoll = pollInterval(draw, 8000);  // resume polling
         }
       });
     }
@@ -690,7 +703,6 @@ function timeAgo(iso) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-let mcPoll = null;
 
 /**
  * Draws a shareable 1200x630 "media kit" card from real Mission Control
