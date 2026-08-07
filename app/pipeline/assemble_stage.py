@@ -11,7 +11,7 @@ in.
 import shutil
 import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from ..database import SessionLocal
 from ..settings_store import get_setting
@@ -44,7 +44,14 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     set_agent("visuals", "running")
 
     n = len(segments)
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    # NOT a `with` block, deliberately. On exit ThreadPoolExecutor calls
+    # shutdown(wait=True), which blocks until every worker thread finishes --
+    # so if a thread is genuinely stuck, the timeout below fires and then the
+    # block hangs FOREVER on cleanup. The job freezes with no error, no log
+    # movement, and no timeout escape. Managing the executor manually lets a
+    # stuck thread be abandoned instead of waited on.
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
         for i, seg in enumerate(segments):
             seg_start = time.time()
             audio_path = clips_dir / f"seg_{i:02d}.mp3"
@@ -90,8 +97,16 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             # error and no log movement. The underlying API calls have 60-120s
             # timeouts, so 180s is a generous outer bound that still fails
             # rather than hanging.
-            duration = voice_future.result(timeout=180)   # raises if the Voice Agent failed
-            visual_future.result(timeout=180)             # raises if the Visual Agent failed
+            try:
+                duration = voice_future.result(timeout=180)   # raises if the Voice Agent failed
+                visual_future.result(timeout=180)             # raises if the Visual Agent failed
+            except FuturesTimeout:
+                voice_future.cancel()
+                visual_future.cancel()
+                raise RuntimeError(
+                    f"Segment {i+1}/{n} timed out after 180s waiting for the Voice or Visual agent. "
+                    "The API call didn't return. Abandoning this render rather than hanging."
+                )
             par_elapsed = time.time() - par_start
             total_voice += par_elapsed  # voice+visuals run together, so this is their shared wall time
             log(f"Segment {i+1}/{n}: Voice + Visual done in {par_elapsed:.1f}s (narration is {duration:.1f}s long)")
@@ -109,6 +124,11 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             clip_paths.append(clip_path)
             timed_segments.append({"narration": seg["narration"], "duration": duration})
             seg_times.append(time.time() - seg_start)
+
+    finally:
+        # wait=False so a stuck thread can't hold the whole render hostage.
+        # cancel_futures drops anything not yet started.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     set_agent("voice", "done")
     set_agent("visuals", "done")
