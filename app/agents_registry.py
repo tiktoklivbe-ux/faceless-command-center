@@ -95,12 +95,6 @@ AGENTS = [
      "blurb": "Tracks the money. Watches monetization eligibility and estimated "
               "revenue so growth turns into income.",
      "actions": ["Show revenue estimate", "Check eligibility"]},
-    {"id": "jarvis", "name": "Jarvis", "title": "Personal Assistant", "stage": None,
-     "icon": "🎙️", "color": "#cfd6dc", "ring": 2,
-     "blurb": "Talk or text it directly. Checks real channel/job status and can start "
-              "a video on command — by voice in the app, or by text message from "
-              "anywhere once SMS is set up.",
-     "actions": ["Open Jarvis", "Set up texting"]},
     {"id": "plutus", "name": "Plutus", "title": "Sponsorships & Deals", "stage": None,
      "icon": "🤝", "color": "#8d959c", "ring": 2,
      "blurb": "Drafts brand-deal outreach messages once your numbers are worth "

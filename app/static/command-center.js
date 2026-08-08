@@ -18,6 +18,7 @@ const $ = (s) => document.querySelector(s);
 // temporal-dead-zone crash -- which silently blanked whichever panel hit it.
 let jobPoll = null;
 let mcPoll = null;
+let villagePoll = null;
 
 const state = {
   pan: { x: 0, y: 0 },      // user pan (WASD / drag)
@@ -309,6 +310,35 @@ function pollInterval(fn, ms) {
   }, ms);
 }
 
+// ============================================================ VILLAGE
+
+async function renderVillagePanel(body) {
+  if (villagePoll) { clearInterval(villagePoll); villagePoll = null; }
+  body.innerHTML = `<div class="village-header">
+      <div><h1 style="margin:0">The Village</h1>
+      <div class="bp-sub" style="margin:2px 0 0">Each agent lives here. Working agents leave their building — the bar above a roof shows what it's doing right now.</div></div>
+      <div class="village-legend">
+        <span><i class="vl-tall"></i> pipeline agent</span>
+        <span><i class="vl-short"></i> support agent</span>
+      </div>
+    </div>
+    <div id="village-stage"></div>`;
+
+  const stage = document.getElementById("village-stage");
+  if (!window.VillageView) {
+    stage.innerHTML = '<div class="hint">Village module failed to load.</div>';
+    return;
+  }
+  VillageView.mount(stage);
+
+  const refresh = async () => {
+    const data = await API("/api/agents");
+    VillageView.update(data.agents || []);
+  };
+  await refresh();
+  villagePoll = pollInterval(refresh, 4000);
+}
+
 // ============================================================ MAIN LOOP
 function mainLoop(now) {
   const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
@@ -486,6 +516,8 @@ function initSparks() {
 
 // ============================================================ BIG PANELS (reuse API)
 function stopAllPanelPolls() {
+  if (villagePoll) { clearInterval(villagePoll); villagePoll = null; }
+  if (window.VillageView) VillageView.unmount();
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
 }
@@ -500,8 +532,10 @@ async function openBigPanel(which) {
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
   if (which === "missioncontrol") return renderMissionControlPanel(body);
+  if (which === "village") return renderVillagePanel(body);
 }
 const SIDE_MAP = {
+  "side-village": "village",
   "side-missioncontrol": "missioncontrol",
   "side-jobs": "jobs",
   "side-channels": "channels",
@@ -1065,4 +1099,6 @@ async function init() {
 }
 
 window.runCommand = runCommand;
+// Exposed so village.js can open an agent's detail when its building is clicked.
+window.openAgent = openAgent;
 document.addEventListener("DOMContentLoaded", init);

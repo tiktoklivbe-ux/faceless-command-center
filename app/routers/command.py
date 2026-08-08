@@ -21,15 +21,22 @@ router = APIRouter(prefix="/api", tags=["command"])
 
 
 # ---------------------------------------------------------------- agents
-def _live_agent_status(db: Session) -> dict:
-    """Aggregate per-agent live status from every in-flight job."""
+def _live_agent_status(db: Session) -> tuple[dict, dict]:
+    """Aggregate per-agent live status AND what each is currently doing.
+
+    Returns (status, tasks). The task text comes from the last line of the
+    running job's progress log, which is the only place the pipeline records
+    what it's actually doing at this moment -- the village needs that to show
+    something truthful above each building rather than a generic "working".
+    """
     status = {a["id"]: "idle" for a in AGENTS}
+    tasks: dict[str, str] = {}
     # Only the agent_status column is needed, not whole ORM objects -- this
     # endpoint is polled constantly, and loading full rows (including the
     # potentially large stage_log) on every call was needless work against a
     # database the render pipeline also needs.
     active_jobs = (
-        db.query(models.VideoJob.agent_status)
+        db.query(models.VideoJob.agent_status, models.VideoJob.stage_log, models.VideoJob.title)
         .filter(
             models.VideoJob.status.notin_([
                 models.JobStatus.PUBLISHED, models.JobStatus.FAILED, models.JobStatus.READY,
@@ -38,25 +45,48 @@ def _live_agent_status(db: Session) -> dict:
         .limit(20)
         .all()
     )
-    for (agent_status_json,) in active_jobs:
+    for (agent_status_json, stage_log, title) in active_jobs:
         try:
             agents = json.loads(agent_status_json or "{}")
         except (json.JSONDecodeError, TypeError):
             agents = {}
+
+        # Last meaningful log line, stripped of its timestamp prefix.
+        last_line = ""
+        for raw in reversed((stage_log or "").strip().splitlines()):
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                close = line.find("]")
+                if close != -1:
+                    line = line[close + 1:].strip()
+            if line:
+                last_line = line
+                break
+
         for stage, st in agents.items():
             agent_id = STAGE_TO_AGENT.get(stage)
             if agent_id and st == "running":
                 status[agent_id] = "running"
-    return status
+                if last_line:
+                    # Drop the "Agent Name:" prefix -- the building already
+                    # says whose it is.
+                    text = last_line.split(":", 1)[-1].strip() if ":" in last_line[:28] else last_line
+                    tasks[agent_id] = text[:60]
+                elif title:
+                    tasks[agent_id] = f"working on {title}"[:60]
+    return status, tasks
 
 
 @router.get("/agents")
 def get_agents(db: Session = Depends(get_db)):
     data = roster()
-    live = _live_agent_status(db)
+    live, tasks = _live_agent_status(db)
     core_busy = any(v == "running" for v in live.values())
     for a in data["agents"]:
         a["status"] = live.get(a["id"], "idle")
+        a["task"] = tasks.get(a["id"], "")
     data["core"]["status"] = "running" if core_busy else "idle"
     return data
 
