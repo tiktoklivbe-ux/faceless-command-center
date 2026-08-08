@@ -17,8 +17,13 @@
 (function () {
   // Isometric grid. Tile size is in real display pixels now, not a scaled
   // internal resolution.
-  const TW = 96;
-  const TH = 48;
+  // Tile size is computed on resize to fit the whole village on screen. Fixed
+  // sizes meant the outer rings rendered hundreds of pixels below the
+  // viewport -- buildings you couldn't see and couldn't click, and villagers
+  // that appeared to walk off the map.
+  let TW = 96;
+  let TH = 48;
+  const VILLAGE_RADIUS = 15;   // max |gx| or |gy| used by layout
 
   // Each villager pixel is this many screen pixels. Bigger = chunkier sprite.
   const PIX = 3;
@@ -129,8 +134,26 @@
   function iso(gx, gy) {
     return {
       x: W / 2 + (gx - gy) * (TW / 2),
-      y: H * 0.34 + (gx + gy) * (TH / 2),
+      // Centred vertically rather than pinned near the top, so the village
+      // sits in the middle of the view with equal room front and back.
+      y: H / 2 + (gx + gy) * (TH / 2),
     };
+  }
+
+  /** Pick a tile size that fits the whole village in the viewport. */
+  function fitTiles() {
+    const spanX = VILLAGE_RADIUS * 2;      // widest horizontal extent, in tiles
+    const spanY = VILLAGE_RADIUS * 2;
+    // Leave a margin so buildings (which extend upward) aren't clipped.
+    TW = Math.max(28, Math.min(110, (W * 0.92) / spanX));
+    TH = TW / 2;
+    // If the depth extent would still overflow vertically, shrink further.
+    const neededH = spanY * (TH / 2) * 2 + 160;
+    if (neededH > H) {
+      const k = (H - 160) / (spanY * TH);
+      TH = Math.max(14, TH * k);
+      TW = TH * 2;
+    }
   }
 
   // ---------------------------------------------------------------- villager sprite
@@ -228,13 +251,25 @@
 
   function updateVillagers() {
     villagers.forEach((v) => {
+      // A working agent's villager heads to and stays at their own building
+      // rather than wandering, so it's visible at a glance who's busy.
+      if (!v.wandering) {
+        const home = plots.find((p) => p.agent.id === v.agentId);
+        if (home) { v.tx = home.gx; v.ty = home.gy + 0.6; }
+      }
       const target = iso(v.tx, v.ty);
       const dx = target.x - v.x, dy = target.y - v.y;
       const d = Math.hypot(dx, dy);
       if (d < 3) {
         if (t > v.nextPick) {
-          v.tx = Math.max(-14, Math.min(14, v.tx + (Math.random() * 6 - 3)));
-          v.ty = Math.max(-14, Math.min(14, v.ty + (Math.random() * 6 - 3)));
+          // Clamped to the settlement, and to a diamond rather than a square, so
+          // nobody wanders out past the edge of the ground tiles.
+          let nx = v.tx + (Math.random() * 6 - 3);
+          let ny = v.ty + (Math.random() * 6 - 3);
+          nx = Math.max(-VILLAGE_RADIUS, Math.min(VILLAGE_RADIUS, nx));
+          ny = Math.max(-VILLAGE_RADIUS, Math.min(VILLAGE_RADIUS, ny));
+          if (Math.abs(nx) + Math.abs(ny) > VILLAGE_RADIUS + 2) { nx *= 0.6; ny *= 0.6; }
+          v.tx = nx; v.ty = ny;
           v.nextPick = t + 60 + Math.random() * 150;
         }
       } else {
@@ -663,6 +698,7 @@
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = parent.clientWidth;
     H = parent.clientHeight;
+    fitTiles();
     // Backing store at device resolution keeps everything sharp; the sprite
     // pixelation is done deliberately in code, not by scaling the canvas.
     canvas.width = Math.floor(W * DPR);

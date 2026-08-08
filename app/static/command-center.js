@@ -19,6 +19,7 @@ const $ = (s) => document.querySelector(s);
 let jobPoll = null;
 let mcPoll = null;
 let villagePoll = null;
+let bannerPoll = null;
 
 const state = {
   pan: { x: 0, y: 0 },      // user pan (WASD / drag)
@@ -175,7 +176,11 @@ async function runCommand(text) {
     if (res.message) toast(res.message);
     if (res.action === "open_panel") openBigPanel(res.panel);
     if (res.action === "job_created") {
-      addActivity(`<b>AETHER</b> ▸ job dispatched · ${res.topic}`);
+      // Show the banner immediately rather than waiting up to 5s for the
+      // next poll -- the whole point is that starting a video is obvious.
+      renderJobBanner({ title: res.topic, status: "queued", stage_log: "" });
+      toast("Video started — watch the village.");
+      pollActiveJob();
       refreshAll();
     }
     if (res.action === "need_channel") openBigPanel("channels");
@@ -843,6 +848,57 @@ function endBoot() {
   toast("AETHER online. Ask me to make a video, or explore the constellation.");
 }
 
+// ============================================================ ACTIVE JOB BANNER
+/**
+ * A persistent, unmissable banner across the top whenever a video is being
+ * made. Previously starting a job only produced a toast that vanished in a
+ * few seconds and an addActivity() call that goes nowhere now the old panel
+ * is gone -- so it genuinely looked like nothing had happened.
+ */
+function renderJobBanner(job) {
+  let el = document.getElementById("job-banner");
+  if (!job) {
+    if (el) el.classList.remove("show");
+    return;
+  }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "job-banner";
+    document.body.appendChild(el);
+  }
+
+  const status = String(job.status || "");
+  const log = (job.stage_log || "").trim().split("\n");
+  let last = log[log.length - 1] || "";
+  if (last.startsWith("[")) last = last.slice(last.indexOf("]") + 1).trim();
+
+  const m = /Segment (\d+)\/(\d+)/.exec(job.stage_log || "");
+  const pct = m ? Math.round((parseInt(m[1], 10) / parseInt(m[2], 10)) * 100) : 6;
+
+  el.innerHTML = `
+    <div class="jb-pulse"></div>
+    <div class="jb-body">
+      <div class="jb-title">Making a video · ${job.title || job.topic || "untitled"}</div>
+      <div class="jb-step">${last || "starting up…"}</div>
+      <div class="jb-bar"><div class="jb-fill" style="width:${pct}%"></div></div>
+    </div>
+    <button class="jb-open">Open</button>
+  `;
+  el.querySelector(".jb-open").addEventListener("click", () => {
+    openBigPanel("jobs");
+  });
+  el.classList.add("show");
+}
+
+async function pollActiveJob() {
+  try {
+    const jobs = await API("/api/jobs?limit=10");
+    const active = jobs.find((j) =>
+      !["published", "ready_for_review", "failed"].includes(String(j.status)));
+    renderJobBanner(active || null);
+  } catch (e) { /* leave the banner as-is on a transient failure */ }
+}
+
 // ============================================================ VILLAGE HOME
 function mountVillageHome() {
   const stage = document.getElementById("village-stage");
@@ -865,6 +921,8 @@ async function init() {
   initConsole();
   initClock();
   mountVillageHome();
+  pollActiveJob();
+  bannerPoll = pollInterval(pollActiveJob, 5000);
   const skip = $("#boot-skip");
   if (skip) skip.addEventListener("click", endBoot);
 
