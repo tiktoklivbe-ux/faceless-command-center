@@ -716,6 +716,20 @@ async function renderSettingsPanel(body) {
     </div>
     <div class="card"><h2>Voice — ElevenLabs</h2>${field("elevenlabs_api_key", "ElevenLabs key", "")}
       <div class="hint">No key? Orpheus renders timed silence so you can still test assembly + captions.</div></div>
+    <div class="card"><h2>App Lock</h2>
+      <div class="hint" id="lock-state">Checking…</div>
+      <label>Password</label>
+      <input type="password" id="st-lockpass" placeholder="set a password"/>
+      <label>Auto-lock after (minutes idle)</label>
+      <input type="number" id="st-lockidle" value="15" min="1" max="240"/>
+      <div style="display:flex; gap:8px; margin-top:10px">
+        <button class="btn" id="lock-enable">Enable Lock</button>
+        <button class="btn secondary" id="lock-disable">Turn Off</button>
+        <button class="btn secondary" id="lock-now">Lock Now</button>
+      </div>
+      <div class="hint" id="lock-msg" style="margin-top:8px"></div>
+      <div class="hint" style="margin-top:8px">Stored as a salted hash, never in plain text. This keeps someone who walks up to your screen out — it isn't protection against someone with full access to the computer.</div>
+    </div>
     <div class="card"><h2>Render Speed</h2>
       <label>Fast render mode</label>
       <select id="st-fast_render">
@@ -739,6 +753,53 @@ async function renderSettingsPanel(body) {
     <div class="card"><h2>TikTok</h2>${field("tiktok_client_key", "Client Key", "", "text")}${field("tiktok_client_secret", "Client Secret", "")}
       <div class="hint">Redirect URI: <code>${location.origin}/auth/tiktok/callback</code></div></div>
     <button class="btn" id="st-save">Save Settings</button>`;
+
+  // ---- app lock wiring ----
+  (async () => {
+    const st = document.getElementById("lock-state");
+    const msg = document.getElementById("lock-msg");
+    if (!st) return;
+    const refresh = async () => {
+      try {
+        const d = await API("/api/lock/status");
+        const idleEl = document.getElementById("st-lockidle");
+        if (idleEl) idleEl.value = d.idle_minutes || 15;
+        st.textContent = d.enabled
+          ? `Lock is ON — auto-locks after ${d.idle_minutes} minutes idle.`
+          : "Lock is OFF — anyone who opens this app can use it.";
+      } catch (e) { st.textContent = "Couldn't check lock status."; }
+    };
+    await refresh();
+
+    document.getElementById("lock-enable").addEventListener("click", async () => {
+      const pw = document.getElementById("st-lockpass").value;
+      const mins = parseInt(document.getElementById("st-lockidle").value, 10) || 15;
+      if (!pw || pw.length < 4) { msg.textContent = "Password must be at least 4 characters."; return; }
+      try {
+        await API("/api/lock/setup", { method: "POST", body: JSON.stringify({ password: pw, idle_minutes: mins }) });
+        document.getElementById("st-lockpass").value = "";
+        msg.textContent = "Lock enabled.";
+        if (window.AppLock) AppLock.setIdleMinutes(mins);
+        await refresh();
+      } catch (e) { msg.textContent = "Couldn't enable the lock."; }
+    });
+
+    document.getElementById("lock-disable").addEventListener("click", async () => {
+      const pw = document.getElementById("st-lockpass").value;
+      if (!pw) { msg.textContent = "Enter your current password to turn the lock off."; return; }
+      try {
+        await API("/api/lock/disable", { method: "POST", body: JSON.stringify({ password: pw }) });
+        document.getElementById("st-lockpass").value = "";
+        msg.textContent = "Lock turned off.";
+        await refresh();
+      } catch (e) { msg.textContent = "Wrong password."; }
+    });
+
+    document.getElementById("lock-now").addEventListener("click", () => {
+      if (window.AppLock) AppLock.lockNow();
+    });
+  })();
+
   $("#st-save").addEventListener("click", async () => {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
       "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret"];

@@ -46,7 +46,12 @@ KNOWN_KEYS = {
     "youtube_client_secret": True,
     "tiktok_client_key": True,
     "tiktok_client_secret": True,
-    "fast_render": False,          # "true" skips the Ken Burns pan/zoom -- much cheaper on slow instances
+    "fast_render": False,
+    "lock_enabled": False,          # "true" turns the password gate on
+    "lock_password_hash": True,     # PBKDF2 hash -- never the password itself
+    "lock_salt": True,
+    "lock_session_secret": True,
+    "lock_idle_minutes": False,     # auto-lock after this many idle minutes          # "true" skips the Ken Burns pan/zoom -- much cheaper on slow instances
 }
 
 
