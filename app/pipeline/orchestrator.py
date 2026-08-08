@@ -130,7 +130,7 @@ def dispatch_job(job_id: str):
     worker_log = JOBS_DIR / job_id / "worker.log"
     try:
         worker_log.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = open(worker_log, "a", buffering=1)
+        log_handle = open(worker_log, "a", buffering=1, encoding="utf-8", errors="replace")
     except OSError:
         log_handle = subprocess.DEVNULL
 

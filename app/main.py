@@ -35,7 +35,10 @@ app.include_router(missioncontrol.router)
 
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
-_INDEX_HTML_RAW = (STATIC_DIR / "index.html").read_text()
+# encoding="utf-8" is required, not optional: Windows defaults to cp1252,
+# which cannot decode the emoji in index.html and crashes the app on startup.
+# Linux defaults to UTF-8, so this only ever surfaced when running locally.
+_INDEX_HTML_RAW = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 _INDEX_HTML_VERSIONED = (
     _INDEX_HTML_RAW
     .replace('.js"', f'.js?v={_ASSET_VERSION}"')

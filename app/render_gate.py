@@ -28,7 +28,7 @@ _STALE_AFTER_SECONDS = 1800
 
 def _read_lock() -> tuple[str, int, float] | None:
     try:
-        raw = _LOCK_FILE.read_text().strip()
+        raw = _LOCK_FILE.read_text(encoding="utf-8").strip()
         job_id, pid_s, ts_s = raw.split("|")
         return job_id, int(pid_s), float(ts_s)
     except (OSError, ValueError):
@@ -81,7 +81,7 @@ def try_acquire(job_id: str, timeout: float = 0.0) -> bool:
             # O_EXCL makes this atomic -- only one process can win, even if
             # several try at the same instant.
             fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(f"{job_id}|{os.getpid()}|{time.time()}")
             return True
         except FileExistsError:

@@ -233,7 +233,7 @@ def ken_burns_clip(image_path: Path, audio_path: Path, duration: float, out_path
 
 def concat_clips(clip_paths: list[Path], out_path: Path):
     list_file = out_path.with_suffix(".txt")
-    list_file.write_text("\n".join(f"file '{p.resolve()}'" for p in clip_paths))
+    list_file.write_text("\n".join(f"file '{p.resolve()}'" for p in clip_paths), encoding="utf-8")
     run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
         "-c", "copy", str(out_path),

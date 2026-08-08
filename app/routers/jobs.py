@@ -193,7 +193,7 @@ def worker_log(job_id: str, db: Session = Depends(get_db)):
     if not path.exists():
         return {"exists": False, "log": "", "note": "No worker log yet -- the render may not have started."}
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return {"exists": True, "log": "", "note": f"Couldn't read it: {e}"}
     return {"exists": True, "log": text[-20000:], "size": len(text)}
