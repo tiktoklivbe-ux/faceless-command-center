@@ -194,12 +194,10 @@ function toast(msg) {
   setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, 4200);
   setTimeout(() => t.remove(), 4700);
 }
-function addActivity(html) {
-  const list = $("#activity-list");
-  const line = el(`<div class="act-line">${html}</div>`);
-  list.prepend(line);
-  while (list.children.length > 7) list.lastChild.remove();
-}
+/** Activity is surfaced by the village itself (working buildings, villagers
+ *  out on the paths), so there's no separate ticker to write to. Kept as a
+ *  no-op so callers don't need to know that. */
+function addActivity() {}
 
 // ============================================================ HUD / STATS / CLOCK
 function initClock() {
@@ -210,18 +208,7 @@ function initClock() {
   upd(); setInterval(upd, 1000);
 }
 
-async function refreshStats() {
-  try {
-    const [rundown, jobs] = await Promise.all([API("/api/rundown"), API("/api/jobs")]);
-    $("#stat-videos").textContent = jobs.length;
-    $("#stat-progress").textContent = rundown.videos_in_progress;
-    $("#stat-published").textContent = jobs.filter((j) => j.status === "published").length;
-    $("#stat-today").textContent = rundown.videos_started_today;
-    // telemetry sparklines (real-ish blended with synthetic motion)
-    updateSpark("spark-views", jobs.length * 1240 + Math.floor(Math.random() * 400));
-    updateSpark("spark-watch", (jobs.length * 3.2).toFixed(1));
-  } catch (e) { /* backend may be starting */ }
-}
+
 
 // ============================================================ AGENTS (live)
 async function refreshAgents() {
@@ -243,49 +230,13 @@ async function refreshAgents() {
 
 // ============================================================ RITUALS / COUNTDOWN
 let ritualsCache = [];
-async function refreshRituals() {
-  try {
-    const data = await API("/api/briefings");
-    ritualsCache = data.rituals;
-    renderRituals();
-  } catch (e) { /* ignore */ }
-}
-function renderRituals() {
-  const box = $("#ritual-list");
-  box.innerHTML = ritualsCache.slice(0, 4).map((r) => `
-    <div class="ritual" data-next="${r.next_run_iso}">
-      <div class="ritual-top">
-        <div class="ritual-name">${r.icon} ${r.name}</div>
-        <div class="ritual-count">--:--</div>
-      </div>
-      <div class="ritual-desc">${r.desc}</div>
-    </div>`).join("");
-}
-function tickRituals() {
-  document.querySelectorAll("#ritual-list .ritual").forEach((row) => {
-    const next = new Date(row.dataset.next).getTime();
-    let diff = Math.max(0, Math.floor((next - Date.now()) / 1000));
-    const h = String(Math.floor(diff / 3600)).padStart(2, "0");
-    const m = String(Math.floor((diff % 3600) / 60)).padStart(2, "0");
-    const s = String(diff % 60).padStart(2, "0");
-    row.querySelector(".ritual-count").textContent = `${h}:${m}:${s}`;
-  });
-}
+
+
+
 
 // ============================================================ TELEMETRY SPARKS
 const sparkData = {};
-function updateSpark(id, value) {
-  if (!sparkData[id]) sparkData[id] = Array(24).fill(0).map(() => Math.random());
-  sparkData[id].push(Math.random() * 0.4 + 0.4);
-  if (sparkData[id].length > 24) sparkData[id].shift();
-  const svg = document.getElementById(id);
-  if (!svg) return;
-  const W = 90, H = 28, d = sparkData[id];
-  const pts = d.map((v, i) => `${(i / (d.length - 1)) * W},${H - v * H}`).join(" ");
-  svg.innerHTML = `<polyline fill="none" stroke="var(--green)" stroke-width="1.5" points="${pts}"/>`;
-  const valEl = document.getElementById(id + "-val");
-  if (valEl) valEl.textContent = typeof value === "number" ? value.toLocaleString() : value;
-}
+
 
 
 // ============================================================ BIG PANELS (reuse API)
@@ -799,7 +750,7 @@ async function renderSettingsPanel(body) {
 }
 
 // ============================================================ REFRESH ORCHESTRATION
-function refreshAll() { refreshAgents(); refreshStats(); }
+function refreshAll() { refreshAgents(); }
 
 // ============================================================ BOOT
 function runBoot() {
@@ -872,16 +823,11 @@ async function init() {
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   await refreshAgents();
-  await refreshRituals();
-  await refreshStats();
 
   runBoot();
 
   // live loops
   pollInterval(refreshAgents, 15000);
-  pollInterval(refreshStats, 30000);
-  pollInterval(refreshRituals, 60000);
-  setInterval(tickRituals, 1000);
 }
 
 window.runCommand = runCommand;

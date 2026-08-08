@@ -32,6 +32,40 @@
   let hovered = -1;
   let mx = -1, my = -1;
 
+  // Camera. Pan by dragging, zoom with the wheel. Both are smoothed toward a
+  // target rather than applied directly, which is what makes movement feel
+  // like a camera gliding rather than the world snapping around.
+  const cam = { x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1 };
+  let dragging = false, dragStart = null;
+
+  function applyCamera() {
+    // Ease toward the target every frame. 0.12 is slow enough to read as
+    // deliberate motion, fast enough not to feel laggy.
+    cam.x += (cam.tx - cam.x) * 0.12;
+    cam.y += (cam.ty - cam.y) * 0.12;
+    cam.z += (cam.tz - cam.z) * 0.12;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(cam.z, cam.z);
+    ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+  }
+
+  /** Screen coords -> world coords, so hit-testing still works when the
+   *  camera is panned or zoomed. */
+  function screenToWorld(sx, sy) {
+    return {
+      x: (sx - W / 2) / cam.z + W / 2 - cam.x,
+      y: (sy - H / 2) / cam.z + H / 2 - cam.y,
+    };
+  }
+
+  /** Glide the camera to centre on a world point. */
+  function focusOn(wx, wy, zoom) {
+    cam.tx = W / 2 - wx;
+    cam.ty = H / 2 - wy;
+    if (zoom) cam.tz = zoom;
+  }
+
   // Dusk palette
   const C = {
     skyTop: "#241a3a",
@@ -149,10 +183,11 @@
         if (p) spawnVillager(p, false, id.length * 13);
       }
     });
-    const ambientWanted = 16;
+    const ambientWanted = 48;
     let ambient = villagers.filter((v) => v.wandering).length;
     for (let i = ambient; i < ambientWanted && plots.length; i++) {
-      spawnVillager(plots[i % plots.length], true, i * 17 + 3);
+      const anchor = (homes.length && i % 2) ? homes[i % homes.length] : plots[i % plots.length];
+      spawnVillager(anchor.agent ? anchor : { gx: anchor.gx, gy: anchor.gy, agent: { id: `home${i}`, color: null } }, true, i * 17 + 3);
     }
   }
 
@@ -163,8 +198,8 @@
       const d = Math.hypot(dx, dy);
       if (d < 3) {
         if (t > v.nextPick) {
-          v.tx = Math.max(-6, Math.min(6, v.tx + (Math.random() * 4 - 2)));
-          v.ty = Math.max(-6, Math.min(6, v.ty + (Math.random() * 4 - 2)));
+          v.tx = Math.max(-14, Math.min(14, v.tx + (Math.random() * 6 - 3)));
+          v.ty = Math.max(-14, Math.min(14, v.ty + (Math.random() * 6 - 3)));
           v.nextPick = t + 60 + Math.random() * 150;
         }
       } else {
@@ -182,25 +217,95 @@
   };
   const tierOf = (id) => TIER[id] || 1;
 
+  // Small family homes filling out the town. They aren't agents -- they exist
+  // so the place reads as a settlement people live in rather than an office
+  // park of five buildings.
+  let homes = [];
+
   function layout() {
     plots = [];
+    homes = [];
     const sorted = [...agents].sort((a, b) => tierOf(b.id) - tierOf(a.id));
+
+    // Agent buildings spread over a much wider area than before.
     const slots = [
-      [-1,-1],[1,-1],[2,0],[1,1],[-1,1],[-2,0],
-      [-3,-2],[-1,-3],[1,-3],[3,-2],[4,0],[3,2],[1,3],[-1,3],[-3,2],[-4,0],
-      [-5,-3],[-2,-5],[2,-5],[5,-3],[5,3],[2,5],[-2,5],[-5,3],
+      [-2,-2],[2,-2],[3,0],[2,2],[-2,2],[-3,0],
+      [-5,-4],[-2,-6],[2,-6],[5,-4],[7,0],[5,4],[2,6],[-2,6],[-5,4],[-7,0],
+      [-9,-6],[-4,-10],[4,-10],[9,-6],[9,6],[4,10],[-4,10],[-9,6],
+      [-12,-3],[-3,-13],[3,-13],[12,-3],[12,3],[3,13],[-3,13],[-12,3],
     ];
     sorted.forEach((a, i) => {
-      const s = slots[i % slots.length];
+      const sl = slots[i % slots.length];
       const tier = tierOf(a.id);
       plots.push({
-        agent: a, gx: s[0], gy: s[1], tier,
+        agent: a, gx: sl[0], gy: sl[1], tier,
         w: tier === 3 ? 78 : tier === 2 ? 62 : 50,
         h: tier === 3 ? 108 : tier === 2 ? 72 : 50,
         seed: i * 41,
       });
     });
     plots.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+
+    // Family homes: deterministic scatter so they don't jump around on every
+    // relayout, kept clear of the paths and of agent plots.
+    const taken = new Set(plots.map((p) => `${p.gx},${p.gy}`));
+    let n = 0;
+    for (let gx = -15; gx <= 15; gx++) {
+      for (let gy = -15; gy <= 15; gy++) {
+        if (Math.abs(gx) + Math.abs(gy) > 17) continue;
+        if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) continue;      // keep roads clear
+        if (taken.has(`${gx},${gy}`)) continue;
+        const h = ((gx * 73856093) ^ (gy * 19349663)) >>> 0;
+        if (h % 7 !== 0) continue;                                  // ~1 in 7 tiles
+        homes.push({ gx, gy, w: 30 + (h % 3) * 5, h: 26 + (h % 4) * 5, seed: h % 100 });
+        n++;
+      }
+    }
+  }
+
+  function drawHome(hm) {
+    const b = iso(hm.gx, hm.gy);
+    const w = hm.w, hh = hm.h, hw = w / 2;
+
+    ctx.fillStyle = "rgba(35,20,15,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(b.x - 5, b.y + 4, hw * 0.95, TH * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // walls
+    ctx.fillStyle = "#a98a63";
+    ctx.beginPath();
+    ctx.moveTo(b.x - hw, b.y - TH * 0.2);
+    ctx.lineTo(b.x, b.y + TH * 0.2);
+    ctx.lineTo(b.x, b.y + TH * 0.2 - hh);
+    ctx.lineTo(b.x - hw, b.y - TH * 0.2 - hh);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#7a5f42";
+    ctx.beginPath();
+    ctx.moveTo(b.x + hw, b.y - TH * 0.2);
+    ctx.lineTo(b.x, b.y + TH * 0.2);
+    ctx.lineTo(b.x, b.y + TH * 0.2 - hh);
+    ctx.lineTo(b.x + hw, b.y - TH * 0.2 - hh);
+    ctx.closePath(); ctx.fill();
+
+    // roof
+    const ry = b.y + TH * 0.2 - hh, rh = 14;
+    ctx.fillStyle = "#8f5443";
+    ctx.beginPath();
+    ctx.moveTo(b.x - hw, ry - TH * 0.4); ctx.lineTo(b.x, ry);
+    ctx.lineTo(b.x, ry - rh); ctx.lineTo(b.x - hw, ry - TH * 0.4 - rh * 0.6);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#6d3e33";
+    ctx.beginPath();
+    ctx.moveTo(b.x + hw, ry - TH * 0.4); ctx.lineTo(b.x, ry);
+    ctx.lineTo(b.x, ry - rh); ctx.lineTo(b.x + hw, ry - TH * 0.4 - rh * 0.6);
+    ctx.closePath(); ctx.fill();
+
+    // a lit window in most homes at dusk
+    if (hm.seed % 4 !== 0) {
+      ctx.fillStyle = "#ffcf82";
+      ctx.fillRect(b.x - hw * 0.5 - 4, b.y - hh + 12, 8, 9);
+    }
   }
 
   // ---------------------------------------------------------------- scenery
@@ -258,17 +363,17 @@
   }
 
   function drawGround() {
-    for (let gx = -8; gx <= 8; gx++) {
-      for (let gy = -8; gy <= 8; gy++) {
+    for (let gx = -18; gx <= 18; gx++) {
+      for (let gy = -18; gy <= 18; gy++) {
         const man = Math.abs(gx) + Math.abs(gy);
-        if (man > 11) continue;
+        if (man > 20) continue;
         const p = iso(gx, gy);
         if (p.y < -TH || p.y > H + TH || p.x < -TW || p.x > W + TW) continue;
 
         const n = ((gx * 7 + gy * 13) % 4 + 4) % 4;
         let col;
         if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) col = C.path;
-        else if (man > 8) col = n < 2 ? C.grass : C.grassAlt;
+        else if (man > 16) col = n < 2 ? C.grass : C.grassAlt;
         else col = n === 0 ? C.dirtAlt : n === 1 ? C.dirtEdge : C.dirt;
 
         tilePath(gx, gy);
@@ -414,17 +519,28 @@
     ctx.textAlign = "center";
     ctx.fillStyle = "#ffe9c8";
     ctx.fillText(String(task).slice(0, 40), b.x, by - 7);
+
+    // Time remaining, when the pipeline gives us enough to estimate one.
+    if (p.agent.eta) {
+      ctx.font = "600 11px 'Share Tech Mono', monospace";
+      ctx.fillStyle = "#ffc46b";
+      ctx.fillText(p.agent.eta, b.x, by + 22);
+    }
   }
 
   function hitTest() {
     hovered = -1;
-    if (mx < 0) return;
+    if (mx < 0 || dragging) {
+      if (canvas) canvas.style.cursor = dragging ? "grabbing" : "default";
+      return;
+    }
+    const wpt = screenToWorld(mx, my);
     for (let i = plots.length - 1; i >= 0; i--) {
       const p = plots[i], b = iso(p.gx, p.gy);
-      if (mx > b.x - p.w / 2 && mx < b.x + p.w / 2 &&
-          my > b.y - p.h - 40 && my < b.y + TH * 0.6) { hovered = i; break; }
+      if (wpt.x > b.x - p.w / 2 && wpt.x < b.x + p.w / 2 &&
+          wpt.y > b.y - p.h - 40 && wpt.y < b.y + TH * 0.6) { hovered = i; break; }
     }
-    if (canvas) canvas.style.cursor = hovered >= 0 ? "pointer" : "default";
+    if (canvas) canvas.style.cursor = hovered >= 0 ? "pointer" : "grab";
   }
 
   function drawTooltip() {
@@ -432,6 +548,7 @@
     const p = plots[hovered], b = iso(p.gx, p.gy);
     const lines = [p.agent.name, p.agent.title || "", `Status: ${p.agent.status || "idle"}`];
     if (p.agent.task) lines.push(p.agent.task);
+    if (p.agent.eta) lines.push(p.agent.eta);
 
     ctx.font = "13px Rajdhani, sans-serif";
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 20;
@@ -458,7 +575,11 @@
 
   function frame() {
     t += 1;
+    // Sky is drawn without the camera transform so it stays put while the
+    // world moves underneath -- a sky that pans with the ground looks wrong.
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     drawSky();
+    applyCamera();
     drawGround();
     updateVillagers();
     hitTest();
@@ -467,11 +588,13 @@
     // in front of and behind houses.
     const items = [
       ...plots.map((p, i) => ({ k: "b", p, i, d: iso(p.gx, p.gy).y })),
+      ...homes.map((hm) => ({ k: "h", hm, d: iso(hm.gx, hm.gy).y })),
       ...villagers.map((v) => ({ k: "v", v, d: v.y })),
     ].sort((a, b2) => a.d - b2.d);
 
     items.forEach((it) => {
       if (it.k === "b") drawBuilding(it.p, it.i);
+      else if (it.k === "h") drawHome(it.hm);
       else drawVillagerSprite(it.v);
     });
 
@@ -508,10 +631,46 @@
         const r = canvas.getBoundingClientRect();
         mx = e.clientX - r.left;
         my = e.clientY - r.top;
+        if (dragging && dragStart) {
+          cam.tx = dragStart.camX + (mx - dragStart.mx);
+          cam.ty = dragStart.camY + (my - dragStart.my);
+        }
       });
-      canvas.addEventListener("mouseleave", () => { mx = -1; my = -1; });
+      canvas.addEventListener("mouseleave", () => { mx = -1; my = -1; dragging = false; });
+
+      canvas.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        dragging = true;
+        dragStart = { mx, my, camX: cam.tx, camY: cam.ty, moved: false };
+      });
+      window.addEventListener("mouseup", () => { dragging = false; });
+
+      canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        // Zoom toward the cursor rather than the screen centre, so you can
+        // aim at a building and zoom into it.
+        const before = screenToWorld(mx, my);
+        cam.tz = Math.max(0.45, Math.min(2.4, cam.tz * (e.deltaY > 0 ? 0.88 : 1.14)));
+        const after = screenToWorld(mx, my);
+        cam.tx += (after.x - before.x) * cam.tz;
+        cam.ty += (after.y - before.y) * cam.tz;
+      }, { passive: false });
+
       canvas.addEventListener("click", () => {
-        if (hovered >= 0 && window.openAgent) window.openAgent(plots[hovered].agent.id);
+        // A drag shouldn't count as a click on whatever ended up under the
+        // cursor when the mouse came up.
+        if (dragStart && Math.hypot(mx - dragStart.mx, my - dragStart.my) > 6) return;
+        if (hovered >= 0) {
+          const p = plots[hovered];
+          const b = iso(p.gx, p.gy);
+          focusOn(b.x, b.y - p.h / 2, 1.7);   // glide in before opening
+          setTimeout(() => { if (window.openAgent) window.openAgent(p.agent.id); }, 380);
+        }
+      });
+
+      // Double-click empty ground to pull back out to the whole village.
+      canvas.addEventListener("dblclick", () => {
+        if (hovered < 0) { cam.tx = 0; cam.ty = 0; cam.tz = 1; }
       });
 
       window.addEventListener("resize", resize);

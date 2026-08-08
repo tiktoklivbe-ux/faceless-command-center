@@ -31,6 +31,7 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
     """
     status = {a["id"]: "idle" for a in AGENTS}
     tasks: dict[str, str] = {}
+    etas: dict[str, str] = {}
     # Only the agent_status column is needed, not whole ORM objects -- this
     # endpoint is polled constantly, and loading full rows (including the
     # potentially large stage_log) on every call was needless work against a
@@ -69,6 +70,15 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
             agent_id = STAGE_TO_AGENT.get(stage)
             if agent_id and st == "running":
                 status[agent_id] = "running"
+                # Segment progress, if the log mentions it -- gives a real
+                # time estimate instead of an open-ended spinner.
+                m = re.search(r"Segment (\d+)/(\d+)", stage_log or "")
+                if m:
+                    done, total = int(m.group(1)), int(m.group(2))
+                    remaining = max(total - done, 0)
+                    secs = remaining * 14  # measured: roughly 14s per segment
+                    etas[agent_id] = (f"~{secs//60}m {secs%60}s left" if secs >= 60
+                                      else f"~{secs}s left") if remaining else "finishing"
                 if last_line:
                     # Drop the "Agent Name:" prefix -- the building already
                     # says whose it is.
@@ -76,17 +86,18 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
                     tasks[agent_id] = text[:60]
                 elif title:
                     tasks[agent_id] = f"working on {title}"[:60]
-    return status, tasks
+    return status, tasks, etas
 
 
 @router.get("/agents")
 def get_agents(db: Session = Depends(get_db)):
     data = roster()
-    live, tasks = _live_agent_status(db)
+    live, tasks, etas = _live_agent_status(db)
     core_busy = any(v == "running" for v in live.values())
     for a in data["agents"]:
         a["status"] = live.get(a["id"], "idle")
         a["task"] = tasks.get(a["id"], "")
+        a["eta"] = etas.get(a["id"], "")
     data["core"]["status"] = "running" if core_busy else "idle"
     return data
 
