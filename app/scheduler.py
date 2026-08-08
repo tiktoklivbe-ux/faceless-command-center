@@ -136,7 +136,11 @@ def clear_stuck_jobs(db: Session) -> int:
             job.status = models.JobStatus.QUEUED
             job.error_message = ""
             db.commit()
-            orchestrator.dispatch_job(job.id)
+            # Deliberately NOT dispatching here. The backlog drain later in
+            # this same tick picks up QUEUED jobs -- doing both launched TWO
+            # workers for the same job simultaneously, which then fought over
+            # the same files and render slot. The worker log showed exactly
+            # that: "Worker starting" twice, every 30 minutes.
         else:
             log.warning("Chronos watchdog: giving up on job %s after %d retries", job.id, attempts)
             job.status = models.JobStatus.FAILED
@@ -213,6 +217,13 @@ def _tick():
             .first()
         )
         if queued:
+            # Re-check the gate immediately before dispatching. Between the
+            # is_busy() check at the top of this tick and here, the watchdog
+            # may have requeued something -- and dispatching a job that's
+            # already being rendered is how duplicate workers happen.
+            if render_gate.is_busy():
+                log.info("Chronos: %s is queued but a render is active; leaving it.", queued.id)
+                return
             log.info("Chronos: picking up queued job %s", queued.id)
             orchestrator.dispatch_job(queued.id)
             return

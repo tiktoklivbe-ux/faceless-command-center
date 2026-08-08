@@ -117,6 +117,15 @@ def dispatch_job(job_id: str):
     import subprocess
     import sys
 
+    # Refuse to launch a second worker for a job that's already rendering.
+    # This is the last line of defence: the watchdog and the backlog drain
+    # both used to dispatch in the same tick, producing two workers for one
+    # job that then fought over the same files. Even with that fixed, any
+    # future caller gets stopped here.
+    if job_id in render_gate.active_jobs():
+        log.warning("Job %s is already being rendered; refusing to start a second worker.", job_id)
+        return None
+
     repo_root = Path(__file__).resolve().parent.parent.parent
     worker_log = JOBS_DIR / job_id / "worker.log"
     try:
