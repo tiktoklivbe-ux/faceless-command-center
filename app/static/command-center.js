@@ -33,193 +33,17 @@ const state = {
 };
 
 // ============================================================ STARFIELD
-function initStarfield() {
-  const cv = $("#starfield");
-  const ctx = cv.getContext("2d");
-  let stars = [], shooting = [];
-  function resize() {
-    cv.width = window.innerWidth; cv.height = window.innerHeight;
-    const n = Math.floor((cv.width * cv.height) / 1600);
-    stars = Array.from({ length: n }, () => ({
-      x: Math.random() * cv.width, y: Math.random() * cv.height,
-      z: Math.random(),                      // depth for parallax + size
-      tw: Math.random() * Math.PI * 2,        // twinkle phase
-      tws: 0.5 + Math.random() * 2,
-    }));
-  }
-  resize();
-  window.addEventListener("resize", resize);
 
-  function maybeShoot() {
-    if (Math.random() < 0.008 && shooting.length < 3) {
-      const edge = Math.random() * cv.width;
-      shooting.push({ x: edge, y: -20, vx: (Math.random() - 0.5) * 6 - 2, vy: 5 + Math.random() * 5, life: 1 });
-    }
-  }
-
-  function frame(now) {
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    const px = state.mouse.x, py = state.mouse.y;
-    for (const s of stars) {
-      const depth = 0.3 + s.z * 1.4;
-      const ox = px * depth * 26, oy = py * depth * 26;
-      const size = s.z * 1.8 + 0.3;
-      const tw = 0.5 + 0.5 * Math.sin(s.tw + now * 0.001 * s.tws);
-      ctx.globalAlpha = 0.25 + tw * 0.75 * s.z;
-      ctx.fillStyle = s.z > 0.85 ? "#bfefff" : "#ffffff";
-      ctx.beginPath();
-      ctx.arc(s.x + ox, s.y + oy, size, 0, 7);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    maybeShoot();
-    for (const sh of shooting) {
-      sh.x += sh.vx; sh.y += sh.vy; sh.life -= 0.012;
-      const grad = ctx.createLinearGradient(sh.x, sh.y, sh.x - sh.vx * 8, sh.y - sh.vy * 8);
-      grad.addColorStop(0, `rgba(0,232,255,${Math.max(sh.life, 0)})`);
-      grad.addColorStop(1, "rgba(232,236,239,0)");
-      ctx.strokeStyle = grad; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.lineTo(sh.x - sh.vx * 8, sh.y - sh.vy * 8); ctx.stroke();
-    }
-    shooting = shooting.filter((s) => s.life > 0 && s.y < cv.height + 40);
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-}
 
 // ============================================================ CONSTELLATION
-function layoutConstellation() {
-  const world = $("#world");
-  world.querySelectorAll(".node").forEach((n) => n.remove());
-  const linkLayer = $("#linkLayer");
-  linkLayer.innerHTML = "";
 
-  const R1 = 250, R2 = 430;
-  const ring1 = state.agents.filter((a) => a.ring === 1);
-  const ring2 = state.agents.filter((a) => a.ring === 2);
 
-  const place = (list, radius, phase) => {
-    list.forEach((a, i) => {
-      a._r = radius;
-      a._angle = phase + (i / list.length) * Math.PI * 2;
-      // link line
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      line.setAttribute("class", "link-line");
-      line.dataset.agent = a.id;
-      linkLayer.appendChild(line);
-      // pulse dot (hidden until active)
-      const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      pulse.setAttribute("class", "link-pulse");
-      pulse.setAttribute("r", "2.6");
-      pulse.dataset.agent = a.id;
-      pulse.style.opacity = "0";
-      linkLayer.appendChild(pulse);
 
-      const node = el(`
-        <div class="node ${a.status === "running" ? "running" : ""}" data-agent="${a.id}" style="--nodeColor:${a.color}">
-          <div class="hex" style="--nodeColor:${a.color}">${a.icon}</div>
-          <div class="node-name">${a.name}</div>
-          <div class="node-status"><span class="blip"></span>${a.status || "idle"}</div>
-        </div>`);
-      node.addEventListener("click", (e) => { e.stopPropagation(); openAgent(a.id); });
-      world.appendChild(node);
-      a._node = node;
-    });
-  };
-  place(ring1, R1, -Math.PI / 2);
-  place(ring2, R2, -Math.PI / 2 + Math.PI / ring2.length);
-}
-
-function updateConstellation(dt, now) {
-  // slow orbital drift
-  const spin1 = 0.018, spin2 = 0.011;
-  const linkLayer = $("#linkLayer");
-  for (const a of state.agents) {
-    if (!a._node) continue;
-    a._angle += (a.ring === 1 ? spin1 : spin2) * dt;
-    const x = Math.cos(a._angle) * a._r;
-    const y = Math.sin(a._angle) * a._r;
-    // gentle bob
-    const bob = Math.sin(now * 0.001 + a._angle * 3) * 5;
-    a._node.style.transform = `translate(${x}px, ${y + bob}px)`;
-    // link line
-    const line = linkLayer.querySelector(`path.link-line[data-agent="${a.id}"]`);
-    if (line) line.setAttribute("d", `M0,0 L${x},${y + bob}`);
-    // pulse travels outward when running
-    const pulse = linkLayer.querySelector(`circle.link-pulse[data-agent="${a.id}"]`);
-    if (pulse) {
-      if (a.status === "running") {
-        const p = ((now * 0.0006) % 1);
-        pulse.setAttribute("cx", (x * p).toFixed(1));
-        pulse.setAttribute("cy", ((y + bob) * p).toFixed(1));
-        pulse.style.opacity = "1";
-        line.setAttribute("stroke", a.color);
-        line.setAttribute("stroke-opacity", "0.5");
-      } else {
-        pulse.style.opacity = "0";
-        line.setAttribute("stroke", "rgba(232,236,239,0.16)");
-      }
-    }
-  }
-}
 
 // ============================================================ CAMERA / PARALLAX
-function initCamera() {
-  const universe = $("#universe");
-  window.addEventListener("mousemove", (e) => {
-    state.mouse.x = (e.clientX / window.innerWidth - 0.5) * 2;
-    state.mouse.y = (e.clientY / window.innerHeight - 0.5) * 2;
-  });
-  // drag to pan
-  universe.addEventListener("mousedown", (e) => {
-    if (e.target.closest(".node, #core, .holo, #console, .hud, #agent-detail, #bigpanel")) return;
-    state.dragging = true; universe.classList.add("grabbing");
-    state.dragStart = { x: e.clientX, y: e.clientY, px: state.target.x, py: state.target.y };
-  });
-  window.addEventListener("mousemove", (e) => {
-    if (!state.dragging) return;
-    state.target.x = state.dragStart.px + (e.clientX - state.dragStart.x);
-    state.target.y = state.dragStart.py + (e.clientY - state.dragStart.y);
-  });
-  window.addEventListener("mouseup", () => { state.dragging = false; universe.classList.remove("grabbing"); });
-  // scroll zoom
-  universe.addEventListener("wheel", (e) => {
-    if (e.target.closest(".holo, #agent-detail, #bigpanel, #console")) return;
-    e.preventDefault();
-    state.zoomTarget = Math.min(1.8, Math.max(0.5, state.zoomTarget - e.deltaY * 0.0011));
-  }, { passive: false });
-  // WASD
-  window.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-    state.keys[e.key.toLowerCase()] = true;
-    if (e.key === "Escape") { closeAgent(); closeBigPanel(); }
-  });
-  window.addEventListener("keyup", (e) => { state.keys[e.key.toLowerCase()] = false; });
-  // focus command bar on "/"
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "/" && e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") {
-      e.preventDefault(); $("#cmd").focus();
-    }
-  });
-}
 
-function tickCamera(dt) {
-  const sp = 6 * dt * 60;
-  if (state.keys["w"] || state.keys["arrowup"]) state.target.y += sp;
-  if (state.keys["s"] || state.keys["arrowdown"]) state.target.y -= sp;
-  if (state.keys["a"] || state.keys["arrowleft"]) state.target.x += sp;
-  if (state.keys["d"] || state.keys["arrowright"]) state.target.x -= sp;
-  // ease
-  state.pan.x += (state.target.x - state.pan.x) * 0.12;
-  state.pan.y += (state.target.y - state.pan.y) * 0.12;
-  state.zoom += (state.zoomTarget - state.zoom) * 0.1;
 
-  const parX = -state.mouse.x * 42, parY = -state.mouse.y * 42;
-  const tiltX = state.mouse.y * 4, tiltY = -state.mouse.x * 4;
-  $("#world").style.transform =
-    `translate(-50%, -50%) translate(${state.pan.x + parX}px, ${state.pan.y + parY}px) scale(${state.zoom}) rotateX(${tiltX}deg) rotateY(${tiltY}deg)`;
-  $("#gridwash").style.transform = `translate(${state.mouse.x * -16}px, ${state.mouse.y * -16}px)`;
-}
+
 
 /**
  * Plain-English status for a job -- big readable summary instead of making
@@ -312,41 +136,10 @@ function pollInterval(fn, ms) {
 
 // ============================================================ VILLAGE
 
-async function renderVillagePanel(body) {
-  if (villagePoll) { clearInterval(villagePoll); villagePoll = null; }
-  body.innerHTML = `<div class="village-header">
-      <div><h1 style="margin:0">The Village</h1>
-      <div class="bp-sub" style="margin:2px 0 0">Each agent lives here. Working agents leave their building — the bar above a roof shows what it's doing right now.</div></div>
-      <div class="village-legend">
-        <span><i class="vl-tall"></i> pipeline agent</span>
-        <span><i class="vl-short"></i> support agent</span>
-      </div>
-    </div>
-    <div id="village-stage"></div>`;
 
-  const stage = document.getElementById("village-stage");
-  if (!window.VillageView) {
-    stage.innerHTML = '<div class="hint">Village module failed to load.</div>';
-    return;
-  }
-  VillageView.mount(stage);
-
-  const refresh = async () => {
-    const data = await API("/api/agents");
-    VillageView.update(data.agents || []);
-  };
-  await refresh();
-  villagePoll = pollInterval(refresh, 4000);
-}
 
 // ============================================================ MAIN LOOP
-function mainLoop(now) {
-  const dt = Math.min((now - (mainLoop._last || now)) / 1000, 0.05);
-  mainLoop._last = now;
-  tickCamera(dt);
-  updateConstellation(dt, now);
-  requestAnimationFrame(mainLoop);
-}
+
 
 // ============================================================ AGENT DETAIL
 function openAgent(id) {
@@ -434,29 +227,17 @@ async function refreshStats() {
 async function refreshAgents() {
   try {
     const data = await API("/api/agents");
-    const first = state.agents.length === 0;
-    if (first) {
-      state.core = data.core;
-      state.agents = data.agents;
-      layoutConstellation();
-    } else {
-      // merge live status
-      for (const a of data.agents) {
-        const cur = state.agents.find((x) => x.id === a.id);
-        if (cur && cur.status !== a.status) {
-          cur.status = a.status;
-          if (cur._node) {
-            cur._node.classList.toggle("running", a.status === "running");
-            cur._node.querySelector(".node-status").innerHTML =
-              `<span class="blip"></span>${a.status}`;
-            if (a.status === "running") addActivity(`<b>${cur.name}</b> ▸ engaged`);
-          }
-        }
+    // Note when an agent starts working so the activity feed still reflects
+    // it -- the village shows current state, not history.
+    for (const a of data.agents) {
+      const prev = state.agents.find((x) => x.id === a.id);
+      if (prev && prev.status !== a.status && a.status === "running") {
+        addActivity(`<b>${a.name}</b> ▸ started work`);
       }
-      state.core.status = data.core.status;
     }
-    const coreEl = $("#core");
-    if (coreEl && data.core) coreEl.classList.toggle("busy", data.core.status === "running");
+    state.core = data.core;
+    state.agents = data.agents;
+    updateVillage(data.agents);
   } catch (e) { /* ignore */ }
 }
 
@@ -505,14 +286,7 @@ function updateSpark(id, value) {
   const valEl = document.getElementById(id + "-val");
   if (valEl) valEl.textContent = typeof value === "number" ? value.toLocaleString() : value;
 }
-function initSparks() {
-  updateSpark("spark-views", 0); updateSpark("spark-watch", 0);
-  updateSpark("spark-agents", 0);
-  setInterval(() => {
-    const running = state.agents.filter((a) => a.status === "running").length;
-    updateSpark("spark-agents", running);
-  }, 2500);
-}
+
 
 // ============================================================ BIG PANELS (reuse API)
 function stopAllPanelPolls() {
@@ -532,10 +306,8 @@ async function openBigPanel(which) {
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
   if (which === "missioncontrol") return renderMissionControlPanel(body);
-  if (which === "village") return renderVillagePanel(body);
 }
 const SIDE_MAP = {
-  "side-village": "village",
   "side-missioncontrol": "missioncontrol",
   "side-jobs": "jobs",
   "side-channels": "channels",
@@ -1059,15 +831,30 @@ function endBoot() {
   toast("AETHER online. Ask me to make a video, or explore the constellation.");
 }
 
+// ============================================================ VILLAGE HOME
+function mountVillageHome() {
+  const stage = document.getElementById("village-stage");
+  if (!stage || !window.VillageView) return;
+  VillageView.mount(stage);
+}
+
+/** Feed live agent state to the village. Called by the same poll that used to
+ *  drive the constellation, so there's still exactly one source of truth. */
+function updateVillage(agentList) {
+  if (window.VillageView && agentList) VillageView.update(agentList);
+}
+
 // ============================================================ INIT
 async function init() {
-  initStarfield();
-  initCamera();
+  // The village is the home view. The starfield, orbit camera and
+  // constellation renderer are gone entirely -- keeping them would mean a
+  // second full-screen animation loop running behind an opaque village for
+  // no benefit, which is exactly what made the old app lag.
   initConsole();
   initClock();
-  initSparks();
-  $("#core").addEventListener("click", () => openAgent("aether"));
-  $("#boot-skip").addEventListener("click", endBoot);
+  mountVillageHome();
+  const skip = $("#boot-skip");
+  if (skip) skip.addEventListener("click", endBoot);
 
   // toolbar buttons
   // Navigation is the left sidebar only -- the duplicate right-hand toolbar
@@ -1088,7 +875,6 @@ async function init() {
   await refreshRituals();
   await refreshStats();
 
-  requestAnimationFrame(mainLoop);
   runBoot();
 
   // live loops
