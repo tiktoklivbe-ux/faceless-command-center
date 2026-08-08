@@ -1,132 +1,158 @@
 /**
  * village.js — the settlement view.
  *
- * A 3/4 angled view (isometric-ish) rather than a flat side-on one: you look
- * down at the village at an angle, so buildings have depth and the layout has
- * room to grow as more agents and districts get added. Dirt paths connect
- * everything, and villagers walk those paths between buildings.
+ * Rendering approach, and why it's split:
  *
- * Everything is drawn with primitives at a fixed internal resolution and
- * scaled with smoothing off, so it stays crisp pixel art rather than blurring.
- * No image assets, no dependencies.
+ * The previous version drew everything at 640x400 and scaled the whole canvas
+ * up, which made buildings blurry and soft. Now the canvas runs at the
+ * display's real resolution (including devicePixelRatio), so buildings,
+ * ground and sky are drawn crisply at full size with smooth gradients and
+ * clean edges.
+ *
+ * The PEOPLE are the only deliberately pixelated element: each villager is
+ * drawn from a small sprite grid where every "pixel" is a scaled-up square.
+ * That gives the pixel-art character look against detailed surroundings,
+ * rather than everything being uniformly soft.
  */
 (function () {
-  const VW = 640;
-  const VH = 400;
+  // Isometric grid. Tile size is in real display pixels now, not a scaled
+  // internal resolution.
+  const TW = 96;
+  const TH = 48;
 
-  // Isometric tile size. Buildings and paths are positioned on a grid in
-  // "tile space" and projected to screen, which keeps placement simple and
-  // makes the whole village easy to extend later.
-  const TW = 44;   // tile width  (full diamond)
-  const TH = 22;   // tile height (full diamond)
-  const ORIGIN_X = VW / 2;
-  const ORIGIN_Y = 92;
-
-  // Warm dusk palette -- earthy, not the old cold sci-fi blues.
-  const PAL = {
-    skyTop: "#2f2144",
-    skyMid: "#7a3f56",
-    skyLow: "#c96a4e",
-    skyHorizon: "#e9a05c",
-    sun: "#ffd79a",
-    dirt: "#7a5a3c",
-    dirtDark: "#654a31",
-    dirtLight: "#8d6a48",
-    grass: "#4e5c3a",
-    grassDark: "#3f4b30",
-    path: "#9c7a52",
-  };
+  // Each villager pixel is this many screen pixels. Bigger = chunkier sprite.
+  const PIX = 3;
 
   let canvas, ctx, raf;
+  let W = 0, H = 0, DPR = 1;
   let agents = [];
   let plots = [];
   let villagers = [];
   let t = 0;
   let hovered = -1;
   let mx = -1, my = -1;
-  let camShakeUntil = 0;
 
-  // Tier drives building size. The five real pipeline stages plus ideation do
-  // the actual work of making a video; the rest are support. The skyline
-  // should reflect that honestly rather than making everything look equal.
-  const TIER = {
-    athena: 3, orpheus: 3, iris: 3, hephaestus: 3, hermes: 3, apollo: 3,
-    chronos: 2, argus: 2, atlas: 2, daedalus: 2, blitz: 2, midas: 2,
+  // Dusk palette
+  const C = {
+    skyTop: "#241a3a",
+    skyMid: "#6d3a55",
+    skyLow: "#c4643f",
+    skyHot: "#f0a353",
+    hillFar: "#4a2f47",
+    hillNear: "#3a2438",
+    dirt: "#8a6642",
+    dirtAlt: "#7d5c3b",
+    dirtEdge: "#6b4d31",
+    path: "#a8applies",
+    grass: "#55603a",
+    grassAlt: "#4a5432",
+    wallLit: "#c9a06d",
+    wallShade: "#8a6a47",
+    wallDark: "#6b503a",
+    roofLit: "#a8503f",
+    roofShade: "#7d3a2e",
+    windowOn: "#ffd487",
+    windowOff: "#4a3a30",
+    stone: "#9a9188",
   };
-  const tierOf = (id) => TIER[id] || 1;
+  C.path = "#b08d5e";
 
   function iso(gx, gy) {
     return {
-      x: ORIGIN_X + (gx - gy) * (TW / 2),
-      y: ORIGIN_Y + (gx + gy) * (TH / 2),
+      x: W / 2 + (gx - gy) * (TW / 2),
+      y: H * 0.34 + (gx + gy) * (TH / 2),
     };
   }
 
-  // ---------------------------------------------------------------- layout
-  function layout() {
-    plots = [];
-    const sorted = [...agents].sort((a, b) => tierOf(b.id) - tierOf(a.id));
+  // ---------------------------------------------------------------- villager sprite
+  // A tiny bitmap, drawn as scaled squares. '.' = transparent.
+  // This is what keeps the PEOPLE pixel-art while everything else stays crisp.
+  const SPRITE_A = [
+    "..hh..",
+    ".hhhh.",
+    ".fsf..",
+    ".bbb..",
+    ".bbb..",
+    ".b.b..",
+    ".l.l..",
+    ".s.s..",
+  ];
+  const SPRITE_B = [
+    "..hh..",
+    ".hhhh.",
+    "..fsf.",
+    ".bbb..",
+    ".bbb..",
+    ".b.b..",
+    "..ll..",
+    "..ss..",
+  ];
 
-    // Village square in the middle, buildings arranged in rings around it so
-    // the important ones sit closest to the centre.
-    const slots = [];
-    // inner ring (6 slots) -- pipeline agents
-    [[-1, -1], [0, -2], [1, -1], [1, 1], [0, 2], [-1, 1]].forEach((p) => slots.push(p));
-    // middle ring
-    [[-3, -2], [-2, -3], [0, -4], [2, -3], [3, -2], [3, 2], [2, 3], [0, 4], [-2, 3], [-3, 2]].forEach((p) => slots.push(p));
-    // outer ring
-    [[-5, -3], [-3, -5], [0, -6], [3, -5], [5, -3], [5, 3], [3, 5], [0, 6], [-3, 5], [-5, 3]].forEach((p) => slots.push(p));
+  function drawVillagerSprite(v) {
+    const rows = (Math.floor(v.bob) % 2 === 0) ? SPRITE_A : SPRITE_B;
+    const px = Math.round(v.x / PIX) * PIX;   // snap to the pixel grid so the
+    const py = Math.round(v.y / PIX) * PIX;   // sprite never renders half-pixels
 
-    sorted.forEach((a, i) => {
-      const slot = slots[i % slots.length];
-      const tier = tierOf(a.id);
-      plots.push({
-        agent: a,
-        gx: slot[0], gy: slot[1],
-        tier,
-        h: tier === 3 ? 46 : tier === 2 ? 30 : 20,
-        w: tier === 3 ? 30 : tier === 2 ? 24 : 18,
-        seed: (i * 37) % 100,
-      });
-    });
-    // Draw order: far (small gx+gy) first so nearer buildings overlap.
-    plots.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+    // soft contact shadow (not pixelated -- it sits on detailed ground)
+    ctx.fillStyle = "rgba(30,18,14,0.30)";
+    ctx.beginPath();
+    ctx.ellipse(px + PIX * 3, py + PIX * 8, PIX * 3.2, PIX * 1.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      for (let c = 0; c < row.length; c++) {
+        const ch = row[c];
+        if (ch === ".") continue;
+        let col;
+        if (ch === "h") col = v.hair;
+        else if (ch === "f") col = v.skin;
+        else if (ch === "s" && r === 2) col = v.skin;
+        else if (ch === "b") col = v.shirt;
+        else if (ch === "l") col = v.pants;
+        else col = "#2e2118";
+        ctx.fillStyle = col;
+        ctx.fillRect(px + c * PIX, py + r * PIX, PIX, PIX);
+      }
+    }
   }
 
-  // ---------------------------------------------------------------- villagers
-  function spawnVillager(plot, wandering) {
-    const start = iso(plot.gx, plot.gy);
+  // ---------------------------------------------------------------- people data
+  const HAIR = ["#3a2a1e", "#5c3a22", "#241a14", "#7a5230", "#8d6b3f", "#2b2b2b"];
+  const SKIN = ["#f0c9a0", "#d9a877", "#b8825a", "#8c5f3d", "#f5d8b8", "#6d4630"];
+  const SHIRT = ["#7d8a5a", "#8a5a4a", "#5a6a8a", "#8a7a4a", "#6a5a7a", "#9a6a5a", "#4a7a6a"];
+  const PANTS = ["#3a3a4a", "#4a3a2a", "#2e3a3a", "#443344"];
+  const pick = (arr, seed) => arr[Math.abs(seed) % arr.length];
+
+  function spawnVillager(plot, wandering, seed) {
+    const p = iso(plot.gx, plot.gy);
     villagers.push({
       agentId: plot.agent.id,
-      gx: plot.gx, gy: plot.gy,
+      x: p.x, y: p.y,
       tx: plot.gx, ty: plot.gy,
-      x: start.x, y: start.y,
-      colour: plot.agent.color || "#e8d5b0",
-      speed: 0.16 + Math.random() * 0.1,
-      bob: Math.random() * 6,
-      wandering,           // ambient townsfolk vs. an agent actively working
-      pickNewTargetAt: 0,
+      hair: pick(HAIR, seed), skin: pick(SKIN, seed * 3),
+      shirt: wandering ? pick(SHIRT, seed * 7) : (plot.agent.color || pick(SHIRT, seed)),
+      pants: pick(PANTS, seed * 5),
+      speed: 0.5 + Math.random() * 0.45,
+      bob: Math.random() * 10,
+      wandering,
+      nextPick: 0,
     });
   }
 
   function syncVillagers() {
     const working = new Set(agents.filter((a) => a.status === "running").map((a) => a.id));
-
-    // Working agents get a villager out on the paths.
     villagers = villagers.filter((v) => v.wandering || working.has(v.agentId));
     working.forEach((id) => {
       if (!villagers.some((v) => v.agentId === id && !v.wandering)) {
         const p = plots.find((pp) => pp.agent.id === id);
-        if (p) spawnVillager(p, false);
+        if (p) spawnVillager(p, false, id.length * 13);
       }
     });
-
-    // Ambient townsfolk so the place feels inhabited even when idle.
-    const ambientWanted = 14;
-    const ambient = villagers.filter((v) => v.wandering).length;
+    const ambientWanted = 16;
+    let ambient = villagers.filter((v) => v.wandering).length;
     for (let i = ambient; i < ambientWanted && plots.length; i++) {
-      const p = plots[Math.floor(Math.random() * plots.length)];
-      spawnVillager(p, true);
+      spawnVillager(plots[i % plots.length], true, i * 17 + 3);
     }
   }
 
@@ -134,299 +160,322 @@
     villagers.forEach((v) => {
       const target = iso(v.tx, v.ty);
       const dx = target.x - v.x, dy = target.y - v.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 1.5) {
-        if (t > v.pickNewTargetAt) {
-          // Wander to a nearby tile, biased to stay near the village.
-          v.tx = Math.max(-7, Math.min(7, v.tx + (Math.random() * 4 - 2)));
-          v.ty = Math.max(-7, Math.min(7, v.ty + (Math.random() * 4 - 2)));
-          v.pickNewTargetAt = t + 40 + Math.random() * 120;
+      const d = Math.hypot(dx, dy);
+      if (d < 3) {
+        if (t > v.nextPick) {
+          v.tx = Math.max(-6, Math.min(6, v.tx + (Math.random() * 4 - 2)));
+          v.ty = Math.max(-6, Math.min(6, v.ty + (Math.random() * 4 - 2)));
+          v.nextPick = t + 60 + Math.random() * 150;
         }
       } else {
-        v.x += (dx / dist) * v.speed * 2.2;
-        v.y += (dy / dist) * v.speed * 2.2;
+        v.x += (dx / d) * v.speed;
+        v.y += (dy / d) * v.speed;
+        v.bob += 0.16;
       }
-      v.bob += 0.2;
     });
   }
 
-  // ---------------------------------------------------------------- drawing
+  // ---------------------------------------------------------------- layout
+  const TIER = {
+    athena: 3, orpheus: 3, iris: 3, hephaestus: 3, hermes: 3, apollo: 3,
+    chronos: 2, argus: 2, atlas: 2, daedalus: 2, blitz: 2, midas: 2,
+  };
+  const tierOf = (id) => TIER[id] || 1;
+
+  function layout() {
+    plots = [];
+    const sorted = [...agents].sort((a, b) => tierOf(b.id) - tierOf(a.id));
+    const slots = [
+      [-1,-1],[1,-1],[2,0],[1,1],[-1,1],[-2,0],
+      [-3,-2],[-1,-3],[1,-3],[3,-2],[4,0],[3,2],[1,3],[-1,3],[-3,2],[-4,0],
+      [-5,-3],[-2,-5],[2,-5],[5,-3],[5,3],[2,5],[-2,5],[-5,3],
+    ];
+    sorted.forEach((a, i) => {
+      const s = slots[i % slots.length];
+      const tier = tierOf(a.id);
+      plots.push({
+        agent: a, gx: s[0], gy: s[1], tier,
+        w: tier === 3 ? 78 : tier === 2 ? 62 : 50,
+        h: tier === 3 ? 108 : tier === 2 ? 72 : 50,
+        seed: i * 41,
+      });
+    });
+    plots.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+  }
+
+  // ---------------------------------------------------------------- scenery
   function drawSky() {
-    const g = ctx.createLinearGradient(0, 0, 0, VH * 0.55);
-    g.addColorStop(0, PAL.skyTop);
-    g.addColorStop(0.45, PAL.skyMid);
-    g.addColorStop(0.78, PAL.skyLow);
-    g.addColorStop(1, PAL.skyHorizon);
+    const g = ctx.createLinearGradient(0, 0, 0, H * 0.62);
+    g.addColorStop(0, C.skyTop);
+    g.addColorStop(0.4, C.skyMid);
+    g.addColorStop(0.75, C.skyLow);
+    g.addColorStop(1, C.skyHot);
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, VW, VH);
+    ctx.fillRect(0, 0, W, H);
 
-    // Sun low on the horizon
-    const sx = VW * 0.72, sy = VH * 0.30, r = 26;
-    for (let yy = -r; yy <= r; yy += 2) {
-      const half = Math.floor(Math.sqrt(Math.max(r * r - yy * yy, 0)));
-      ctx.fillStyle = yy < -6 ? "#fff0c8" : yy < 8 ? PAL.sun : "#ffb066";
-      ctx.fillRect(sx - half, sy + yy, half * 2, 2);
-    }
+    // Sun with a soft glow -- smooth, since only people are pixelated.
+    const sx = W * 0.74, sy = H * 0.30, r = Math.max(38, W * 0.035);
+    const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 4);
+    glow.addColorStop(0, "rgba(255,220,160,0.55)");
+    glow.addColorStop(1, "rgba(255,180,110,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(sx - r * 4, sy - r * 4, r * 8, r * 8);
+    ctx.fillStyle = "#ffe0a8";
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
 
-    // Drifting clouds
-    ctx.fillStyle = "rgba(255,205,170,0.20)";
-    for (let i = 0; i < 6; i++) {
-      const cx = ((t * 0.12 + i * 150) % (VW + 120)) - 60;
-      const cy = 24 + i * 15;
-      ctx.fillRect(cx, cy, 46, 5);
-      ctx.fillRect(cx + 12, cy - 4, 26, 4);
-    }
-
-    // Distant hills
-    ctx.fillStyle = "#5a3a4a";
-    for (let i = 0; i < 7; i++) {
-      const hx = i * 105 - 30, hy = VH * 0.36;
+    // Layered hills
+    [[C.hillFar, 0.44, 70], [C.hillNear, 0.50, 46]].forEach(([col, yf, amp], li) => {
+      ctx.fillStyle = col;
       ctx.beginPath();
-      ctx.moveTo(hx, hy + 30);
-      ctx.lineTo(hx + 55, hy - 16);
-      ctx.lineTo(hx + 110, hy + 30);
-      ctx.closePath();
+      ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 12) {
+        const y = H * yf - Math.sin(x * 0.004 + li * 2) * amp - Math.sin(x * 0.011 + li) * amp * 0.4;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    });
+
+    // Clouds
+    for (let i = 0; i < 5; i++) {
+      const cx = ((t * 0.25 + i * 340) % (W + 300)) - 150;
+      const cy = H * 0.10 + i * 26;
+      ctx.fillStyle = `rgba(255,205,170,${0.13 + (i % 2) * 0.05})`;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 90, 12, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx + 46, cy - 8, 58, 10, 0, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  function drawGroundTile(gx, gy, colour) {
+  function tilePath(gx, gy) {
     const p = iso(gx, gy);
-    ctx.fillStyle = colour;
     ctx.beginPath();
     ctx.moveTo(p.x, p.y - TH / 2);
     ctx.lineTo(p.x + TW / 2, p.y);
     ctx.lineTo(p.x, p.y + TH / 2);
     ctx.lineTo(p.x - TW / 2, p.y);
     ctx.closePath();
-    ctx.fill();
   }
 
   function drawGround() {
-    // The dirt plateau the village sits on.
-    for (let gx = -9; gx <= 9; gx++) {
-      for (let gy = -9; gy <= 9; gy++) {
-        if (Math.abs(gx) + Math.abs(gy) > 12) continue;
-        const edge = Math.abs(gx) + Math.abs(gy) > 9;
-        const n = ((gx * 7 + gy * 13) % 5 + 5) % 5;
-        let c = edge ? (n < 2 ? PAL.grass : PAL.grassDark)
-                     : (n === 0 ? PAL.dirtLight : n === 1 ? PAL.dirtDark : PAL.dirt);
-        // Paths radiate from the centre square.
-        if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) c = PAL.path;
-        drawGroundTile(gx, gy, c);
-      }
-    }
+    for (let gx = -8; gx <= 8; gx++) {
+      for (let gy = -8; gy <= 8; gy++) {
+        const man = Math.abs(gx) + Math.abs(gy);
+        if (man > 11) continue;
+        const p = iso(gx, gy);
+        if (p.y < -TH || p.y > H + TH || p.x < -TW || p.x > W + TW) continue;
 
-    // Scattered pebbles and tufts for texture
-    for (let i = 0; i < 60; i++) {
-      const gx = ((i * 13) % 17) - 8;
-      const gy = ((i * 29) % 17) - 8;
-      if (Math.abs(gx) + Math.abs(gy) > 11) continue;
-      const p = iso(gx, gy);
-      ctx.fillStyle = i % 3 === 0 ? "rgba(60,45,30,0.5)" : "rgba(120,140,80,0.35)";
-      ctx.fillRect(p.x + ((i * 7) % 20) - 10, p.y + ((i * 11) % 8) - 4, 2, 2);
+        const n = ((gx * 7 + gy * 13) % 4 + 4) % 4;
+        let col;
+        if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) col = C.path;
+        else if (man > 8) col = n < 2 ? C.grass : C.grassAlt;
+        else col = n === 0 ? C.dirtAlt : n === 1 ? C.dirtEdge : C.dirt;
+
+        tilePath(gx, gy);
+        ctx.fillStyle = col;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.10)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
   }
 
   function drawBuilding(p, idx) {
-    const base = iso(p.gx, p.gy);
+    const b = iso(p.gx, p.gy);
     const working = p.agent.status === "running";
     const err = p.agent.status === "error";
     const w = p.w, h = p.h;
+    const hw = w / 2;
 
-    const bodyL = err ? "#5c3038" : "#6b4a35";   // left face, lit by the sun
-    const bodyR = err ? "#42222a" : "#4e3626";   // right face, in shadow
-    const roof = err ? "#7a3a44" : "#8a5a3a";
-
-    // Shadow on the ground
-    ctx.fillStyle = "rgba(40,25,20,0.35)";
+    // Ground shadow, stretched away from the sun
+    ctx.fillStyle = "rgba(35,20,15,0.32)";
     ctx.beginPath();
-    ctx.moveTo(base.x, base.y - TH / 3);
-    ctx.lineTo(base.x + TW / 2.2, base.y);
-    ctx.lineTo(base.x, base.y + TH / 3);
-    ctx.lineTo(base.x - TW / 2.2, base.y);
-    ctx.closePath();
+    ctx.ellipse(b.x - 10, b.y + 6, hw * 1.05, TH * 0.42, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Two visible wall faces
-    ctx.fillStyle = bodyL;
-    ctx.beginPath();
-    ctx.moveTo(base.x - w / 2, base.y);
-    ctx.lineTo(base.x, base.y + TH / 3);
-    ctx.lineTo(base.x, base.y + TH / 3 - h);
-    ctx.lineTo(base.x - w / 2, base.y - h);
-    ctx.closePath();
-    ctx.fill();
+    const lit = err ? "#b06a62" : C.wallLit;
+    const shade = err ? "#7d4038" : C.wallShade;
 
-    ctx.fillStyle = bodyR;
+    // Left face (sunlit) with a vertical gradient for depth
+    const gl = ctx.createLinearGradient(0, b.y - h, 0, b.y);
+    gl.addColorStop(0, lit);
+    gl.addColorStop(1, shade);
+    ctx.fillStyle = gl;
     ctx.beginPath();
-    ctx.moveTo(base.x + w / 2, base.y);
-    ctx.lineTo(base.x, base.y + TH / 3);
-    ctx.lineTo(base.x, base.y + TH / 3 - h);
-    ctx.lineTo(base.x + w / 2, base.y - h);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(b.x - hw, b.y - TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25 - h);
+    ctx.lineTo(b.x - hw, b.y - TH * 0.25 - h);
+    ctx.closePath(); ctx.fill();
 
-    // Roof
-    ctx.fillStyle = roof;
+    // Right face (shadowed)
+    const gr = ctx.createLinearGradient(0, b.y - h, 0, b.y);
+    gr.addColorStop(0, shade);
+    gr.addColorStop(1, err ? "#5c2e28" : C.wallDark);
+    ctx.fillStyle = gr;
     ctx.beginPath();
-    ctx.moveTo(base.x, base.y + TH / 3 - h);
-    ctx.lineTo(base.x + w / 2, base.y - h);
-    ctx.lineTo(base.x, base.y - h - TH / 3);
-    ctx.lineTo(base.x - w / 2, base.y - h);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(b.x + hw, b.y - TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25 - h);
+    ctx.lineTo(b.x + hw, b.y - TH * 0.25 - h);
+    ctx.closePath(); ctx.fill();
 
-    // Windows: more of them lit, and flickering, when the agent is working.
-    const rows = Math.max(1, Math.floor(h / 14));
+    // Roof, two pitched faces
+    const roofH = 26;
+    const ry = b.y + TH * 0.25 - h;
+    ctx.fillStyle = err ? "#8a3a34" : C.roofLit;
+    ctx.beginPath();
+    ctx.moveTo(b.x - hw, ry - TH * 0.5);
+    ctx.lineTo(b.x, ry);
+    ctx.lineTo(b.x, ry - roofH);
+    ctx.lineTo(b.x - hw, ry - TH * 0.5 - roofH * 0.55);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = err ? "#6b2b26" : C.roofShade;
+    ctx.beginPath();
+    ctx.moveTo(b.x + hw, ry - TH * 0.5);
+    ctx.lineTo(b.x, ry);
+    ctx.lineTo(b.x, ry - roofH);
+    ctx.lineTo(b.x + hw, ry - TH * 0.5 - roofH * 0.55);
+    ctx.closePath(); ctx.fill();
+
+    // Windows
+    const rows = Math.max(1, Math.floor(h / 34));
     for (let r = 0; r < rows; r++) {
-      const wy = base.y - h + 10 + r * 14;
+      const wy = b.y - h + 26 + r * 34;
       [-1, 1].forEach((side) => {
         const seed = (p.seed + r * 11 + (side + 2) * 5) % 100;
-        const on = working ? seed < 80 : seed < 28;
-        if (!on) return;
-        const flick = working && ((Math.floor(t * 0.09) + seed) % 19 === 0);
-        ctx.fillStyle = err ? "#ff8a8a" : flick ? "#fff3cf" : working ? "#ffd489" : "#5f4a3c";
-        ctx.fillRect(base.x + side * (w / 4) - 2, wy, 4, 5);
+        const on = working ? seed < 82 : seed < 30;
+        const flick = working && ((Math.floor(t * 0.09) + seed) % 23 === 0);
+        ctx.fillStyle = on ? (flick ? "#fff3cf" : C.windowOn) : C.windowOff;
+        ctx.fillRect(b.x + side * (hw * 0.45) - 7, wy, 14, 17);
+        ctx.strokeStyle = "rgba(0,0,0,0.35)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x + side * (hw * 0.45) - 7, wy, 14, 17);
       });
     }
 
-    // Chimney smoke when working -- readable from a distance without text.
+    // Door
+    ctx.fillStyle = working ? "#e0b070" : "#3a2a1e";
+    ctx.fillRect(b.x - 9, b.y + TH * 0.25 - 30, 18, 30);
+
+    // Chimney smoke while working
     if (working) {
-      for (let i = 0; i < 4; i++) {
-        const life = (t * 0.6 + i * 14) % 56;
-        const sy = base.y - h - TH / 3 - life * 0.8;
-        ctx.fillStyle = `rgba(220,200,190,${0.28 - life / 200})`;
-        ctx.fillRect(base.x + 4 + Math.sin(life * 0.12) * 4, sy, 3, 3);
+      for (let i = 0; i < 6; i++) {
+        const life = (t * 0.8 + i * 16) % 96;
+        const sy2 = ry - roofH - life * 1.1;
+        ctx.fillStyle = `rgba(225,205,195,${Math.max(0, 0.32 - life / 320)})`;
+        ctx.beginPath();
+        ctx.arc(b.x + 14 + Math.sin(life * 0.09) * 7, sy2, 3 + life * 0.05, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 
-    // Name
-    ctx.font = "7px monospace";
+    // Name plate
+    ctx.font = "600 13px Rajdhani, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillStyle = idx === hovered ? "#fff6e2" : "rgba(255,238,214,0.72)";
-    ctx.fillText(p.agent.name.toUpperCase(), base.x, base.y + TH / 3 + 10);
+    ctx.fillStyle = "rgba(20,12,10,0.55)";
+    const nw = ctx.measureText(p.agent.name).width + 14;
+    ctx.fillRect(b.x - nw / 2, b.y + TH * 0.3, nw, 17);
+    ctx.fillStyle = idx === hovered ? "#fff3dd" : "rgba(255,240,220,0.85)";
+    ctx.fillText(p.agent.name, b.x, b.y + TH * 0.3 + 13);
 
-    if (working) drawProgress(p, base, h);
+    if (working) drawProgress(p, b, h, roofH);
   }
 
-  function drawProgress(p, base, h) {
-    const barW = 46;
-    const bx = base.x - barW / 2;
-    const by = base.y - h - TH / 3 - 18;
+  function drawProgress(p, b, h, roofH) {
+    const barW = 96, bx = b.x - barW / 2;
+    const by = b.y + TH * 0.25 - h - roofH - 34;
 
-    ctx.fillStyle = "rgba(20,12,10,0.8)";
-    ctx.fillRect(bx - 1, by - 1, barW + 2, 7);
-    ctx.strokeStyle = "rgba(255,200,130,0.55)";
+    ctx.fillStyle = "rgba(18,10,8,0.82)";
+    ctx.fillRect(bx - 2, by - 2, barW + 4, 12);
+    ctx.strokeStyle = "rgba(255,200,130,0.6)";
     ctx.lineWidth = 1;
-    ctx.strokeRect(bx - 0.5, by - 0.5, barW + 1, 6);
+    ctx.strokeRect(bx - 1.5, by - 1.5, barW + 3, 11);
 
-    // Indeterminate sweep, not a percentage: nothing in the pipeline measures
-    // per-agent completion, so a number here would be invented.
-    const sweep = 16;
-    const pos = (t * 1.3 + p.seed * 3) % (barW + sweep);
+    // Indeterminate sweep, not a percentage -- nothing in the pipeline
+    // measures per-agent completion, so a number would be invented.
+    const sweep = 34;
+    const pos = (t * 2.2 + p.seed * 3) % (barW + sweep);
     const x0 = bx + Math.max(0, pos - sweep);
     const x1 = bx + Math.min(barW, pos);
     if (x1 > x0) {
-      ctx.fillStyle = "#ffc46b";
-      ctx.fillRect(x0, by, x1 - x0, 5);
+      const g = ctx.createLinearGradient(x0, 0, x1, 0);
+      g.addColorStop(0, "rgba(255,196,107,0)");
+      g.addColorStop(0.5, "#ffc46b");
+      g.addColorStop(1, "rgba(255,196,107,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(x0, by, x1 - x0, 8);
     }
 
     const task = p.agent.task || p.agent.title || "working";
-    ctx.font = "5px monospace";
+    ctx.font = "500 11px Rajdhani, sans-serif";
     ctx.textAlign = "center";
     ctx.fillStyle = "#ffe9c8";
-    ctx.fillText(String(task).toUpperCase().slice(0, 30), base.x, by - 4);
-  }
-
-  function drawVillager(v) {
-    const x = Math.round(v.x);
-    const step = Math.sin(v.bob) > 0 ? 0 : 1;
-    const y = Math.round(v.y) - step;
-
-    ctx.fillStyle = "rgba(35,22,18,0.35)";
-    ctx.fillRect(x - 3, y + 1, 7, 2);
-    ctx.fillStyle = "#f0c9a2";           // head
-    ctx.fillRect(x - 1, y - 9, 3, 3);
-    ctx.fillStyle = v.wandering ? "#8a7256" : v.colour;  // body
-    ctx.fillRect(x - 2, y - 6, 5, 5);
-    ctx.fillStyle = "#33241c";           // legs
-    ctx.fillRect(x - 2, y - 1, 2, 2 - step);
-    ctx.fillRect(x + 1, y - 1, 2, 1 + step);
+    ctx.fillText(String(task).slice(0, 40), b.x, by - 7);
   }
 
   function hitTest() {
     hovered = -1;
     if (mx < 0) return;
-    // Test nearest-first so a front building wins over one behind it.
     for (let i = plots.length - 1; i >= 0; i--) {
-      const p = plots[i];
-      const b = iso(p.gx, p.gy);
-      if (mx > b.x - p.w / 2 - 3 && mx < b.x + p.w / 2 + 3 &&
-          my > b.y - p.h - 18 && my < b.y + TH / 2 + 12) {
-        hovered = i;
-        break;
-      }
+      const p = plots[i], b = iso(p.gx, p.gy);
+      if (mx > b.x - p.w / 2 && mx < b.x + p.w / 2 &&
+          my > b.y - p.h - 40 && my < b.y + TH * 0.6) { hovered = i; break; }
     }
-    if (canvas) canvas.style.cursor = hovered >= 0 ? "pointer" : "grab";
+    if (canvas) canvas.style.cursor = hovered >= 0 ? "pointer" : "default";
   }
 
   function drawTooltip() {
     if (hovered < 0) return;
-    const p = plots[hovered];
-    const b = iso(p.gx, p.gy);
-    const lines = [
-      p.agent.name.toUpperCase(),
-      p.agent.title || "",
-      `STATUS: ${(p.agent.status || "idle").toUpperCase()}`,
-    ];
-    if (p.agent.task) lines.push(String(p.agent.task).slice(0, 36));
+    const p = plots[hovered], b = iso(p.gx, p.gy);
+    const lines = [p.agent.name, p.agent.title || "", `Status: ${p.agent.status || "idle"}`];
+    if (p.agent.task) lines.push(p.agent.task);
 
-    ctx.font = "6px monospace";
-    const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 10;
-    const hgt = lines.length * 9 + 7;
-    let tx = Math.min(Math.max(b.x - w / 2, 3), VW - w - 3);
-    let ty = b.y - p.h - hgt - 26;
-    if (ty < 3) ty = b.y + 18;
+    ctx.font = "13px Rajdhani, sans-serif";
+    const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 20;
+    const hgt = lines.length * 17 + 14;
+    let tx = Math.min(Math.max(b.x - w / 2, 8), W - w - 8);
+    let ty = b.y - p.h - hgt - 52;
+    if (ty < 8) ty = b.y + 34;
 
-    ctx.fillStyle = "rgba(24,14,10,0.94)";
-    ctx.fillRect(tx, ty, w, hgt);
-    ctx.strokeStyle = "rgba(255,196,107,0.65)";
-    ctx.strokeRect(tx + 0.5, ty + 0.5, w - 1, hgt - 1);
+    ctx.fillStyle = "rgba(26,15,11,0.95)";
+    ctx.beginPath();
+    ctx.roundRect(tx, ty, w, hgt, 6);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,196,107,0.5)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
     ctx.textAlign = "left";
     lines.forEach((l, i) => {
-      ctx.fillStyle = i === 0 ? "#ffc46b" : "#efe0cf";
-      ctx.fillText(l, tx + 5, ty + 11 + i * 9);
+      ctx.font = i === 0 ? "700 14px Rajdhani, sans-serif" : "13px Rajdhani, sans-serif";
+      ctx.fillStyle = i === 0 ? "#ffc46b" : "#eadfd2";
+      ctx.fillText(l, tx + 10, ty + 19 + i * 17);
     });
   }
 
   function frame() {
     t += 1;
-    ctx.imageSmoothingEnabled = false;
-    ctx.save();
-    if (t < camShakeUntil) {
-      ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
-    }
-
     drawSky();
     drawGround();
     updateVillagers();
     hitTest();
 
-    // Depth sort buildings and villagers together so people correctly pass in
-    // front of and behind houses.
-    const drawables = [
-      ...plots.map((p, i) => ({ kind: "b", p, i, depth: iso(p.gx, p.gy).y })),
-      ...villagers.map((v) => ({ kind: "v", v, depth: v.y })),
-    ].sort((a, b) => a.depth - b.depth);
+    // Depth sort buildings and people together so villagers correctly pass
+    // in front of and behind houses.
+    const items = [
+      ...plots.map((p, i) => ({ k: "b", p, i, d: iso(p.gx, p.gy).y })),
+      ...villagers.map((v) => ({ k: "v", v, d: v.y })),
+    ].sort((a, b2) => a.d - b2.d);
 
-    drawables.forEach((d) => {
-      if (d.kind === "b") drawBuilding(d.p, d.i);
-      else drawVillager(d.v);
+    items.forEach((it) => {
+      if (it.k === "b") drawBuilding(it.p, it.i);
+      else drawVillagerSprite(it.v);
     });
 
     drawTooltip();
-    ctx.restore();
     raf = requestAnimationFrame(frame);
   }
 
@@ -434,22 +483,31 @@
     if (!canvas) return;
     const parent = canvas.parentElement;
     if (!parent) return;
-    const scale = Math.max(1, Math.min(parent.clientWidth / VW, parent.clientHeight / VH));
-    canvas.style.width = Math.floor(VW * scale) + "px";
-    canvas.style.height = Math.floor(VH * scale) + "px";
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = parent.clientWidth;
+    H = parent.clientHeight;
+    // Backing store at device resolution keeps everything sharp; the sprite
+    // pixelation is done deliberately in code, not by scaling the canvas.
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    if (plots.length) layout();
   }
 
   window.VillageView = {
     mount(container) {
-      container.innerHTML = `<div class="village-wrap"><canvas id="village-canvas" width="${VW}" height="${VH}"></canvas></div>`;
+      container.innerHTML = `<div class="village-wrap"><canvas id="village-canvas"></canvas></div>`;
       canvas = document.getElementById("village-canvas");
       ctx = canvas.getContext("2d");
-      ctx.imageSmoothingEnabled = false;
+      resize();
 
       canvas.addEventListener("mousemove", (e) => {
         const r = canvas.getBoundingClientRect();
-        mx = ((e.clientX - r.left) / r.width) * VW;
-        my = ((e.clientY - r.top) / r.height) * VH;
+        mx = e.clientX - r.left;
+        my = e.clientY - r.top;
       });
       canvas.addEventListener("mouseleave", () => { mx = -1; my = -1; });
       canvas.addEventListener("click", () => {
@@ -457,7 +515,6 @@
       });
 
       window.addEventListener("resize", resize);
-      resize();
       if (!raf) frame();
     },
 
@@ -472,14 +529,11 @@
       syncVillagers();
     },
 
-    shake() { camShakeUntil = t + 20; },
-
     unmount() {
       if (raf) cancelAnimationFrame(raf);
       raf = null;
       window.removeEventListener("resize", resize);
-      villagers = [];
-      plots = [];
+      villagers = []; plots = [];
     },
   };
 })();

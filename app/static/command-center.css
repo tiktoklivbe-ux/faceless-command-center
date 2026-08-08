@@ -757,13 +757,6 @@ button.msc-link-card { cursor: pointer; }
   border-radius: 10px;
   overflow: hidden;
 }
-#village-canvas {
-  /* Nearest-neighbour scaling -- without this the pixel art blurs into mush
-     when the canvas is scaled up to fill the panel. */
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  display: block;
-}
 #village-stage { width: 100%; height: 70vh; }
 
 
@@ -780,8 +773,9 @@ button.msc-link-card { cursor: pointer; }
   background: transparent; border: none; border-radius: 0;
 }
 #village-canvas {
-  /* Nearest-neighbour scaling -- without it the pixel art blurs when scaled. */
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
+  /* No image-rendering override here. The canvas now runs at real device
+     resolution, so buildings and ground should be smooth and sharp -- only
+     the villager sprites are deliberately pixelated, and that's done in code
+     by drawing scaled squares rather than by scaling the whole canvas. */
   display: block;
 }
