@@ -31,6 +31,7 @@
   let t = 0;
   let hovered = -1;
   let mx = -1, my = -1;
+  let dim = 0;
 
   // Camera. Pan by dragging, zoom with the wheel. Both are smoothed toward a
   // target rather than applied directly, which is what makes movement feel
@@ -38,12 +39,46 @@
   const cam = { x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1 };
   let dragging = false, dragStart = null;
 
+  // Cubic ease-out: fast at the start, gently settling at the end. Plain
+  // linear interpolation (which is what a fixed 0.12 step gives) reads as
+  // mechanical -- the motion never accelerates and never truly arrives.
+  function easeOutCubic(k) { return 1 - Math.pow(1 - k, 3); }
+
+  // A scripted camera move, used when clicking a building. Free panning still
+  // uses the cheap follow below; this is for deliberate transitions.
+  let flight = null;
+
+  function flyTo(x, y, z, ms) {
+    flight = {
+      fromX: cam.tx, fromY: cam.ty, fromZ: cam.tz,
+      toX: x, toY: y, toZ: z,
+      start: performance.now(), dur: ms || 900,
+    };
+  }
+
   function applyCamera() {
-    // Ease toward the target every frame. 0.12 is slow enough to read as
-    // deliberate motion, fast enough not to feel laggy.
-    cam.x += (cam.tx - cam.x) * 0.12;
-    cam.y += (cam.ty - cam.y) * 0.12;
-    cam.z += (cam.tz - cam.z) * 0.12;
+    if (flight) {
+      const k = Math.min(1, (performance.now() - flight.start) / flight.dur);
+      const e = easeOutCubic(k);
+      cam.tx = flight.fromX + (flight.toX - flight.fromX) * e;
+      cam.ty = flight.fromY + (flight.toY - flight.fromY) * e;
+      cam.tz = flight.fromZ + (flight.toZ - flight.fromZ) * e;
+      // Snap the live camera to the scripted path so the follow below doesn't
+      // add a second layer of lag on top of the animation.
+      cam.x = cam.tx; cam.y = cam.ty; cam.z = cam.tz;
+      if (k >= 1) flight = null;
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(cam.z, cam.z);
+      ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+      return;
+    }
+    // Free movement: a smooth follow, but frame-rate independent so it feels
+    // the same on a 60Hz and a 144Hz display.
+    const lerp = 1 - Math.pow(0.001, 1 / 60);
+    cam.x += (cam.tx - cam.x) * lerp;
+    cam.y += (cam.ty - cam.y) * lerp;
+    cam.z += (cam.tz - cam.z) * lerp;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.translate(W / 2, H / 2);
     ctx.scale(cam.z, cam.z);
@@ -598,6 +633,25 @@
       else drawVillagerSprite(it.v);
     });
 
+    // When focused on one house, dim everything else so the eye goes to it.
+    // Faded in gradually rather than snapped, so it reads as part of the
+    // same camera move.
+    if (focused) {
+      dim = Math.min(0.55, dim + 0.03);
+    } else {
+      dim = Math.max(0, dim - 0.04);
+    }
+    if (dim > 0.001) {
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      ctx.fillStyle = `rgba(12,7,10,${dim})`;
+      ctx.fillRect(0, 0, W, H);
+      // Re-draw the focused building on top of the dim so it stays bright.
+      if (focused) {
+        applyCamera();
+        drawBuilding(focused, plots.indexOf(focused));
+      }
+    }
+
     drawTooltip();
     raf = requestAnimationFrame(frame);
   }
@@ -618,6 +672,67 @@
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.imageSmoothingEnabled = true;
     if (plots.length) layout();
+  }
+
+  // ---------------------------------------------------------------- house view
+  let focused = null;
+
+  /** Glide the camera into a building, then reveal its breakdown panel.
+   *  The panel waits for the flight so the two don't compete for attention. */
+  function enterHouse(p) {
+    focused = p;
+    const b = iso(p.gx, p.gy);
+    const zoom = 2.6;
+    // Aim slightly above the base so the building fills the frame rather
+    // than sitting at the bottom edge, and bias left to leave room for the
+    // panel that slides in from the right.
+    flyTo(
+      W / 2 - b.x * zoom + W * 0.16,
+      H / 2 - (b.y - p.h * 0.5) * zoom,
+      zoom,
+      850
+    );
+    setTimeout(() => showHousePanel(p), 620);
+  }
+
+  function exitHouse() {
+    focused = null;
+    const panel = document.getElementById("house-panel");
+    if (panel) panel.classList.remove("open");
+    flyTo(0, 0, 1, 800);
+  }
+
+  function showHousePanel(p) {
+    const a = p.agent;
+    const wf = a.workflow || { works: false, steps: [] };
+    let panel = document.getElementById("house-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "house-panel";
+      canvas.parentElement.appendChild(panel);
+    }
+
+    const stepsHtml = (wf.steps || [])
+      .map((st, i) => `<li style="animation-delay:${80 + i * 55}ms">${st}</li>`)
+      .join("");
+
+    panel.innerHTML = `
+      <button class="house-close" title="Back to the village">✕</button>
+      <div class="house-name">${a.name}</div>
+      <div class="house-role">${a.title || ""}</div>
+      <div class="house-status ${a.status === "running" ? "on" : ""}">
+        ${a.status === "running" ? "● Working now" : wf.works ? "○ Idle" : "○ Not functional yet"}
+      </div>
+      ${a.task ? `<div class="house-task">${a.task}${a.eta ? ` · ${a.eta}` : ""}</div>` : ""}
+      ${a.blurb ? `<p class="house-blurb">${a.blurb}</p>` : ""}
+      ${wf.runtime ? `<div class="house-runtime">Typically takes ${wf.runtime}</div>` : ""}
+      <div class="house-steps-title">${wf.works ? "What it does, step by step" : "Status"}</div>
+      <ol class="house-steps">${stepsHtml}</ol>
+    `;
+    panel.querySelector(".house-close").addEventListener("click", exitHouse);
+    // Next frame, so the transition actually animates rather than applying
+    // instantly along with the content change.
+    requestAnimationFrame(() => panel.classList.add("open"));
   }
 
   window.VillageView = {
@@ -660,12 +775,7 @@
         // A drag shouldn't count as a click on whatever ended up under the
         // cursor when the mouse came up.
         if (dragStart && Math.hypot(mx - dragStart.mx, my - dragStart.my) > 6) return;
-        if (hovered >= 0) {
-          const p = plots[hovered];
-          const b = iso(p.gx, p.gy);
-          focusOn(b.x, b.y - p.h / 2, 1.7);   // glide in before opening
-          setTimeout(() => { if (window.openAgent) window.openAgent(p.agent.id); }, 380);
-        }
+        if (hovered >= 0) enterHouse(plots[hovered]);
       });
 
       // Double-click empty ground to pull back out to the whole village.
@@ -674,6 +784,9 @@
       });
 
       window.addEventListener("resize", resize);
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && focused) exitHouse();
+      });
       if (!raf) frame();
     },
 
@@ -686,6 +799,15 @@
         if (fresh) p.agent = fresh;
       });
       syncVillagers();
+      // Refresh the open house panel so its status and ETA stay live.
+      if (focused) {
+        const fresh = agents.find((a) => a.id === focused.agent.id);
+        if (fresh) {
+          focused.agent = fresh;
+          const panel = document.getElementById("house-panel");
+          if (panel && panel.classList.contains("open")) showHousePanel(focused);
+        }
+      }
     },
 
     unmount() {

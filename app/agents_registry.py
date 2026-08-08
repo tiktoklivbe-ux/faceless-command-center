@@ -137,3 +137,97 @@ STAGE_TO_AGENT = {a["stage"]: a["id"] for a in AGENTS if a["stage"]}
 
 def roster():
     return {"core": CORE, "agents": AGENTS}
+
+
+# Step-by-step breakdown of what each agent actually does, shown when you zoom
+# into their building. Only the agents that genuinely run get real steps --
+# the rest are honestly marked as not yet functional rather than given
+# invented workflows that would imply they do something.
+AGENT_STEPS = {
+    "apollo": {
+        "works": False,
+        "steps": [
+            "Would scan trends and pitch topics",
+            "Not wired up — topics currently come from the script agent",
+        ],
+    },
+    "athena": {
+        "works": True,
+        "runtime": "10–25 seconds",
+        "steps": [
+            "Reads the channel's niche and style notes",
+            "Sends one request to Claude asking for a full video script",
+            "Gets back a title, description, and 8–10 narration segments",
+            "Each segment also carries a visual prompt for the image agent",
+            "Retries up to 3 times if the response comes back malformed",
+            "Saves the script to the job and hands off",
+        ],
+    },
+    "orpheus": {
+        "works": True,
+        "runtime": "1–3 seconds per segment",
+        "steps": [
+            "Takes one segment's narration text",
+            "Sends it to ElevenLabs with the channel's chosen voice",
+            "Saves the returned MP3",
+            "Measures its exact duration — this drives the clip length",
+            "Falls back to timed silence if no ElevenLabs key is set",
+        ],
+    },
+    "iris": {
+        "works": True,
+        "runtime": "1–5 seconds per segment",
+        "steps": [
+            "Takes the segment's visual prompt from the script",
+            "Adds framing instructions (vertical 9:16, no text or watermarks)",
+            "Sends it to the configured image provider",
+            "Saves the returned PNG",
+            "Falls back to a generated placeholder if no key is set",
+            "Runs at the same time as the voice agent, not after it",
+        ],
+    },
+    "hephaestus": {
+        "works": True,
+        "runtime": "3–8 seconds per clip",
+        "steps": [
+            "Pairs each image with its narration audio",
+            "Renders a clip with a slow pan and zoom, synced to the audio length",
+            "Repeats for every segment",
+            "Stitches all the clips together in order",
+            "Builds caption timings from each segment's real duration",
+            "Burns the captions into the final video",
+            "Deletes the intermediate files so the disk doesn't fill up",
+        ],
+    },
+    "hermes": {
+        "works": True,
+        "runtime": "20–60 seconds",
+        "steps": [
+            "Only runs if auto-publish is switched on for the channel",
+            "Uploads the finished MP4 to YouTube via the Data API",
+            "Sets the title and description written by the script agent",
+            "Also posts to TikTok if that account is connected",
+            "Records the resulting video ID against the job",
+        ],
+    },
+    "chronos": {
+        "works": True,
+        "runtime": "checks every 5 minutes",
+        "steps": [
+            "Wakes on a timer and looks at each channel",
+            "Checks how many videos it's made today against the target",
+            "Spaces them out rather than firing them all at once",
+            "Won't start a new render while one is already running",
+            "Picks up jobs left queued before creating anything new",
+            "Retries jobs that stalled, and gives up after 2 hours",
+        ],
+    },
+}
+
+
+def steps_for(agent_id: str) -> dict:
+    """Workflow breakdown for an agent, or an honest placeholder."""
+    return AGENT_STEPS.get(agent_id, {
+        "works": False,
+        "steps": ["This agent is scaffolding — it appears in the village but has no logic behind it yet."],
+    })

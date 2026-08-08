@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
-from ..agents_registry import roster, AGENTS, CORE, STAGE_TO_AGENT
+from ..agents_registry import roster, AGENTS, CORE, STAGE_TO_AGENT, steps_for
 from ..pipeline import orchestrator
 
 router = APIRouter(prefix="/api", tags=["command"])
@@ -98,6 +98,7 @@ def get_agents(db: Session = Depends(get_db)):
         a["status"] = live.get(a["id"], "idle")
         a["task"] = tasks.get(a["id"], "")
         a["eta"] = etas.get(a["id"], "")
+        a["workflow"] = steps_for(a["id"])
     data["core"]["status"] = "running" if core_busy else "idle"
     return data
 
