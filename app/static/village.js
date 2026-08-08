@@ -682,34 +682,48 @@
   function enterHouse(p) {
     focused = p;
     const b = iso(p.gx, p.gy);
-    const zoom = 2.6;
-    // Aim slightly above the base so the building fills the frame rather
-    // than sitting at the bottom edge, and bias left to leave room for the
-    // panel that slides in from the right.
+
+    // Fly hard into the building's door until it fills the frame, then hand
+    // off to the interior view. Zooming to a modest level and stopping felt
+    // like looking AT the house rather than going into it.
+    const zoom = 7.5;
     flyTo(
-      W / 2 - b.x * zoom + W * 0.16,
-      H / 2 - (b.y - p.h * 0.5) * zoom,
+      W / 2 - b.x * zoom,
+      H / 2 - (b.y - p.h * 0.35) * zoom,
       zoom,
-      850
+      760
     );
-    setTimeout(() => showHousePanel(p), 620);
+
+    setTimeout(() => {
+      const host = document.getElementById("interior-host");
+      if (!host || !window.InteriorView) { showHousePanel(p); return; }
+      host.style.display = "block";
+      requestAnimationFrame(() => host.classList.add("open"));
+      InteriorView.open(host, p.agent, () => {
+        host.classList.remove("open");
+        setTimeout(() => { host.style.display = "none"; }, 380);
+        focused = null;
+        flyTo(0, 0, 1, 800);
+      });
+      showHousePanel(p, host);
+    }, 700);
   }
 
   function exitHouse() {
-    focused = null;
     const panel = document.getElementById("house-panel");
     if (panel) panel.classList.remove("open");
-    flyTo(0, 0, 1, 800);
+    if (window.InteriorView) InteriorView.close();   // also flies the camera back out
+    else { focused = null; flyTo(0, 0, 1, 800); }
   }
 
-  function showHousePanel(p) {
+  function showHousePanel(p, host) {
     const a = p.agent;
     const wf = a.workflow || { works: false, steps: [] };
     let panel = document.getElementById("house-panel");
     if (!panel) {
       panel = document.createElement("div");
       panel.id = "house-panel";
-      canvas.parentElement.appendChild(panel);
+      (host || canvas.parentElement).appendChild(panel);
     }
 
     const stepsHtml = (wf.steps || [])
@@ -758,7 +772,16 @@
         dragging = true;
         dragStart = { mx, my, camX: cam.tx, camY: cam.ty, moved: false };
       });
-      window.addEventListener("mouseup", () => { dragging = false; });
+      window.addEventListener("mouseup", () => {
+        dragging = false;
+        // Record how far this gesture actually moved, then clear it. Leaving
+        // stale coordinates here meant a later click was measured against an
+        // OLD drag's start point and got swallowed as "that was a drag" --
+        // which is why clicking a building sometimes did nothing.
+        if (dragStart) {
+          dragStart.dist = Math.hypot(mx - dragStart.mx, my - dragStart.my);
+        }
+      });
 
       canvas.addEventListener("wheel", (e) => {
         e.preventDefault();
@@ -774,7 +797,9 @@
       canvas.addEventListener("click", () => {
         // A drag shouldn't count as a click on whatever ended up under the
         // cursor when the mouse came up.
-        if (dragStart && Math.hypot(mx - dragStart.mx, my - dragStart.my) > 6) return;
+        const wasDrag = dragStart && (dragStart.dist || 0) > 6;
+        dragStart = null;            // consumed -- never reused by a later click
+        if (wasDrag) return;
         if (hovered >= 0) enterHouse(plots[hovered]);
       });
 
@@ -804,8 +829,11 @@
         const fresh = agents.find((a) => a.id === focused.agent.id);
         if (fresh) {
           focused.agent = fresh;
+          if (window.InteriorView) InteriorView.setAgent(fresh);
           const panel = document.getElementById("house-panel");
-          if (panel && panel.classList.contains("open")) showHousePanel(focused);
+          if (panel && panel.classList.contains("open")) {
+            showHousePanel(focused, panel.parentElement);
+          }
         }
       }
     },
