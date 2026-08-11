@@ -135,12 +135,18 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{job_id}/cancel", response_model=schemas.JobOut)
 def cancel_job(job_id: str, db: Session = Depends(get_db)):
-    """Force a stuck job to FAILED so it stops blocking the render slot.
+    """Actually stop a running job, not just mark it FAILED.
 
-    Renders are serialised (one at a time), so a job wedged in an active
-    state holds the slot and every queued video waits behind it forever.
-    This releases that. It also kills any orphaned ffmpeg processes, since a
-    wedged render usually left one behind still burning CPU.
+    This used to only flip the DB row to FAILED and kill orphaned ffmpeg
+    processes -- the real worker process (a separate OS process; see
+    orchestrator.dispatch_job) was never touched. It kept running completely
+    unaware it had been "cancelled", and once it finished whatever stage it
+    was on, it unconditionally overwrote the status back to SCRIPT/ASSEMBLING/
+    READY as normal -- so cancel looked like it worked for a moment and then
+    the video kept rendering anyway. Now the actual process gets killed by
+    PID before the slot is freed, so nothing is left running to stomp on the
+    cancellation, and a second job can't start rendering alongside a
+    "cancelled" one that's still secretly alive burning CPU/API calls.
     """
     from ..pipeline import ffmpeg_utils
     from .. import render_gate
@@ -155,8 +161,9 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)):
     if already_finished:
         raise HTTPException(status_code=400, detail=f"That job isn't running (status: {job.status.value}).")
 
-    reaped = ffmpeg_utils.kill_orphaned_ffmpeg(max_age_seconds=0)  # this job's ffmpeg, whatever its age
-    render_gate.release(job_id)  # free the slot even if this job never held it cleanly
+    worker_killed = ffmpeg_utils.kill_worker_by_pid(job.worker_pid)
+    reaped = ffmpeg_utils.kill_orphaned_ffmpeg(max_age_seconds=0)  # any ffmpeg it had already spawned
+    render_gate.release(job_id)  # only free the slot AFTER the real process is confirmed dead/gone
 
     # Clear "running" agents -- otherwise Voice/Visual/Assembly stay lit
     # forever and look permanently busy.
@@ -171,7 +178,8 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)):
     job.error_message = "Cancelled manually."
     job.stage_log = (job.stage_log or "") + (
         f"\n[cancelled] Stopped by hand. "
-        f"{f'Killed {reaped} running ffmpeg process(es). ' if reaped else ''}"
+        f"{'Killed the render process. ' if worker_killed else 'Render process had already stopped on its own. '}"
+        f"{f'Also killed {reaped} running ffmpeg process(es). ' if reaped else ''}"
         f"The render slot is now free for the next video.\n"
     )
     db.commit()

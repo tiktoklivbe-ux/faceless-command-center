@@ -23,7 +23,9 @@
   // that appeared to walk off the map.
   let TW = 96;
   let TH = 48;
-  const VILLAGE_RADIUS = 15;   // max |gx| or |gy| used by layout
+  const VILLAGE_RADIUS = 24;   // max |gx| or |gy| used by layout
+  const FIT_RADIUS = 15;       // how much of that gets fit into view by default (see fitTiles)
+  const RING_ROAD = 11;        // a loop road partway out, besides the centre cross
 
   // Each villager pixel is this many screen pixels. Bigger = chunkier sprite.
   const PIX = 3;
@@ -36,7 +38,142 @@
   let t = 0;
   let hovered = -1;
   let mx = -1, my = -1;
+
+  // agentId -> { seconds, at } -- the ETA text above a working building used
+  // to just display whatever the last poll said, verbatim. The API is only
+  // polled every 15s, so that number sat frozen the whole time and then
+  // jumped once a new segment started -- it never actually counted down.
+  // This ticks it down locally every frame using real elapsed time.
+  //
+  // syncEta() re-anchors to the server's estimate on every poll, full stop --
+  // an earlier version tried to be clever and only re-anchor when the fresh
+  // value seemed to genuinely diverge from the locally-ticked prediction,
+  // to avoid jumping the display around. That backfired: the poll interval
+  // (15s) is close to or longer than the per-segment estimate itself
+  // (~14s), so almost every real poll DOES look like a new segment must
+  // have started, whether or not one actually did -- the "smart" version
+  // reset just as often as this one while being harder to reason about.
+  // This ticks down smoothly for the 15s between polls and then corrects
+  // to the server's fresher number -- an honest, minor correction rather
+  // than a bug to hide.
+  let etaTrack = {};
+
+  function syncEta(agentId, freshSeconds) {
+    if (typeof freshSeconds !== "number") { delete etaTrack[agentId]; return; }
+    etaTrack[agentId] = { seconds: freshSeconds, at: performance.now() };
+  }
+
+  function tickEtaText(agentId) {
+    const tr = etaTrack[agentId];
+    if (!tr) return "";
+    const remaining = Math.max(0, Math.round(tr.seconds - (performance.now() - tr.at) / 1000));
+    if (remaining <= 0) return "finishing";
+    return remaining >= 60 ? `~${Math.floor(remaining / 60)}m ${remaining % 60}s left` : `~${remaining}s left`;
+  }
+
+  // ---------------------------------------------------------------- YouTube HQ
+  // A landmark building, not tied to any one agent, that the pipeline's real
+  // stages report to as they finish. Gives the village an actual answer to
+  // "where does the work go" rather than agents just working in place.
+  let hq = null;
+  const PIPELINE_STAGES = ["athena", "orpheus", "iris", "hephaestus", "hermes"];
+  let submittedStages = new Set();  // which of PIPELINE_STAGES have delivered this job
+  let hqBursts = [];                // brief particle bursts when a delivery lands
+  let hqLog = [];                   // recent deliveries, for the control room's screens
+
+  // ---------------------------------------------------------------- traffic
+  let cars = [];
+  const CAR_COLORS = ["#c94f4f", "#4f7fc9", "#c9a84f", "#6fae6f", "#8a6fc9", "#c9c9c9"];
+
+  function spawnCars() {
+    cars = [];
+    const count = 16;
+    for (let i = 0; i < count; i++) {
+      // Two lanes per road, one each direction -- like real opposing traffic,
+      // rather than everyone drifting the same way down the middle.
+      const lane = (i % 2 === 0) ? 0.3 : -0.3;
+      cars.push({
+        horizontal: i % 4 < 2,
+        pos: -VILLAGE_RADIUS + Math.random() * (VILLAGE_RADIUS * 2),
+        lane,
+        dir: lane > 0 ? 1 : -1,
+        speed: 0.05 + Math.random() * 0.05,
+        color: CAR_COLORS[i % CAR_COLORS.length],
+      });
+    }
+  }
+
+  function updateCars() {
+    const edge = VILLAGE_RADIUS + 2;
+    cars.forEach((c) => {
+      c.pos += c.dir * c.speed;
+      if (c.pos > edge) c.pos = -edge;
+      if (c.pos < -edge) c.pos = edge;
+    });
+  }
+
+  function drawCar(c) {
+    const gx = c.horizontal ? c.pos : c.lane;
+    const gy = c.horizontal ? c.lane : c.pos;
+    const b = iso(gx, gy);
+    const len = TW * 0.5, wid = TH * 0.55;
+
+    ctx.fillStyle = "rgba(15,10,8,0.30)";
+    ctx.beginPath();
+    ctx.ellipse(b.x, b.y + wid * 0.35, len * 0.55, wid * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    if (!c.horizontal) ctx.rotate(Math.PI / 2);   // reuse one body shape for both roads
+    ctx.fillStyle = c.color;
+    ctx.beginPath();
+    ctx.roundRect(-len / 2, -wid / 2, len, wid, 3);
+    ctx.fill();
+
+    // Windshield band on the leading half, in the direction of travel
+    ctx.fillStyle = "rgba(25,30,38,0.65)";
+    const wsW = len * 0.32;
+    ctx.fillRect(c.dir > 0 ? len * 0.06 : -len * 0.06 - wsW, -wid * 0.32, wsW, wid * 0.64);
+
+    // A single headlight glow at the front
+    ctx.fillStyle = "#ffe9b0";
+    ctx.beginPath();
+    ctx.arc(c.dir > 0 ? len / 2 - 2 : -len / 2 + 2, 0, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Builds HQ's stand-in "agent" record so it can reuse the same click,
+   *  camera-fly, and interior-open machinery every other building uses,
+   *  rather than a parallel system just for this one landmark. */
+  function hqAgent() {
+    const inProgress = submittedStages.size > 0 && submittedStages.size < PIPELINE_STAGES.length;
+    return {
+      id: "ythq",
+      name: "HQ",
+      title: "Publishing Deck",
+      status: inProgress ? "running" : "idle",
+      task: submittedStages.size ? `${submittedStages.size}/${PIPELINE_STAGES.length} parts received` : "",
+      blurb: "Where every finished part of a video gets handed off before it ships. Each "
+             + "agent walks their part over the moment their stage is done.",
+      submitted: submittedStages.size,
+      total: PIPELINE_STAGES.length,
+      log: hqLog.slice(0, 5),
+      workflow: {
+        works: true,
+        runtime: "as each stage finishes",
+        steps: [
+          "Receives the finished part from whichever agent just completed a stage",
+          "Tracks how many of the 5 real stages have reported in for the current job",
+          "Lights another floor of the tower per part received",
+          "Once script, voice, visuals, assembly, and publish have all reported in, that video is fully assembled",
+        ],
+      },
+    };
+  }
   let dim = 0;
+  let leaving = false;   // true while the camera is pulling back for a side panel
 
   // Camera. Pan by dragging, zoom with the wheel. Both are smoothed toward a
   // target rather than applied directly, which is what makes movement feel
@@ -117,7 +254,7 @@
     dirt: "#8a6642",
     dirtAlt: "#7d5c3b",
     dirtEdge: "#6b4d31",
-    path: "#a8applies",
+    path: "#b08d5e",
     grass: "#55603a",
     grassAlt: "#4a5432",
     wallLit: "#c9a06d",
@@ -128,8 +265,8 @@
     windowOn: "#ffd487",
     windowOff: "#4a3a30",
     stone: "#9a9188",
+    accent: "#8fe3ff",   // HQ's cool glass-tower accent, matching the interior redesign
   };
-  C.path = "#b08d5e";
 
   function iso(gx, gy) {
     return {
@@ -142,8 +279,15 @@
 
   /** Pick a tile size that fits the whole village in the viewport. */
   function fitTiles() {
-    const spanX = VILLAGE_RADIUS * 2;      // widest horizontal extent, in tiles
-    const spanY = VILLAGE_RADIUS * 2;
+    // Deliberately NOT the true VILLAGE_RADIUS. Buildings are a fixed pixel
+    // size regardless of tile size, so cramming a much bigger radius (HQ,
+    // the ring road, the wider home scatter) into view by default would
+    // shrink tiles enough that neighbouring buildings start overlapping
+    // each other. Fitting a smaller "core" keeps the agent cluster properly
+    // proportioned at the default view; the rest of the settlement is still
+    // there and reachable by panning/zooming out, same as any real map.
+    const spanX = FIT_RADIUS * 2;
+    const spanY = FIT_RADIUS * 2;
     // Leave a margin so buildings (which extend upward) aren't clipped.
     TW = Math.max(28, Math.min(110, (W * 0.92) / spanX));
     TH = TW / 2;
@@ -182,13 +326,28 @@
 
   function drawVillagerSprite(v) {
     const rows = (Math.floor(v.bob) % 2 === 0) ? SPRITE_A : SPRITE_B;
-    const px = Math.round(v.x / PIX) * PIX;   // snap to the pixel grid so the
-    const py = Math.round(v.y / PIX) * PIX;   // sprite never renders half-pixels
+    // Someone actually on the job -- heading to their building, or carrying
+    // a finished part to HQ -- needed to read as obviously different from
+    // the ambient crowd at a glance, not just a color change easy to miss.
+    // Bigger, plus a glowing ring underneath, does that even at a glance
+    // while zoomed out.
+    const active = v.mode === "work" || v.mode === "deliver";
+    const scale = active ? PIX * 1.6 : PIX;
+    const px = Math.round(v.x / scale) * scale;
+    const py = Math.round(v.y / scale) * scale;
+
+    if (active) {
+      const pulse = 0.5 + Math.sin(t * 0.12) * 0.5;
+      ctx.fillStyle = `rgba(255,196,107,${0.22 + pulse * 0.12})`;
+      ctx.beginPath();
+      ctx.ellipse(px + scale * 3, py + scale * 8.4, scale * 4.2, scale * 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // soft contact shadow (not pixelated -- it sits on detailed ground)
     ctx.fillStyle = "rgba(30,18,14,0.30)";
     ctx.beginPath();
-    ctx.ellipse(px + PIX * 3, py + PIX * 8, PIX * 3.2, PIX * 1.1, 0, 0, Math.PI * 2);
+    ctx.ellipse(px + scale * 3, py + scale * 8, scale * 3.2, scale * 1.1, 0, 0, Math.PI * 2);
     ctx.fill();
 
     for (let r = 0; r < rows.length; r++) {
@@ -204,7 +363,7 @@
         else if (ch === "l") col = v.pants;
         else col = "#2e2118";
         ctx.fillStyle = col;
-        ctx.fillRect(px + c * PIX, py + r * PIX, PIX, PIX);
+        ctx.fillRect(px + c * scale, py + r * scale, scale, scale);
       }
     }
   }
@@ -218,6 +377,10 @@
 
   function spawnVillager(plot, wandering, seed) {
     const p = iso(plot.gx, plot.gy);
+    // Assembly is the critical-path stage -- the whole render waits on it --
+    // so Theo (hephaestus) hustles to his building noticeably faster than
+    // everyone else heading to theirs.
+    const hustle = !wandering && plot.agent.id === "hephaestus" ? 1.35 : 1;
     villagers.push({
       agentId: plot.agent.id,
       x: p.x, y: p.y,
@@ -225,23 +388,51 @@
       hair: pick(HAIR, seed), skin: pick(SKIN, seed * 3),
       shirt: wandering ? pick(SHIRT, seed * 7) : (plot.agent.color || pick(SHIRT, seed)),
       pants: pick(PANTS, seed * 5),
-      speed: 0.5 + Math.random() * 0.45,
+      speed: (0.5 + Math.random() * 0.45) * hustle,
       bob: Math.random() * 10,
       wandering,
+      mode: wandering ? null : "work",   // "work" (at own building) or "deliver" (walking to HQ)
       nextPick: 0,
+      holdUntil: 0,
     });
+  }
+
+  /** A pipeline stage just finished -- send its villager to HQ to hand off
+   *  that part of the video instead of just despawning it. */
+  function sendToHQ(agentId) {
+    if (!hq) return;
+    const person = agents.find((a) => a.id === agentId);
+    hqLog.unshift({ name: (person && person.name) || agentId, at: Date.now() });
+    if (hqLog.length > 5) hqLog.length = 5;
+
+    let v = villagers.find((vv) => vv.agentId === agentId && vv.mode === "work");
+    if (!v) {
+      const p = plots.find((pp) => pp.agent.id === agentId);
+      if (!p) return;
+      spawnVillager(p, false, agentId.length * 13);
+      v = villagers[villagers.length - 1];
+    }
+    v.mode = "deliver";
+    v.wandering = false;
+    v.holdUntil = 0;
+    // Small spread so several deliveries in flight at once don't stack
+    // exactly on top of each other at HQ's door.
+    v.tx = hq.gx + (Math.random() * 1.6 - 0.8);
+    v.ty = hq.gy + 1.1;
   }
 
   function syncVillagers() {
     const working = new Set(agents.filter((a) => a.status === "running").map((a) => a.id));
-    villagers = villagers.filter((v) => v.wandering || working.has(v.agentId));
+    // A villager mid-delivery to HQ must survive this filter even though its
+    // agent has already stopped running -- that's exactly why it's walking.
+    villagers = villagers.filter((v) => v.wandering || working.has(v.agentId) || v.mode === "deliver");
     working.forEach((id) => {
-      if (!villagers.some((v) => v.agentId === id && !v.wandering)) {
+      if (!villagers.some((v) => v.agentId === id && v.mode === "work")) {
         const p = plots.find((pp) => pp.agent.id === id);
         if (p) spawnVillager(p, false, id.length * 13);
       }
     });
-    const ambientWanted = 48;
+    const ambientWanted = 110;   // a much bigger settlement needed more life in it
     let ambient = villagers.filter((v) => v.wandering).length;
     for (let i = ambient; i < ambientWanted && plots.length; i++) {
       const anchor = (homes.length && i % 2) ? homes[i % homes.length] : plots[i % plots.length];
@@ -251,6 +442,31 @@
 
   function updateVillagers() {
     villagers.forEach((v) => {
+      if (v.mode === "deliver") {
+        const target = iso(v.tx, v.ty);
+        const dx = target.x - v.x, dy = target.y - v.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 4) {
+          if (!v.holdUntil) {
+            v.holdUntil = t + 70;   // a brief pause at the door, "handing it off"
+            const hqPos = iso(hq.gx, hq.gy);
+            hqBursts.push({ x: hqPos.x, y: hqPos.y, life: 1 });
+          }
+          if (t > v.holdUntil) {
+            // Done delivering -- blends back into the ambient crowd rather
+            // than just vanishing.
+            v.mode = null; v.wandering = true;
+            v.tx = hq.gx + (Math.random() * 6 - 3);
+            v.ty = hq.gy + 2 + Math.random() * 3;
+          }
+        } else {
+          v.x += (dx / d) * v.speed;
+          v.y += (dy / d) * v.speed;
+          v.bob += 0.16;
+        }
+        return;
+      }
+
       // A working agent's villager heads to and stays at their own building
       // rather than wandering, so it's visible at a glance who's busy.
       if (!v.wandering) {
@@ -316,14 +532,21 @@
     });
     plots.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
 
+    // YouTube HQ: a fixed landmark, not an agent building, sitting prominently
+    // at the north edge of the settlement. Every finished pipeline stage
+    // walks here to hand off its part.
+    hq = { gx: 0, gy: -(VILLAGE_RADIUS - 3), w: 112, h: 172 };
+
     // Family homes: deterministic scatter so they don't jump around on every
-    // relayout, kept clear of the paths and of agent plots.
+    // relayout, kept clear of the paths, the agent plots, and HQ's tile.
     const taken = new Set(plots.map((p) => `${p.gx},${p.gy}`));
+    taken.add(`${hq.gx},${hq.gy}`);
     let n = 0;
-    for (let gx = -15; gx <= 15; gx++) {
-      for (let gy = -15; gy <= 15; gy++) {
-        if (Math.abs(gx) + Math.abs(gy) > 17) continue;
+    for (let gx = -VILLAGE_RADIUS; gx <= VILLAGE_RADIUS; gx++) {
+      for (let gy = -VILLAGE_RADIUS; gy <= VILLAGE_RADIUS; gy++) {
+        if (Math.abs(gx) + Math.abs(gy) > VILLAGE_RADIUS + 2) continue;
         if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) continue;      // keep roads clear
+        if (Math.max(Math.abs(gx), Math.abs(gy)) === RING_ROAD) continue;  // keep the ring road clear
         if (taken.has(`${gx},${gy}`)) continue;
         const h = ((gx * 73856093) ^ (gy * 19349663)) >>> 0;
         if (h % 7 !== 0) continue;                                  // ~1 in 7 tiles
@@ -331,6 +554,11 @@
         n++;
       }
     }
+
+    // Only seed traffic once -- relayout runs whenever the agent list
+    // changes shape, and respawning cars on every one of those would snap
+    // every car back to a random position mid-drive.
+    if (!cars.length) spawnCars();
   }
 
   function drawHome(hm) {
@@ -433,16 +661,21 @@
   }
 
   function drawGround() {
-    for (let gx = -18; gx <= 18; gx++) {
-      for (let gy = -18; gy <= 18; gy++) {
+    const reach = VILLAGE_RADIUS + 3;
+    for (let gx = -reach; gx <= reach; gx++) {
+      for (let gy = -reach; gy <= reach; gy++) {
         const man = Math.abs(gx) + Math.abs(gy);
-        if (man > 20) continue;
+        if (man > VILLAGE_RADIUS + 5) continue;
         const p = iso(gx, gy);
         if (p.y < -TH || p.y > H + TH || p.x < -TW || p.x > W + TW) continue;
 
         const n = ((gx * 7 + gy * 13) % 4 + 4) % 4;
         let col;
-        if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1) col = C.path;
+        // The two roads through the centre, plus a ring road partway out --
+        // a bigger settlement needed more than one straight cross to not
+        // feel like an empty field with houses scattered in it.
+        const onRing = Math.max(Math.abs(gx), Math.abs(gy)) === RING_ROAD;
+        if (Math.abs(gx) <= 1 || Math.abs(gy) <= 1 || onRing) col = C.path;
         else if (man > 16) col = n < 2 ? C.grass : C.grassAlt;
         else col = n === 0 ? C.dirtAlt : n === 1 ? C.dirtEdge : C.dirt;
 
@@ -591,17 +824,135 @@
     ctx.fillText(String(task).slice(0, 40), b.x, by - 7);
 
     // Time remaining, when the pipeline gives us enough to estimate one.
-    if (p.agent.eta) {
+    // Ticks down live between polls -- see tickEtaText.
+    const etaText = tickEtaText(p.agent.id);
+    if (etaText) {
       ctx.font = "600 11px 'Share Tech Mono', monospace";
       ctx.fillStyle = "#ffc46b";
-      ctx.fillText(p.agent.eta, b.x, by + 22);
+      ctx.fillText(etaText, b.x, by + 22);
     }
+  }
+
+  // ---------------------------------------------------------------- YT HQ
+  function drawHQ() {
+    if (!hq) return;
+    const b = iso(hq.gx, hq.gy);
+    const w = hq.w, hgt = hq.h, hw = w / 2;
+
+    ctx.fillStyle = "rgba(15,10,10,0.38)";
+    ctx.beginPath();
+    ctx.ellipse(b.x - 12, b.y + 8, hw * 1.08, TH * 0.46, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tower faces -- a cool glass tower, taller and narrower than any agent
+    // building, so it reads as a landmark rather than one more house.
+    const gl = ctx.createLinearGradient(0, b.y - hgt, 0, b.y);
+    gl.addColorStop(0, "#2a3542"); gl.addColorStop(1, "#141a22");
+    ctx.fillStyle = gl;
+    ctx.beginPath();
+    ctx.moveTo(b.x - hw, b.y - TH * 0.25); ctx.lineTo(b.x, b.y + TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25 - hgt); ctx.lineTo(b.x - hw, b.y - TH * 0.25 - hgt);
+    ctx.closePath(); ctx.fill();
+
+    const gr = ctx.createLinearGradient(0, b.y - hgt, 0, b.y);
+    gr.addColorStop(0, "#1a222c"); gr.addColorStop(1, "#0b0e12");
+    ctx.fillStyle = gr;
+    ctx.beginPath();
+    ctx.moveTo(b.x + hw, b.y - TH * 0.25); ctx.lineTo(b.x, b.y + TH * 0.25);
+    ctx.lineTo(b.x, b.y + TH * 0.25 - hgt); ctx.lineTo(b.x + hw, b.y - TH * 0.25 - hgt);
+    ctx.closePath(); ctx.fill();
+
+    // One glowing floor band per pipeline stage that's actually submitted
+    // this job -- the tower itself visibly fills up as parts arrive, not
+    // just the progress bar above it.
+    const bands = PIPELINE_STAGES.length;
+    for (let r = 0; r < bands; r++) {
+      const wy = b.y - hgt + 22 + r * ((hgt - 56) / bands);
+      const lit = r >= bands - submittedStages.size;
+      [-1, 1].forEach((side) => {
+        ctx.fillStyle = lit ? "#ff5c5c" : "rgba(143,227,255,0.10)";
+        ctx.fillRect(b.x + side * (hw * 0.42) - 8, wy, 16, 11);
+      });
+    }
+
+    // Antenna + a generic red "upload" badge (a play-triangle in a circle --
+    // deliberately generic, not a reproduction of any specific brand mark).
+    const roofY = b.y + TH * 0.25 - hgt;
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(b.x, roofY); ctx.lineTo(b.x, roofY - 24); ctx.stroke();
+    const badgeY = roofY - 38;
+    ctx.fillStyle = "#ff3b3b";
+    ctx.beginPath(); ctx.arc(b.x, badgeY, 15, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.moveTo(b.x - 5, badgeY - 8); ctx.lineTo(b.x - 5, badgeY + 8); ctx.lineTo(b.x + 9, badgeY);
+    ctx.closePath(); ctx.fill();
+
+    // Door + nameplate
+    ctx.fillStyle = "#c8dbe6";
+    ctx.fillRect(b.x - 10, b.y + TH * 0.25 - 32, 20, 32);
+    ctx.font = "700 13px Rajdhani, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(10,14,18,0.6)";
+    const label = "HQ";
+    const nw = ctx.measureText(label).width + 16;
+    ctx.fillRect(b.x - nw / 2, b.y + TH * 0.3, nw, 18);
+    ctx.fillStyle = "#c8ecff";
+    ctx.fillText(label, b.x, b.y + TH * 0.3 + 13.5);
+
+    // Submission bursts -- a brief expanding ring where a delivery just landed.
+    for (let i = hqBursts.length - 1; i >= 0; i--) {
+      const burst = hqBursts[i];
+      burst.life -= 0.03;
+      if (burst.life <= 0) { hqBursts.splice(i, 1); continue; }
+      ctx.strokeStyle = `rgba(255,92,92,${burst.life * 0.8})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(burst.x, burst.y, (1 - burst.life) * 46, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (submittedStages.size > 0 && submittedStages.size < PIPELINE_STAGES.length) {
+      drawHQProgress(b, hgt);
+    }
+  }
+
+  function drawHQProgress(b, hgt) {
+    const barW = 116, bx = b.x - barW / 2;
+    const by = b.y + TH * 0.25 - hgt - 60;
+    const frac = submittedStages.size / PIPELINE_STAGES.length;
+
+    ctx.fillStyle = "rgba(10,14,18,0.85)";
+    ctx.fillRect(bx - 2, by - 2, barW + 4, 12);
+    ctx.strokeStyle = "rgba(143,227,255,0.55)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx - 1.5, by - 1.5, barW + 3, 11);
+
+    ctx.fillStyle = C.accent;
+    ctx.fillRect(bx, by, barW * frac, 8);
+
+    ctx.font = "600 11px 'Share Tech Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#cdeeff";
+    ctx.fillText(`${submittedStages.size}/${PIPELINE_STAGES.length} parts submitted`, b.x, by - 8);
   }
 
   function hitTest() {
     hovered = -1;
-    if (mx < 0 || dragging) {
-      if (canvas) canvas.style.cursor = dragging ? "grabbing" : "default";
+    // Only bail on a genuinely absent cursor. This used to also bail
+    // whenever `dragging` was true -- but `dragging` goes true the instant
+    // ANY mousedown fires, including the one at the start of a plain click,
+    // before it's known whether it'll turn into a real drag. A click held
+    // for even ~100ms (well within normal human click speed) meant several
+    // animation frames ticked with `dragging` true, each one wiping
+    // `hovered` back to -1 and skipping recalculation -- so by the time
+    // mouseup/click fired, hovered was stuck at -1 and the click silently
+    // did nothing. Hit-testing now always runs off the live cursor
+    // position; only the cursor icon (grabbing vs pointer) reflects drag
+    // state. A real drag still can't be mistaken for a click -- that's
+    // handled separately, by the distance check in the click handler.
+    if (mx < 0) {
+      if (canvas) canvas.style.cursor = "default";
       return;
     }
     const wpt = screenToWorld(mx, my);
@@ -610,12 +961,27 @@
       if (wpt.x > b.x - p.w / 2 && wpt.x < b.x + p.w / 2 &&
           wpt.y > b.y - p.h - 40 && wpt.y < b.y + TH * 0.6) { hovered = i; break; }
     }
-    if (canvas) canvas.style.cursor = hovered >= 0 ? "pointer" : "grab";
+    // HQ isn't in `plots` (it's not an agent), so it gets its own check.
+    // `hovered` becomes the string "hq" rather than an index -- that still
+    // reads correctly everywhere `hovered < 0` is checked (a string against
+    // 0 coerces to NaN, which every comparison operator treats as false),
+    // so double-click-to-reset still leaves it alone without extra changes.
+    if (hovered === -1 && hq) {
+      const b = iso(hq.gx, hq.gy);
+      if (wpt.x > b.x - hq.w / 2 && wpt.x < b.x + hq.w / 2 &&
+          wpt.y > b.y - hq.h - 40 && wpt.y < b.y + TH * 0.6) { hovered = "hq"; }
+    }
+    const isHovering = hovered !== -1;
+    if (canvas) canvas.style.cursor = dragging ? "grabbing" : (isHovering ? "pointer" : "grab");
   }
 
   function drawTooltip() {
-    if (hovered < 0) return;
-    const p = plots[hovered], b = iso(p.gx, p.gy);
+    if (hovered === -1) return;
+    // HQ isn't in `plots` (it's the "hq" sentinel, not an index), so it
+    // needs its own agent-shaped record and dimensions here.
+    const p = hovered === "hq" ? { agent: hqAgent(), h: hq.h, gx: hq.gx, gy: hq.gy } : plots[hovered];
+    if (!p) return;
+    const b = iso(p.gx, p.gy);
     const lines = [p.agent.name, p.agent.title || "", `Status: ${p.agent.status || "idle"}`];
     if (p.agent.task) lines.push(p.agent.task);
     if (p.agent.eta) lines.push(p.agent.eta);
@@ -652,6 +1018,7 @@
     applyCamera();
     drawGround();
     updateVillagers();
+    updateCars();
     hitTest();
 
     // Depth sort buildings and people together so villagers correctly pass
@@ -660,18 +1027,23 @@
       ...plots.map((p, i) => ({ k: "b", p, i, d: iso(p.gx, p.gy).y })),
       ...homes.map((hm) => ({ k: "h", hm, d: iso(hm.gx, hm.gy).y })),
       ...villagers.map((v) => ({ k: "v", v, d: v.y })),
+      ...cars.map((c) => ({ k: "car", c, d: iso(c.horizontal ? c.pos : c.lane, c.horizontal ? c.lane : c.pos).y })),
+      ...(hq ? [{ k: "hq", d: iso(hq.gx, hq.gy).y }] : []),
     ].sort((a, b2) => a.d - b2.d);
 
     items.forEach((it) => {
       if (it.k === "b") drawBuilding(it.p, it.i);
       else if (it.k === "h") drawHome(it.hm);
+      else if (it.k === "hq") drawHQ();
+      else if (it.k === "car") drawCar(it.c);
       else drawVillagerSprite(it.v);
     });
 
-    // When focused on one house, dim everything else so the eye goes to it.
-    // Faded in gradually rather than snapped, so it reads as part of the
-    // same camera move.
-    if (focused) {
+    // When focused on one house, or pulling back to open a side panel, dim
+    // everything so the eye goes to whatever's taking over. Faded in
+    // gradually rather than snapped, so it reads as part of the same camera
+    // move rather than a hard cut.
+    if (focused || leaving) {
       dim = Math.min(0.55, dim + 0.03);
     } else {
       dim = Math.max(0, dim - 0.04);
@@ -683,7 +1055,8 @@
       // Re-draw the focused building on top of the dim so it stays bright.
       if (focused) {
         applyCamera();
-        drawBuilding(focused, plots.indexOf(focused));
+        if (focused === hq) drawHQ();
+        else drawBuilding(focused, plots.indexOf(focused));
       }
     }
 
@@ -745,6 +1118,16 @@
     }, 700);
   }
 
+  /** HQ isn't an agent's building, but it reuses enterHouse's camera-fly and
+   *  interior-open flow exactly -- that flow only ever needed gx/gy/h/agent,
+   *  all of which HQ already has (agent is synthesized fresh each visit so
+   *  its stats are current). */
+  function enterHQ() {
+    if (!hq) return;
+    hq.agent = hqAgent();
+    enterHouse(hq);
+  }
+
   function exitHouse() {
     const panel = document.getElementById("house-panel");
     if (panel) panel.classList.remove("open");
@@ -787,6 +1170,8 @@
 
   window.VillageView = {
     mount(container) {
+      leaving = false;   // always clear -- otherwise a remount after a panel
+                          // closes would render permanently dimmed forever.
       container.innerHTML = `<div class="village-wrap"><canvas id="village-canvas"></canvas></div>`;
       canvas = document.getElementById("village-canvas");
       ctx = canvas.getContext("2d");
@@ -836,11 +1221,25 @@
         const wasDrag = dragStart && (dragStart.dist || 0) > 6;
         dragStart = null;            // consumed -- never reused by a later click
         if (wasDrag) return;
-        if (hovered >= 0) enterHouse(plots[hovered]);
+        // Already entering/inside a building -- ignore. Without this, the
+        // second click of a double-click (every dblclick fires two click
+        // events first) re-triggers enterHouse mid-flight and restarts its
+        // animation and timers on top of the one already running.
+        if (focused) return;
+        if (hovered === "hq") enterHQ();
+        else if (hovered >= 0) enterHouse(plots[hovered]);
       });
 
       // Double-click empty ground to pull back out to the whole village.
       canvas.addEventListener("dblclick", () => {
+        // Guard against the camera mid-flight into a building: a double-
+        // click's second click can land after the camera has already
+        // zoomed in 7x, which shifts what's under an unmoved cursor enough
+        // that hitTest reads it as "empty ground" -- and this handler would
+        // then snap the camera straight back to the default view, killing
+        // the flight that was already 90% of the way to opening the house.
+        // 50/50-feeling "it just resets" was exactly this race.
+        if (focused) return;
         if (hovered < 0) { cam.tx = 0; cam.ty = 0; cam.tz = 1; }
       });
 
@@ -852,6 +1251,9 @@
     },
 
     update(list) {
+      const prevStatus = {};
+      agents.forEach((a) => { prevStatus[a.id] = a.status; });
+
       const changed = list.length !== agents.length;
       agents = list;
       if (changed || !plots.length) layout();
@@ -859,9 +1261,43 @@
         const fresh = agents.find((a) => a.id === p.agent.id);
         if (fresh) p.agent = fresh;
       });
+
+      // A new job always starts with the script agent -- that's the signal
+      // to reset HQ's delivery tracking, since there's no other reliable
+      // "a fresh job just began" event exposed by the API.
+      const athenaNow = agents.find((a) => a.id === "athena");
+      if (athenaNow && athenaNow.status === "running" && prevStatus.athena !== "running") {
+        submittedStages.clear();
+      }
+
+      // Any real pipeline stage finishing (running -> not running) means
+      // that part of the video is done -- walk it over to HQ.
+      PIPELINE_STAGES.forEach((id) => {
+        const fresh = agents.find((a) => a.id === id);
+        if (fresh && prevStatus[id] === "running" && fresh.status !== "running") {
+          submittedStages.add(id);
+          sendToHQ(id);
+        }
+      });
+
+      // Sync the ETA countdown's anchor point from this poll -- see syncEta.
+      agents.forEach((a) => {
+        if (a.status === "running") syncEta(a.id, a.eta_seconds);
+        else delete etaTrack[a.id];
+      });
+
       syncVillagers();
-      // Refresh the open house panel so its status and ETA stay live.
-      if (focused) {
+      // Refresh the open house panel so its status and ETA stay live. HQ
+      // isn't a real agent -- agents.find() would never find it -- so it
+      // gets its stats rebuilt directly instead of looked up.
+      if (focused === hq) {
+        focused.agent = hqAgent();
+        if (window.InteriorView) InteriorView.setAgent(focused.agent);
+        const panel = document.getElementById("house-panel");
+        if (panel && panel.classList.contains("open")) {
+          showHousePanel(focused, panel.parentElement);
+        }
+      } else if (focused) {
         const fresh = agents.find((a) => a.id === focused.agent.id);
         if (fresh) {
           focused.agent = fresh;
@@ -879,6 +1315,22 @@
       raf = null;
       window.removeEventListener("resize", resize);
       villagers = []; plots = [];
+    },
+
+    /** Glide the camera back and dim the world, then hand off to a side
+     *  panel opening -- called before Mission Control/Videos/Channels/
+     *  Settings slides in, so leaving the village reads as a deliberate
+     *  camera move rather than an instant cut to a flat page. */
+    pullBack(cb) {
+      leaving = true;
+      flyTo(0, 0, 0.6, 420);
+      setTimeout(() => { if (cb) cb(); }, 420);
+    },
+
+    /** Called once a panel closes and the village is about to remount, so
+     *  the dim clears and the camera glides back in rather than snapping. */
+    resetLeave() {
+      leaving = false;
     },
   };
 })();

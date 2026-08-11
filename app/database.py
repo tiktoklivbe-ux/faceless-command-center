@@ -46,3 +46,28 @@ def get_db():
 def init_db():
     from . import models  # noqa: F401 -- ensure models are registered
     Base.metadata.create_all(bind=engine)
+    _migrate_add_missing_columns()
+
+
+def _migrate_add_missing_columns():
+    """Add any columns present on the models but missing from the actual
+    on-disk table.
+
+    create_all() only creates tables that don't exist yet -- it never alters
+    an existing table, so adding a column to a model (like VideoJob.worker_pid)
+    does nothing to a database file from before that column existed. Without
+    this, the app would crash with "no such column" the moment it tried to
+    read or write that field on an existing install, rather than picking the
+    new column up automatically. There's no migration framework here (this is
+    a single-table SQLite app, not worth Alembic), so this does the one thing
+    that framework would be for: bring an old file's schema up to date.
+    """
+    with engine.connect() as conn:
+        for table in Base.metadata.sorted_tables:
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info('{table.name}')")}
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                col_type = col.type.compile(engine.dialect)
+                conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}')
+        conn.commit()

@@ -24,6 +24,7 @@ from ..settings_store import get_setting
 
 log = logging.getLogger("orchestrator")
 from .. import render_gate
+from ..agents_registry import agent_name
 from . import script_stage, assemble_stage, ffmpeg_utils, publish_youtube, publish_tiktok
 
 AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
@@ -149,6 +150,19 @@ def dispatch_job(job_id: str):
             start_new_session=(os.name == "posix"),  # survives if the web worker restarts
         )
         log.info("Dispatched job %s to worker process pid=%s", job_id, proc.pid)
+
+        # Persist the PID so cancel_job can actually terminate this specific
+        # OS process later. Without this, a cancel had no way to reach the
+        # real worker at all -- it could only flip the DB row and hope.
+        db = SessionLocal()
+        try:
+            job = db.get(models.VideoJob, job_id)
+            if job:
+                job.worker_pid = proc.pid
+                db.commit()
+        finally:
+            db.close()
+
         return proc.pid
     except Exception as e:
         # If the process can't be started at all, fall back to running inline
@@ -210,6 +224,10 @@ def _preflight(db: Session, channel) -> list[str]:
     has to be made here.
     """
     problems = []
+
+    ffmpeg_problem = ffmpeg_utils.available()
+    if ffmpeg_problem:
+        problems.append(ffmpeg_problem)
 
     provider = get_setting(db, "llm_provider", "anthropic")
     llm_keys = {
@@ -274,7 +292,7 @@ def _run_job_inner(job_id: str):
             # --- Stage 1: script ---
             job.status = models.JobStatus.SCRIPT
             set_agent("script", "running")
-            _log(db, job, "Script Agent (Athena): writing the script — one call to Claude, usually 10-20s.")
+            _log(db, job, f"Script Agent ({agent_name('athena')}): writing the script — one call to Claude, usually 10-20s.")
             _t = time.time()
             script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes)
             job.title = script.get("title", "")[:200]

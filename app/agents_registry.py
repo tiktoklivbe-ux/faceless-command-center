@@ -139,6 +139,13 @@ def roster():
     return {"core": CORE, "agents": AGENTS}
 
 
+def agent_name(agent_id: str) -> str:
+    """Current display name for an agent, so a rename here is the only place
+    it needs to happen -- callers that used to hardcode a codename (e.g. log
+    messages) should pull it from here instead of drifting out of sync."""
+    return next((a["name"] for a in AGENTS if a["id"] == agent_id), agent_id.title())
+
+
 # Step-by-step breakdown of what each agent actually does, shown when you zoom
 # into their building. Only the agents that genuinely run get real steps --
 # the rest are honestly marked as not yet functional rather than given

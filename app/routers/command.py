@@ -14,14 +14,14 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import get_db
-from ..agents_registry import roster, AGENTS, CORE, STAGE_TO_AGENT, steps_for
+from ..agents_registry import roster, AGENTS, CORE, STAGE_TO_AGENT, steps_for, agent_name
 from ..pipeline import orchestrator
 
 router = APIRouter(prefix="/api", tags=["command"])
 
 
 # ---------------------------------------------------------------- agents
-def _live_agent_status(db: Session) -> tuple[dict, dict]:
+def _live_agent_status(db: Session) -> tuple[dict, dict, dict, dict]:
     """Aggregate per-agent live status AND what each is currently doing.
 
     Returns (status, tasks). The task text comes from the last line of the
@@ -32,6 +32,7 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
     status = {a["id"]: "idle" for a in AGENTS}
     tasks: dict[str, str] = {}
     etas: dict[str, str] = {}
+    eta_secs: dict[str, int] = {}
     # Only the agent_status column is needed, not whole ORM objects -- this
     # endpoint is polled constantly, and loading full rows (including the
     # potentially large stage_log) on every call was needless work against a
@@ -79,6 +80,14 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
                     secs = remaining * 14  # measured: roughly 14s per segment
                     etas[agent_id] = (f"~{secs//60}m {secs%60}s left" if secs >= 60
                                       else f"~{secs}s left") if remaining else "finishing"
+                    # Raw seconds too, not just the formatted string -- this
+                    # endpoint is only polled every 15s, so a plain string
+                    # displayed as-is just sits frozen between polls and
+                    # jumps once a new segment starts, which reads as "the
+                    # timer doesn't count down". The village ticks this
+                    # number down itself between polls using performance.now(),
+                    # and re-syncs to whatever's returned here on each poll.
+                    eta_secs[agent_id] = secs
                 if last_line:
                     # Drop the "Agent Name:" prefix -- the building already
                     # says whose it is.
@@ -86,18 +95,19 @@ def _live_agent_status(db: Session) -> tuple[dict, dict]:
                     tasks[agent_id] = text[:60]
                 elif title:
                     tasks[agent_id] = f"working on {title}"[:60]
-    return status, tasks, etas
+    return status, tasks, etas, eta_secs
 
 
 @router.get("/agents")
 def get_agents(db: Session = Depends(get_db)):
     data = roster()
-    live, tasks, etas = _live_agent_status(db)
+    live, tasks, etas, eta_secs = _live_agent_status(db)
     core_busy = any(v == "running" for v in live.values())
     for a in data["agents"]:
         a["status"] = live.get(a["id"], "idle")
         a["task"] = tasks.get(a["id"], "")
         a["eta"] = etas.get(a["id"], "")
+        a["eta_seconds"] = eta_secs.get(a["id"])
         a["workflow"] = steps_for(a["id"])
     data["core"]["status"] = "running" if core_busy else "idle"
     return data
@@ -172,7 +182,7 @@ def run_command(payload: CommandIn, background_tasks: BackgroundTasks, db: Sessi
             "job_id": job.id,
             "channel": channel.name,
             "topic": topic or "(agent's choice)",
-            "message": f"On it. Athena is drafting a script{' about ' + topic if topic else ''} "
+            "message": f"On it. {agent_name('athena')} is drafting a script{' about ' + topic if topic else ''} "
                        f"for {channel.name}. Watch the constellation light up.",
         }
 

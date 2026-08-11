@@ -50,6 +50,21 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     # block hangs FOREVER on cleanup. The job freezes with no error, no log
     # movement, and no timeout escape. Managing the executor manually lets a
     # stuck thread be abandoned instead of waited on.
+    # Read these ONCE, up front, as plain values -- not left as attribute
+    # access on `channel` inside the worker threads below. `channel` is a
+    # SQLAlchemy object bound to the caller's session; every _log() call
+    # elsewhere in the pipeline commits that session, and by default a
+    # commit expires every object attached to it (channel included), so
+    # the next attribute read has to silently re-fetch from the DB. Two
+    # threads (voice + visual) doing that re-fetch on the SAME shared
+    # session at the same moment is a real, actually-hit race -- it doesn't
+    # always throw "not thread-safe", it can just as easily surface as
+    # SQLAlchemy reporting the row itself as deleted/gone, which is exactly
+    # what crashed a real render. Plain local variables have no session to
+    # corrupt, so the threads below are now genuinely independent.
+    voice_id = channel.voice_id
+    visual_style = channel.visual_style
+
     pool = ThreadPoolExecutor(max_workers=2)
     try:
         for i, seg in enumerate(segments):
@@ -77,14 +92,14 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             def _voice_task():
                 s = SessionLocal()
                 try:
-                    return voice_stage.narrate_segment(s, seg["narration"], channel.voice_id, audio_path)
+                    return voice_stage.narrate_segment(s, seg["narration"], voice_id, audio_path)
                 finally:
                     s.close()
 
             def _visual_task():
                 s = SessionLocal()
                 try:
-                    return visuals_stage.generate_image(s, seg["visual_prompt"], channel.visual_style, image_path)
+                    return visuals_stage.generate_image(s, seg["visual_prompt"], visual_style, image_path)
                 finally:
                     s.close()
 

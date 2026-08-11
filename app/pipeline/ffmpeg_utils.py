@@ -1,10 +1,13 @@
 import json
+import logging
 import os
 import tempfile
 import time
 import signal
 import subprocess
 from pathlib import Path
+
+log = logging.getLogger("ffmpeg_utils")
 
 # No ffmpeg operation here should take anywhere near this long -- a full
 # 9-segment assembly measures well under a minute. Without a timeout a hung
@@ -15,7 +18,7 @@ from pathlib import Path
 FFMPEG_TIMEOUT_SECONDS = 600
 
 
-def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
+def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS, cwd: str | None = None):
     """Run an ffmpeg/ffprobe command, raising with full stderr on failure.
 
     Uses Popen + explicit kill rather than subprocess.run(timeout=...). That
@@ -37,6 +40,8 @@ def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS):
     }
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True  # own process group, so killpg gets children too
+    if cwd:
+        popen_kwargs["cwd"] = str(cwd)
 
     # Write ffmpeg's output to files rather than pipes. With PIPE, ffmpeg
     # blocks once the OS pipe buffer fills (~64KB) and nobody is draining it
@@ -124,6 +129,47 @@ def _kill_tree(proc: subprocess.Popen):
         pass
 
 
+def kill_worker_by_pid(pid: int) -> bool:
+    """Terminate a specific worker process (and its tree) by OS PID.
+
+    This is what a cancel actually needed and never had: the worker for a
+    render runs in its own OS process (see orchestrator.dispatch_job), so
+    cancelling only that job's DB row never stopped the real work -- the
+    process kept running, oblivious, and overwrote the cancelled status once
+    it finished a stage. Given only a bare PID (the caller is a web request,
+    not the process itself, so there's no Popen handle to call .kill() on),
+    this reaches the actual OS process directly.
+
+    Returns True if a process was found and signalled, False if it was
+    already gone (which is a normal, fine outcome -- the job had already
+    finished or crashed on its own).
+    """
+    if pid is None:
+        return False
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                os.kill(pid, signal.SIGKILL)
+                return True
+        else:
+            # No process groups on Windows; taskkill /T walks the tree so any
+            # ffmpeg the worker spawned dies with it, not just the Python
+            # process itself.
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.returncode == 0
+    except Exception:
+        log.warning("Couldn't kill worker pid %s", pid, exc_info=True)
+        return False
+
+
 def kill_orphaned_ffmpeg(max_age_seconds: int = 900) -> int:
     """Kill ffmpeg processes that have been running far too long.
 
@@ -165,6 +211,35 @@ def kill_orphaned_ffmpeg(max_age_seconds: int = 900) -> int:
         except (ProcessLookupError, PermissionError):
             pass
     return killed
+
+
+def available() -> str | None:
+    """Whether ffmpeg AND ffprobe are actually runnable, checked up front.
+
+    Without this, a missing install surfaces as a bare
+    "FileNotFoundError: [WinError 2] The system cannot find the file
+    specified" three stages into a render (first hit inside probe_duration,
+    after the script and voice call already ran) -- which reads as a mystery
+    crash rather than "install ffmpeg". Checking both here means the job
+    fails in under a second, before burning any API calls, with an actual
+    instruction attached.
+
+    Returns None if both are usable, or an error string naming what's missing.
+    """
+    import shutil
+    missing = [name for name in ("ffmpeg", "ffprobe") if shutil.which(name) is None]
+    if not missing:
+        return None
+    plural = "s" if len(missing) > 1 else ""
+    return (
+        f"{' and '.join(missing)} {'are' if plural else 'is'} not installed, or not on PATH. "
+        f"Every video needs both to narrate, render, and stitch clips. "
+        f"On Windows: install via 'winget install ffmpeg' (or download from ffmpeg.org) and "
+        f"make sure the install's bin folder is on PATH, then restart this app. "
+        f"On the deployed server: this should already be handled by the Dockerfile "
+        f"(apt-get install ffmpeg) -- if it's still missing there, the service likely isn't "
+        f"actually building from that Dockerfile."
+    )
 
 
 def probe_duration(path: Path) -> float:
@@ -243,9 +318,21 @@ def concat_clips(clip_paths: list[Path], out_path: Path):
 def burn_subtitles(video_path: Path, srt_path: Path, out_path: Path):
     # force_style keeps captions readable on any background: bold white text, black outline.
     style = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=120"
+
+    # ffmpeg's filtergraph syntax uses ':' to separate a filter's own
+    # arguments -- which collides with a Windows path's drive-letter colon.
+    # Escaping it (C\:/path/...) is the commonly-documented fix, and it WAS
+    # tried here first, but a real run against this exact ffmpeg build
+    # (9.0-full_build) still misread the escaped path and failed with
+    # "Unable to parse 'original_size' ... as image size" -- confirmed by
+    # actually re-running it. Sidestepping the whole escaping question is
+    # more robust than chasing this build's exact quoting rules: run ffmpeg
+    # FROM the srt's own directory and hand the filter a bare filename, so
+    # there's no drive letter or colon anywhere in the argument for it to
+    # misparse. Verified working against the real files from a failed job.
     run([
         "ffmpeg", "-y", "-i", str(video_path),
-        "-vf", f"subtitles={srt_path}:force_style='{style}'",
+        "-vf", f"subtitles={srt_path.name}:force_style='{style}'",
         # This step re-encodes the ENTIRE video, and with no preset specified
         # ffmpeg defaults to "medium" -- measured ~4x slower here for no
         # visible benefit on flat-background caption burn-in. This was a large
@@ -259,4 +346,4 @@ def burn_subtitles(video_path: Path, srt_path: Path, out_path: Path):
         "-c:v", "libx264", "-preset", "superfast", "-crf", "23",
         "-c:a", "copy",
         str(out_path),
-    ])
+    ], cwd=srt_path.parent)

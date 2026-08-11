@@ -12,6 +12,41 @@ const API = async (path, opts = {}) => {
 const el = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
 const $ = (s) => document.querySelector(s);
 
+/** Escapes text that's about to be interpolated into an innerHTML template.
+ *  Without this, dynamic text containing angle brackets -- which Python
+ *  tracebacks and error reprs do constantly (`<module>`, `<listcomp>`,
+ *  `<Channel at 0x...>`) -- gets parsed as real HTML tags instead of shown
+ *  as text, silently mangling whatever panel it lands in. Found this by
+ *  actually clicking through a real failed job's error message, not by
+ *  inspection -- it broke exactly that way. */
+const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+})[c]);
+
+/** A small "⧉ Copy" button that copies the text content of whatever element
+ *  `targetSel` points to. Wired once, globally, via delegation below --
+ *  drop this next to any log/output box and it just works, no per-panel
+ *  event handling needed. Built for the exact moment a video fails and you
+ *  need to hand the real error text over rather than a screenshot. */
+const copyBtn = (targetSel, label = "Copy") =>
+  `<button class="copy-btn" data-copy-target="${targetSel}" title="Copy to clipboard">⧉ ${label}</button>`;
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-btn");
+  if (!btn) return;
+  const target = btn.dataset.copyTarget && document.querySelector(btn.dataset.copyTarget);
+  const text = target ? (target.innerText || target.textContent || "").trim() : "";
+  const original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "✓ Copied";
+    btn.classList.add("copied");
+  } catch (err) {
+    btn.textContent = "Couldn't copy — select manually";
+  }
+  setTimeout(() => { btn.textContent = original; btn.classList.remove("copied"); }, 1400);
+});
+
 // ---------------------------------------------------------------- world state
 // Panel poll handles. Declared at the top because several functions clear
 // them, and with `let` a reference before the declaration line is a
@@ -105,7 +140,8 @@ function renderJobStatusCard(j) {
 
   return `<div class="card job-status-card">
     <div class="job-headline">${headline}</div>
-    <div class="job-detail">${detail}</div>
+    <div class="job-detail" id="job-detail-text">${escapeHtml(detail)}</div>
+    ${status === "failed" ? `<div style="margin-top:6px">${copyBtn("#job-detail-text", "Copy error")}</div>` : ""}
     <div class="job-bar"><div class="job-bar-fill" style="width:${pct}%"></div></div>
     <div class="job-meta">${pct}% · running ${mmss(elapsed)}</div>
     ${warn}
@@ -216,6 +252,15 @@ function initClock() {
 
 
 // ============================================================ AGENTS (live)
+/** Look up an agent's current display name from the live roster, so a rename
+ *  in agents_registry.py propagates everywhere instead of leaving stale
+ *  hardcoded codenames scattered across the UI. Falls back to the given
+ *  default if the roster hasn't loaded yet. */
+function agentName(id, fallback) {
+  const a = state.agents.find((x) => x.id === id);
+  return (a && a.name) || fallback;
+}
+
 async function refreshAgents() {
   try {
     const data = await API("/api/agents");
@@ -251,11 +296,29 @@ function stopAllPanelPolls() {
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
 }
+// Each panel enters from a different side, so switching tabs doesn't feel
+// like one interchangeable cut repeated five times -- Mission Control drops
+// in like a HUD, Videos rises like a reel, Channels swings in from the left,
+// Settings slides in from the right (the original direction, kept because it
+// already reads as "a control drawer").
+const PANEL_DIR = { missioncontrol: "top", jobs: "bottom", channels: "left", settings: "right" };
+
 async function openBigPanel(which) {
+  // If the village is on screen, let its camera pull back and dim first --
+  // otherwise a panel opening while the world instantly vanishes underneath
+  // it feels like a hard cut instead of a single continuous camera move.
+  const stage = document.getElementById("village-stage");
+  const villageVisible = stage && stage.offsetParent !== null && window.VillageView;
+  if (villageVisible) {
+    await new Promise((resolve) => VillageView.pullBack(resolve));
+  }
+
   stopAllPanelPolls();
   const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
   inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
   inner.classList.toggle("wide", which === "missioncontrol");
+  inner.classList.remove("dir-top", "dir-bottom", "dir-left", "dir-right");
+  inner.classList.add(`dir-${PANEL_DIR[which] || "right"}`);
   bp.classList.add("open");
   const body = $("#bp-body");
   if (which === "settings") return renderSettingsPanel(body);
@@ -279,7 +342,18 @@ function setActiveSideItem(panelName) {
   const id = Object.keys(SIDE_MAP).find((k) => SIDE_MAP[k] === panelName);
   if (id) { const el = document.getElementById(id); if (el) el.classList.add("active"); }
 }
-window.closeBigPanel = () => { stopAllPanelPolls(); $("#bigpanel").classList.remove("open"); setActiveSideItem(null); };
+window.closeBigPanel = () => {
+  stopAllPanelPolls();
+  $("#bigpanel").classList.remove("open");
+  setActiveSideItem(null);
+  // stopAllPanelPolls() -> VillageView.unmount() cancels the village's own
+  // render loop and NOTHING used to restart it -- mountVillageHome() only
+  // ever ran once, at page load. That's why the village went permanently
+  // blank and unclickable the moment you visited any panel and came back:
+  // the canvas just sat there frozen on its last frame forever. Remounting
+  // here is what actually brings it back to life.
+  mountVillageHome();
+};
 
 async function renderChannelsPanel(body) {
   body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
@@ -374,7 +448,7 @@ async function renderJobDetail(body, jobId) {
   const draw = async () => {
     const j = await API(`/api/jobs/${jobId}`);
     body.innerHTML = `<button class="btn secondary" onclick="reopenJobs()">← Library</button>
-      <h1 style="margin-top:14px">${j.title || "Generating…"}</h1>
+      <h1 style="margin-top:14px">${escapeHtml(j.title) || "Generating…"}</h1>
       <div class="bp-sub">Job ${j.id} · <span class="badge ${j.status}">${j.status.replace(/_/g, " ")}</span></div>`;
     if (j.video_path && ["ready_for_review", "publishing", "published"].includes(j.status)) {
       body.appendChild(el(`<div class="card"><video controls src="/api/jobs/${j.id}/video"></video>
@@ -434,16 +508,19 @@ async function renderJobDetail(body, jobId) {
     });
     body.appendChild(el(`<div class="card"><h2>What Each Agent Does</h2>
       <div class="agent-legend">
-        <div><b>Script (Athena)</b><span>Writes the script and picks the topic. One Claude call, ~10-20s.</span></div>
-        <div><b>Voice (Orpheus)</b><span>Turns each line into narration via ElevenLabs. Runs alongside Visual.</span></div>
-        <div><b>Visual (Iris)</b><span>Generates an image per segment. Usually the slowest API step.</span></div>
-        <div><b>Assembly (Hephaestus)</b><span>Ken Burns pan/zoom per clip, stitches them, burns in captions.</span></div>
-        <div><b>Publish (Hermes)</b><span>Uploads to YouTube/TikTok if auto-publish is on.</span></div>
+        <div><b>Script (${agentName("athena", "Athena")})</b><span>Writes the script and picks the topic. One Claude call, ~10-20s.</span></div>
+        <div><b>Voice (${agentName("orpheus", "Orpheus")})</b><span>Turns each line into narration via ElevenLabs. Runs alongside Visual.</span></div>
+        <div><b>Visual (${agentName("iris", "Iris")})</b><span>Generates an image per segment. Usually the slowest API step.</span></div>
+        <div><b>Assembly (${agentName("hephaestus", "Hephaestus")})</b><span>Ken Burns pan/zoom per clip, stitches them, burns in captions.</span></div>
+        <div><b>Publish (${agentName("hermes", "Hermes")})</b><span>Uploads to YouTube/TikTok if auto-publish is on.</span></div>
       </div>
       <div class="hint">The log below shows real elapsed time per step, so you can see which stage is actually slow.</div>
     </div>`));
     body.appendChild(el(`<div class="card"><h2>Worker Output <span style="font-weight:400;font-size:11px;opacity:0.7">(raw — shows crashes the progress log can't)</span></h2>
-      <button class="btn secondary" id="load-worker-log">Load Worker Output</button>
+      <div class="pill-row">
+        <button class="btn secondary" id="load-worker-log">Load Worker Output</button>
+        ${copyBtn("#worker-log-box", "Copy output")}
+      </div>
       <div class="log-box" id="worker-log-box" style="margin-top:10px;display:none"></div></div>`));
     const wlBtn = document.getElementById("load-worker-log");
     if (wlBtn) wlBtn.addEventListener("click", async () => {
@@ -454,8 +531,12 @@ async function renderJobDetail(body, jobId) {
         box.textContent = r.log || r.note || "(empty)";
       } catch (e) { box.textContent = "Couldn't load the worker output."; }
     });
-    body.appendChild(el(`<div class="card"><h2>Progress Log</h2><div class="log-box">${(j.stage_log || "").trim() || "Queued…"}</div></div>`));
-    if (j.script_text) body.appendChild(el(`<div class="card"><h2>Script</h2><div style="white-space:pre-wrap;font-size:14px;line-height:1.6">${j.script_text}</div></div>`));
+    body.appendChild(el(`<div class="card"><h2>Progress Log</h2>
+      <div class="pill-row" style="margin-bottom:10px">${copyBtn("#progress-log-box", "Copy log")}</div>
+      <div class="log-box" id="progress-log-box">${escapeHtml((j.stage_log || "").trim()) || "Queued…"}</div></div>`));
+    if (j.script_text) body.appendChild(el(`<div class="card"><h2>Script</h2>
+      <div class="pill-row" style="margin-bottom:10px">${copyBtn("#script-text-box", "Copy script")}</div>
+      <div id="script-text-box" style="white-space:pre-wrap;font-size:14px;line-height:1.6">${escapeHtml(j.script_text)}</div></div>`));
     if (["published", "failed", "ready_for_review"].includes(j.status) && jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   };
   await draw();
@@ -714,13 +795,13 @@ async function renderSettingsPanel(body) {
         <option value="claude-haiku-4-5-20251001" ${s.anthropic_model?.value === "claude-haiku-4-5-20251001" ? "selected" : ""}>Haiku 4.5 — fastest, cheapest</option>
         <option value="claude-opus-4-8" ${s.anthropic_model?.value === "claude-opus-4-8" ? "selected" : ""}>Opus 4.8 — most capable, slower/pricier</option>
       </select>
-      <div class="hint">Used by Athena for script generation. Haiku is cheapest; Sonnet gives better scripts.</div>
+      <div class="hint">Used by ${agentName("athena", "Athena")} for script generation. Haiku is cheapest; Sonnet gives better scripts.</div>
       ${field("gemini_api_key", "Gemini key", "AIza…")}
       ${field("openai_api_key", "OpenAI key", "sk-…")}
-      <div class="hint">No key yet? Athena falls back to a placeholder script so the whole pipeline still runs.</div>
+      <div class="hint">No key yet? ${agentName("athena", "Athena")} falls back to a placeholder script so the whole pipeline still runs.</div>
     </div>
     <div class="card"><h2>Voice — ElevenLabs</h2>${field("elevenlabs_api_key", "ElevenLabs key", "")}
-      <div class="hint">No key? Orpheus renders timed silence so you can still test assembly + captions.</div></div>
+      <div class="hint">No key? ${agentName("orpheus", "Orpheus")} renders timed silence so you can still test assembly + captions.</div></div>
     <div class="card"><h2>App Lock</h2>
       <div class="hint" id="lock-state">Checking…</div>
       <label>Password</label>

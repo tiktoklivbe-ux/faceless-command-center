@@ -77,6 +77,14 @@ class VideoJob(Base):
     youtube_video_id = Column(String, nullable=True)
     tiktok_publish_id = Column(String, nullable=True)
 
+    # The OS process ID of the `python -m app.worker` process actually doing
+    # the rendering (see orchestrator.dispatch_job). Cancel used to only flip
+    # this row's status to FAILED and free the render slot -- it never
+    # touched the real process, which kept running in the background,
+    # completed its stages anyway, and overwrote the "cancelled" status back
+    # to normal as it went. This is what cancel actually kills now.
+    worker_pid = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

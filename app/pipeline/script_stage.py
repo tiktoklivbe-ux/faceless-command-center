@@ -25,14 +25,18 @@ log = logging.getLogger("script_stage")
 SYSTEM_PROMPT = textwrap.dedent("""
     You write short-form narration scripts for a faceless YouTube/TikTok channel.
     Given a channel niche and (optionally) a specific topic, produce a punchy,
-    original 45-90 second script split into narration segments.
+    original script split into narration segments, running NO LONGER THAN 55
+    seconds of spoken narration in total -- the final video must stay under a
+    minute, so brevity matters more than covering everything.
 
     Rules:
     - The content must be YOUR/the channel's original narration and framing, not a
       copy of someone else's article or a plain list of facts with zero commentary --
       YouTube's monetization policy demotes low-effort/templated/reused content, so
       always add a clear point of view, a hook, and a wrap-up thought.
-    - 6 to 12 segments. Each segment is one or two sentences of narration.
+    - 5 to 7 segments. Each segment is exactly ONE short sentence of narration
+      (aim for well under 15 words per segment) -- staying under the 55-second
+      total budget matters more than fitting in extra detail.
     - Each segment also gets a short "visual_prompt": a plain description of an image
       that would accompany that line (for an AI image generator) -- concrete, visual,
       no text-in-image requests.
