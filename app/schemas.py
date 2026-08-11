@@ -68,3 +68,14 @@ class SettingsIn(BaseModel):
     tiktok_client_key: Optional[str] = None
     tiktok_client_secret: Optional[str] = None
     fast_render: Optional[str] = None
+    # Jarvis / WhatsApp -- these were missing entirely, which meant every
+    # field under Settings > Jarvis silently failed to save: Pydantic drops
+    # unknown fields from a request body by default instead of erroring, so
+    # POSTing them here was a no-op with no visible failure anywhere.
+    twilio_account_sid: Optional[str] = None
+    twilio_auth_token: Optional[str] = None
+    twilio_whatsapp_number: Optional[str] = None
+    jarvis_phone_allowlist: Optional[str] = None
+    jarvis_llm_provider: Optional[str] = None
+    jarvis_gemini_model: Optional[str] = None
+    jarvis_voice_id: Optional[str] = None

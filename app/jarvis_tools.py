@@ -142,6 +142,38 @@ TOOLS = [
             "required": ["url"],
         },
     },
+    {
+        "name": "list_project_files",
+        "description": "List files and folders at a path inside this app's own project "
+                        "folder (e.g. '', 'app', 'storage/jobs'). Cannot see or list "
+                        "anything outside this project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Relative to the project root; leave blank for the root."}},
+        },
+    },
+    {
+        "name": "read_project_file",
+        "description": "Read a text file's contents from inside this app's project folder. "
+                        "Refuses binary files and anything outside the project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_project_file",
+        "description": "Create or overwrite a text file inside this app's project folder "
+                        "(e.g. dropping a note, a small script, a config tweak). Cannot "
+                        "write outside the project, and refuses to touch .env or anything "
+                        "under storage/ (job data) or the database file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+    },
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
@@ -245,6 +277,68 @@ def fetch_url(db, url):
     text = re.sub(r"<[^>]+>", " ", resp.text)
     text = re.sub(r"\s+", " ", text).strip()
     return {"url": resp.url, "text": text[:4000]}
+
+
+# ---------------------------------------------------------------- project file ops
+# The category the user actually asked to be able to use ("file ops within
+# the project folder") when Jarvis's boundaries were first scoped -- every
+# path here is resolved and then checked to still be inside BASE_DIR, which
+# is what actually stops ".." (or an absolute path) from escaping the
+# project, not just string-prefix matching on the input.
+_WRITE_BLOCKED_PARTS = {"storage", ".env", ".git"}
+_DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+
+
+def _resolve_in_project(rel_path: str):
+    rel_path = (rel_path or "").strip().lstrip("/\\")
+    target = (config.BASE_DIR / rel_path).resolve()
+    try:
+        target.relative_to(config.BASE_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+def list_project_files(db, path=""):
+    target = _resolve_in_project(path)
+    if target is None:
+        return {"error": "That path is outside the project folder."}
+    if not target.exists():
+        return {"error": "No such path in the project."}
+    if target.is_file():
+        return {"error": "That's a file, not a folder -- use read_project_file."}
+    entries = []
+    for p in sorted(target.iterdir()):
+        entries.append({"name": p.name, "type": "dir" if p.is_dir() else "file",
+                         "size": p.stat().st_size if p.is_file() else None})
+    return {"path": str(target.relative_to(config.BASE_DIR.resolve())) or ".", "entries": entries[:200]}
+
+
+def read_project_file(db, path):
+    target = _resolve_in_project(path)
+    if target is None:
+        return {"error": "That path is outside the project folder."}
+    if not target.is_file():
+        return {"error": "No such file in the project."}
+    if target.suffix.lower() in _DB_SUFFIXES:
+        return {"error": "Refusing to read a database file."}
+    try:
+        text = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {"error": "That looks like a binary file -- can't read it as text."}
+    return {"path": str(target.relative_to(config.BASE_DIR.resolve())), "content": text[:8000]}
+
+
+def write_project_file(db, path, content):
+    target = _resolve_in_project(path)
+    if target is None:
+        return {"error": "That path is outside the project folder."}
+    rel_parts = target.relative_to(config.BASE_DIR.resolve()).parts
+    if not rel_parts or rel_parts[0] in _WRITE_BLOCKED_PARTS or target.suffix.lower() in _DB_SUFFIXES:
+        return {"error": "Refusing to write there -- job data, secrets, and the database are off-limits."}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return {"ok": True, "path": str(target.relative_to(config.BASE_DIR.resolve())), "bytes_written": len(content.encode("utf-8"))}
 
 
 def _job_summary(j: models.VideoJob) -> dict:
@@ -360,6 +454,9 @@ DISPATCH = {
     "list_available_commands": list_available_commands,
     "run_whitelisted_command": run_whitelisted_command,
     "fetch_url": fetch_url,
+    "list_project_files": list_project_files,
+    "read_project_file": read_project_file,
+    "write_project_file": write_project_file,
 }
 
 

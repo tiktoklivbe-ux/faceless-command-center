@@ -893,8 +893,17 @@ function jarvisAppendMsg(role, text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// True from the moment a message is sent until Jarvis has finished
+// thinking AND finished speaking the reply -- guards against a second
+// conversation starting (a second push-to-talk press, a second typed
+// send) while the first is still in flight, which is what produced "two
+// of him" talking over each other and rapid state-flashing.
+let jarvisBusy = false;
+
 async function jarvisSend(message) {
   if (!message || !message.trim()) return;
+  if (jarvisBusy) { toast("Jarvis is still answering -- one at a time."); return; }
+  jarvisBusy = true;
   jarvisAppendMsg("user", message);
   const caption = document.getElementById("jarvis-caption");
   if (caption) caption.textContent = "…";
@@ -916,14 +925,58 @@ async function jarvisSend(message) {
       toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
     }
     jarvisSetOrbState("speaking");
-    jarvisSpeak(r.reply, () => jarvisSetOrbState("idle"));
+    jarvisSpeak(r.reply, () => { jarvisSetOrbState("idle"); jarvisBusy = false; });
   } catch (e) {
     thinking.remove();
     const msg = "Couldn't reach Jarvis: " + e.message;
     jarvisAppendMsg("assistant", msg);
     if (caption) caption.textContent = msg;
     jarvisSetOrbState("idle");
+    jarvisBusy = false;
   }
+}
+
+// True only while the Enter key is physically held down for push-to-talk.
+// Chrome/Edge's SpeechRecognition stops itself after a few seconds of
+// silence even with continuous=true -- that's a browser quirk, not the
+// user releasing the key, and was cutting people off mid-sentence. When
+// the key is still held at onend, we restart recognition transparently
+// instead of finalizing, carrying the transcript-so-far across the
+// restart so nothing already said gets lost.
+let jarvisKeyHeld = false;
+let jarvisTranscriptSoFar = "";
+
+function _jarvisStartRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const caption = document.getElementById("jarvis-caption");
+  jarvisRecognition = new SR();
+  jarvisRecognition.continuous = true;
+  jarvisRecognition.interimResults = true;
+  jarvisRecognition.lang = "en-US";
+  jarvisRecognition.onresult = (ev) => {
+    let interim = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) jarvisTranscriptSoFar += t + " ";
+      else interim += t;
+    }
+    if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
+  };
+  jarvisRecognition.onerror = () => {};
+  jarvisRecognition.onend = () => {
+    if (jarvisKeyHeld) {
+      // Ended on its own while the key's still down -- not the user
+      // stopping, just the browser's silence timeout. Keep listening.
+      try { _jarvisStartRecognition(); } catch (e) { /* fall through to finalize below */ }
+      return;
+    }
+    jarvisListening = false;
+    jarvisSetOrbState("idle");
+    const said = jarvisTranscriptSoFar.trim();
+    if (said) jarvisSend(said);
+    else if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
+  };
+  jarvisRecognition.start();
 }
 
 function jarvisStartListening() {
@@ -933,38 +986,20 @@ function jarvisStartListening() {
     if (caption) caption.textContent = "Voice input isn't supported in this browser -- type instead.";
     return;
   }
-  if (jarvisListening) return;
+  if (jarvisListening || jarvisBusy) return;
   jarvisListening = true;
+  jarvisKeyHeld = true;
+  jarvisTranscriptSoFar = "";
   jarvisSetOrbState("listening");
   if (caption) caption.textContent = "Listening…";
-
-  jarvisRecognition = new SR();
-  jarvisRecognition.continuous = true;
-  jarvisRecognition.interimResults = true;
-  jarvisRecognition.lang = "en-US";
-  let finalTranscript = "";
-  jarvisRecognition.onresult = (ev) => {
-    let interim = "";
-    for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      const t = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) finalTranscript += t + " ";
-      else interim += t;
-    }
-    if (caption) caption.textContent = (finalTranscript + interim) || "Listening…";
-  };
-  jarvisRecognition.onerror = () => {};
-  jarvisRecognition.onend = () => {
-    jarvisListening = false;
-    jarvisSetOrbState("idle");
-    const said = finalTranscript.trim();
-    if (said) jarvisSend(said);
-    else if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
-  };
-  jarvisRecognition.start();
+  _jarvisStartRecognition();
 }
 
 function jarvisStopListening() {
-  if (jarvisRecognition && jarvisListening) jarvisRecognition.stop();
+  jarvisKeyHeld = false;  // lets a since-fired onend finalize instead of restarting
+  if (jarvisRecognition && jarvisListening) {
+    try { jarvisRecognition.stop(); } catch (e) { /* already stopped/starting -- onend will still fire */ }
+  }
 }
 
 function jarvisStatBar(label, value, max) {
@@ -1385,37 +1420,54 @@ function jarvisRadarSVG() {
 /** One elbowed circuit trace from the chip's edge out toward the frame --
  *  own line art (not the reference photo, which carries a stock-site
  *  watermark neither reproduced nor referenced here). Snaps its second leg
- *  to a 45deg step so it reads as a circuit trace, not a straight ray. */
+ *  to a 45deg step so it reads as a circuit trace, not a straight ray, and
+ *  optionally forks a shorter side-branch partway along, the way the
+ *  reference's traces split rather than running as lone straight rays. */
 function _circuitTrace(cx, cy, angleDeg, r1, r2, seed) {
   const rad = (angleDeg * Math.PI) / 180;
   const x1 = cx + Math.cos(rad) * r1, y1 = cy + Math.sin(rad) * r1;
   const bendDeg = Math.round(angleDeg / 45) * 45 + ((seed % 2) * 2 - 1) * 15;
   const rad2 = (bendDeg * Math.PI) / 180;
   const x2 = x1 + Math.cos(rad2) * (r2 - r1), y2 = y1 + Math.sin(rad2) * (r2 - r1);
-  return { d: `M${cx.toFixed(1)},${cy.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`, x2, y2 };
+  let branch = "";
+  if (seed % 3 === 0) {
+    // fork off roughly 60% of the way along the second leg
+    const bx = x1 + (x2 - x1) * 0.6, by = y1 + (y2 - y1) * 0.6;
+    const branchDeg = bendDeg + ((seed % 2) * 2 - 1) * 45;
+    const branchRad = (branchDeg * Math.PI) / 180;
+    const blen = 22 + (seed % 3) * 10;
+    branch = { x2: bx + Math.cos(branchRad) * blen, y2: by + Math.sin(branchRad) * blen, x1: bx, y1: by };
+  }
+  return {
+    d: `M${cx.toFixed(1)},${cy.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`,
+    x2, y2, branch,
+  };
 }
 
-/** The dense fine-grained circuit texture that filled the background of the
- *  reference photo -- tiny vias and short trace stubs scattered around the
- *  chip, not just the dozen big radiating traces. Deterministic pseudo-
- *  random placement (index-driven, no Math.random) so it's stable across
- *  re-renders, same approach as jarvisWorldMapSVG's dot scatter. */
+/** The dense field of tiny vias and trace stubs that filled the background
+ *  of the reference photo, plus a handful of soft bright "bloom" highlights
+ *  like the specular hot-spots scattered along its lines. Deterministic
+ *  pseudo-random placement (index-driven, no Math.random) so it's stable
+ *  across re-renders, same approach as jarvisWorldMapSVG's dot scatter. */
 function _pcbTexture(cx, cy, rInner, rOuter) {
   const out = [];
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < 190; i++) {
     // two co-prime-ish strides so the scatter doesn't visibly repeat
     const angle = (i * 137.5) % 360;
     const rad = (angle * Math.PI) / 180;
     const dist = rInner + ((i * 53) % (rOuter - rInner));
     const x = cx + Math.cos(rad) * dist, y = cy + Math.sin(rad) * dist;
-    if (i % 3 === 0) {
-      out.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${1.4 + (i % 3) * 0.4}" class="jf-pcb"/>`);
+    if (i % 11 === 0) {
+      // an occasional bright bloom, like the reference's specular highlights
+      out.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${3 + (i % 3)}" class="jf-pcb-bloom"/>`);
+    } else if (i % 3 === 0) {
+      out.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${1.4 + (i % 3) * 0.5}" class="jf-pcb"/>`);
     } else {
       const legAngle = Math.round(angle / 90) * 90 + ((i % 2) * 2 - 1) * 45;
       const legRad = (legAngle * Math.PI) / 180;
-      const len = 6 + (i % 4) * 3;
+      const len = 7 + (i % 5) * 4;
       const x2 = x + Math.cos(legRad) * len, y2 = y + Math.sin(legRad) * len;
-      out.push(`<line x1="${x.toFixed(1)}" y1="${y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="jf-pcb"/>`);
+      out.push(`<line x1="${x.toFixed(1)}" y1="${y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="jf-pcb" stroke-width="${1 + (i % 3) * 0.5}"/>`);
     }
   }
   return out.join("");
@@ -1423,15 +1475,22 @@ function _pcbTexture(cx, cy, rInner, rOuter) {
 
 function jarvisGlyphSVG() {
   const cx = 220, cy = 220, chipR = 70;
-  const traceCount = 12;
-  const pcbBg = _pcbTexture(cx, cy, chipR + 20, 210);
+  const traceCount = 24;
+  const pcbBg = _pcbTexture(cx, cy, chipR + 18, 216);
   let traces = "";
   for (let i = 0; i < traceCount; i++) {
-    const angle = (360 / traceCount) * i + (i % 3) * 6;
-    const t = _circuitTrace(cx, cy, angle, chipR, 195, i);
-    const dash = 60 + (i % 4) * 14;
-    traces += `<path d="${t.d}" class="jf-trace" style="stroke-dasharray:${dash}" />`;
-    traces += `<circle cx="${t.x2}" cy="${t.y2}" r="3.2" class="jf-trace-node" />`;
+    const angle = (360 / traceCount) * i + (i % 3) * 5;
+    // organic, uneven reach -- not every trace makes it to the frame edge
+    const r2 = 150 + ((i * 17) % 66);
+    const t = _circuitTrace(cx, cy, angle, chipR, r2, i);
+    const dash = 50 + (i % 5) * 12;
+    const width = 1.3 + (i % 3) * 0.5;
+    traces += `<path d="${t.d}" class="jf-trace" style="stroke-dasharray:${dash};stroke-width:${width}" />`;
+    traces += `<circle cx="${t.x2}" cy="${t.y2}" r="${2.6 + (i % 3) * 0.6}" class="jf-trace-node" />`;
+    if (t.branch) {
+      traces += `<line x1="${t.branch.x1.toFixed(1)}" y1="${t.branch.y1.toFixed(1)}" x2="${t.branch.x2.toFixed(1)}" y2="${t.branch.y2.toFixed(1)}" class="jf-trace" stroke-width="1"/>`;
+      traces += `<circle cx="${t.branch.x2}" cy="${t.branch.y2}" r="2" class="jf-trace-node"/>`;
+    }
   }
   // The chip: a dark body with small pin ticks along each edge, and a
   // lighter die square in the middle -- JARVIS sits across the die.
@@ -1486,6 +1545,8 @@ function jarvisDialSVG() {
 async function renderJarvisPanel(body) {
   jarvisHistory = [];
   jarvisSeenBlockedIds = null;
+  jarvisBusy = false;
+  jarvisKeyHeld = false;
   body.innerHTML = `<div class="jarvis-page">
     <div class="jarvis-hud">
       ${jarvisFrameSVG()}

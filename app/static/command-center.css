@@ -903,10 +903,14 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-glyph .jf-trace-node { fill: var(--cyan); opacity: 0.7; transition: fill 0.3s, opacity 0.3s; }
 
 /* Fine circuit-board texture filling the space around the chip -- the
-   "classic background" of the reference photo, distinct from the dozen big
-   radiating traces above. Static and dim at idle, quietly brightens with
+   "classic background" of the reference photo, distinct from the two dozen
+   big radiating traces above. Static and dim at idle, quietly brightens with
    the rest of the emblem so it doesn't look like a separate, dead layer. */
-.jarvis-glyph .jf-pcb { stroke: var(--cyan); fill: var(--cyan); opacity: 0.22; transition: stroke 0.3s, opacity 0.3s; }
+.jarvis-glyph .jf-pcb { stroke: var(--cyan); fill: var(--cyan); opacity: 0.35; transition: stroke 0.3s, opacity 0.3s; }
+/* Soft bright specular blooms scattered along the texture, like the
+   reference photo's hot-spots -- these are what make the background read
+   as "glowing circuit board" rather than a flat grid of thin gray lines. */
+.jarvis-glyph .jf-pcb-bloom { fill: var(--cyan); opacity: 0.7; filter: drop-shadow(0 0 6px var(--cyan)); transition: fill 0.3s, opacity 0.3s; }
 
 /* -------- emblem state colors -------- */
 /* idle: calm cyan, static. listening: warm red-orange while capturing
