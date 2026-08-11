@@ -17,8 +17,13 @@ wrong scheme makes every signature check fail, which looks exactly like
 import base64
 import hashlib
 import hmac
+import logging
+
+import requests
 
 from .config import APP_BASE_URL
+
+log = logging.getLogger("twilio")
 
 
 def verify_twilio_signature(auth_token: str, path: str, form_params: dict, signature: str) -> bool:
@@ -36,3 +41,33 @@ def verify_twilio_signature(auth_token: str, path: str, form_params: dict, signa
     # that turns "probably fine" into an actual exploitable side channel for
     # an attacker with enough attempts.
     return hmac.compare_digest(expected, signature)
+
+
+def send_whatsapp_message(account_sid: str, auth_token: str, from_number: str, to_number: str, body: str) -> bool:
+    """Sends a WhatsApp message Jarvis initiated himself -- a proactive alert,
+    not a reply to something you sent. Everything up to here (webhook
+    verification, the phone allowlist) only guards INBOUND messages; this is
+    the other direction, so misuse here would mean texting someone who isn't
+    you, not someone impersonating you. That's why the caller is responsible
+    for only ever passing an allowlisted number, not this function.
+
+    Returns False (and logs) on any failure rather than raising -- an alert
+    that fails to send should never crash whatever background check
+    triggered it."""
+    if not (account_sid and auth_token and from_number and to_number):
+        log.warning("Jarvis proactive alert skipped: Twilio isn't fully configured.")
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
+            auth=(account_sid, auth_token),
+            data={"From": from_number, "To": to_number, "Body": body[:1500]},
+            timeout=15,
+        )
+        if resp.status_code >= 300:
+            log.error("Jarvis proactive alert failed (%s): %s", resp.status_code, resp.text[:500])
+            return False
+        return True
+    except requests.RequestException as e:
+        log.error("Jarvis proactive alert failed: %s", e)
+        return False

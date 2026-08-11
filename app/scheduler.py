@@ -29,9 +29,10 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from . import models, render_gate
+from . import models, render_gate, twilio_utils
 from .database import SessionLocal
 from .pipeline import orchestrator
+from .settings_store import get_setting, set_setting
 
 log = logging.getLogger("chronos")
 
@@ -154,6 +155,94 @@ def clear_stuck_jobs(db: Session) -> int:
     return len(stuck_jobs)
 
 
+def _proactive_alert_recipients(db: Session) -> list[str]:
+    return [n.strip() for n in get_setting(db, "jarvis_phone_allowlist", "").split(",") if n.strip()]
+
+
+def _send_proactive_alert(db: Session, body: str) -> bool:
+    """Returns True only if at least one recipient actually got the message --
+    the caller uses this to decide whether it's safe to mark the underlying
+    failure/block as "alerted". If Twilio's temporarily down or misconfigured,
+    returning False here means the same failure gets retried next tick
+    instead of being silently and permanently lost the moment credentials
+    happen to be broken."""
+    account_sid = get_setting(db, "twilio_account_sid")
+    auth_token = get_setting(db, "twilio_auth_token")
+    from_number = get_setting(db, "twilio_whatsapp_number")
+    sent_any = False
+    for to_number in _proactive_alert_recipients(db):
+        if twilio_utils.send_whatsapp_message(account_sid, auth_token, from_number, to_number, body):
+            sent_any = True
+    return sent_any
+
+
+def check_and_send_alerts(db: Session) -> None:
+    """Jarvis texting YOU without being asked first -- the other half of the
+    WhatsApp integration, which until now only ever replied to messages you
+    sent. Runs every tick alongside the render loop, not gated behind it, so
+    a failure gets flagged even while nothing else is rendering.
+
+    Two independent checks, each deduplicated against a settings-stored set
+    of ids already alerted on so a restart or the next tick doesn't re-send
+    the same failure -- this is what keeps it from turning into spam. Off by
+    default requires nothing (it silently no-ops with no Twilio configured);
+    can be explicitly disabled via jarvis_proactive_alerts="false" even with
+    Twilio set up, if you want Jarvis reachable but not proactive.
+    """
+    if get_setting(db, "jarvis_proactive_alerts", "true") == "false":
+        return
+    if not _proactive_alert_recipients(db):
+        return  # nothing configured to alert -- not worth querying the DB for nothing
+
+    # -- newly failed video jobs --
+    alerted_jobs = {x for x in get_setting(db, "jarvis_alerted_job_ids", "").split(",") if x}
+    failed = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.status == models.JobStatus.FAILED)
+        .order_by(models.VideoJob.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    new_failures = [j for j in failed if j.id not in alerted_jobs]
+    if new_failures:
+        lines = [
+            f"- \"{j.title or j.topic or 'untitled'}\" ({j.channel.name if j.channel else '?'}): "
+            f"{(j.error_message or 'no error message').strip()[:140]}"
+            for j in new_failures[:5]
+        ]
+        extra = f"\n(+{len(new_failures) - 5} more)" if len(new_failures) > 5 else ""
+        plural = "s" if len(new_failures) != 1 else ""
+        sent = _send_proactive_alert(
+            db, f"Jarvis: {len(new_failures)} video job{plural} failed:\n" + "\n".join(lines) + extra
+        )
+        if sent:
+            alerted_jobs.update(j.id for j in new_failures)
+            set_setting(db, "jarvis_alerted_job_ids", ",".join(list(alerted_jobs)[-500:]), is_secret=False)
+
+    # -- newly blocked/unauthorized Jarvis actions -- a real security signal
+    # (see JarvisLog's docstring), worth knowing about the moment it happens,
+    # not just visible if you happen to open the Activity tab.
+    alerted_logs = {x for x in get_setting(db, "jarvis_alerted_log_ids", "").split(",") if x}
+    blocked = (
+        db.query(models.JarvisLog)
+        .filter(models.JarvisLog.allowed == False)  # noqa: E712
+        .order_by(models.JarvisLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    new_blocked = [r for r in blocked if r.id not in alerted_logs]
+    if new_blocked:
+        lines = [f"- [{r.source}] {r.action}: {(r.result or '')[:120]}" for r in new_blocked[:5]]
+        extra = f"\n(+{len(new_blocked) - 5} more)" if len(new_blocked) > 5 else ""
+        plural = "s" if len(new_blocked) != 1 else ""
+        sent = _send_proactive_alert(
+            db, f"Jarvis: {len(new_blocked)} blocked/unauthorized attempt{plural}:\n" + "\n".join(lines) + extra
+        )
+        if sent:
+            alerted_logs.update(r.id for r in new_blocked)
+            set_setting(db, "jarvis_alerted_log_ids", ",".join(list(alerted_logs)[-500:]), is_secret=False)
+
+
 def _today_start() -> datetime:
     return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
@@ -199,6 +288,11 @@ def _tick():
         cleared = clear_stuck_jobs(db)
         if cleared:
             log.warning("Chronos watchdog: cleared %d stuck job(s) this tick", cleared)
+
+        try:
+            check_and_send_alerts(db)
+        except Exception:
+            log.exception("Chronos: proactive-alert check failed")
 
         # Nothing else to do while a render is in flight -- creating or
         # dispatching more work now is what caused the pile-up that kept

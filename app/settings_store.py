@@ -63,6 +63,9 @@ KNOWN_KEYS = {
     "jarvis_llm_provider": False,   # "anthropic" | "gemini" -- which LLM answers for Jarvis specifically
     "jarvis_gemini_model": False,   # defaults to gemini-3.5-flash if unset
     "jarvis_voice_id": False,       # ElevenLabs voice id for Jarvis's spoken replies; defaults to DEFAULT_VOICE_ID if unset
+    "jarvis_proactive_alerts": False,  # "false" turns off proactive WhatsApp alerts; on by default once Twilio's configured
+    "jarvis_alerted_job_ids": False,   # internal: comma-separated job ids already alerted on, so failures aren't re-sent every tick
+    "jarvis_alerted_log_ids": False,   # internal: same, for blocked/unauthorized JarvisLog rows
 }
 
 

@@ -79,3 +79,4 @@ class SettingsIn(BaseModel):
     jarvis_llm_provider: Optional[str] = None
     jarvis_gemini_model: Optional[str] = None
     jarvis_voice_id: Optional[str] = None
+    jarvis_proactive_alerts: Optional[str] = None

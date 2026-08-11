@@ -1946,6 +1946,12 @@ async function renderSettingsPanel(body) {
       <div class="hint">Comma-separate multiple numbers. Only messages from these numbers, with a verified
       Twilio signature, ever reach Jarvis — everything else is silently ignored.
       Webhook URL for Twilio's WhatsApp sandbox/number: <code>${location.origin}/api/jarvis/whatsapp</code></div>
+      <label>Proactive alerts</label>
+      <select id="st-jarvis_proactive_alerts">
+        <option value="true" ${(s.jarvis_proactive_alerts && s.jarvis_proactive_alerts.value) !== "false" ? "selected" : ""}>On — text me the moment a video fails or Jarvis blocks an unauthorized action (Recommended)</option>
+        <option value="false" ${(s.jarvis_proactive_alerts && s.jarvis_proactive_alerts.value) === "false" ? "selected" : ""}>Off — I'll only hear from Jarvis when I message him first</option>
+      </select>
+      <div class="hint">Each failure/blocked-attempt is only ever texted once, so this can't turn into spam.</div>
     </div>
     <button class="btn" id="st-save">Save Settings</button>`;
 
@@ -1999,7 +2005,7 @@ async function renderSettingsPanel(body) {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
       "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret",
       "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist",
-      "jarvis_llm_provider", "jarvis_gemini_model", "jarvis_voice_id"];
+      "jarvis_llm_provider", "jarvis_gemini_model", "jarvis_voice_id", "jarvis_proactive_alerts"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });
