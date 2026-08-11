@@ -317,6 +317,7 @@ async function openBigPanel(which) {
   const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
   inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
   inner.classList.toggle("wide", which === "missioncontrol");
+  inner.classList.toggle("fullpage", which === "jarvis");
   inner.classList.remove("dir-top", "dir-bottom", "dir-left", "dir-right");
   inner.classList.add(`dir-${PANEL_DIR[which] || "right"}`);
   bp.classList.add("open");
@@ -325,12 +326,14 @@ async function openBigPanel(which) {
   if (which === "channels") return renderChannelsPanel(body);
   if (which === "jobs") return renderJobsPanel(body);
   if (which === "missioncontrol") return renderMissionControlPanel(body);
+  if (which === "jarvis") return renderJarvisPanel(body);
 }
 const SIDE_MAP = {
   "side-missioncontrol": "missioncontrol",
   "side-jobs": "jobs",
   "side-channels": "channels",
   "side-settings": "settings",
+  "side-jarvis": "jarvis",
 };
 function setActiveSideItem(panelName) {
   document.querySelectorAll("#sidebar .side-item").forEach((el) => el.classList.remove("active"));
@@ -749,6 +752,485 @@ async function renderMissionControlPanel(body) {
   mcPoll = pollInterval(draw, 20000);
 }
 
+// ============================================================ JARVIS
+// The CSS for this (.jarvis-*) was fully designed in an earlier pass but
+// never had a real panel behind it. This is that panel: real chat with
+// Claude, restricted to the tool whitelist in app/jarvis_tools.py, with a
+// visible kill switch and a full activity log -- see that file's docstring
+// for why the whitelist is an actual safety boundary, not a suggestion.
+let jarvisHistory = [];
+let jarvisRecognition = null;
+let jarvisListening = false;
+
+function jarvisSpeak(text) {
+  try {
+    if (!window.speechSynthesis || !text) return;
+    window.speechSynthesis.cancel();  // don't stack replies if one's still talking
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.02;
+    window.speechSynthesis.speak(u);
+  } catch (e) { /* speech synthesis just isn't available -- fine, text still shows */ }
+}
+
+function jarvisSetOrbState(state) {
+  // state: "idle" | "listening" | "thinking" | "speaking"
+  const eq = document.getElementById("jarvis-eq");
+  const dot = document.getElementById("jarvis-orb-ring");
+  if (eq) eq.classList.toggle("jarvis-eq-active", state === "listening" || state === "speaking");
+  if (dot) dot.setAttribute("stroke", state === "listening" ? "#ff6b6b" : state === "thinking" ? "#ffc46b" : "var(--cyan)");
+}
+
+function jarvisAppendMsg(role, text) {
+  const log = document.getElementById("jarvis-log");
+  if (!log) return;
+  const div = el(`<div class="jarvis-msg jarvis-${role}"></div>`);
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function jarvisSend(message) {
+  if (!message || !message.trim()) return;
+  jarvisAppendMsg("user", message);
+  const caption = document.getElementById("jarvis-caption");
+  if (caption) caption.textContent = "…";
+  jarvisSetOrbState("thinking");
+  const thinking = el(`<div class="jarvis-msg jarvis-assistant jarvis-thinking">thinking…</div>`);
+  const log = document.getElementById("jarvis-log");
+  if (log) { log.appendChild(thinking); log.scrollTop = log.scrollHeight; }
+
+  try {
+    const r = await API("/api/jarvis/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, history: jarvisHistory }),
+    });
+    thinking.remove();
+    jarvisHistory = r.history || jarvisHistory;
+    jarvisAppendMsg("assistant", r.reply);
+    if (caption) caption.textContent = r.reply.slice(0, 90);
+    if (r.actions && r.actions.length) {
+      toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
+    }
+    jarvisSetOrbState("speaking");
+    jarvisSpeak(r.reply);
+    setTimeout(() => jarvisSetOrbState("idle"), 1200);
+  } catch (e) {
+    thinking.remove();
+    const msg = "Couldn't reach Jarvis: " + e.message;
+    jarvisAppendMsg("assistant", msg);
+    if (caption) caption.textContent = msg;
+    jarvisSetOrbState("idle");
+  }
+}
+
+function jarvisStartListening() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const caption = document.getElementById("jarvis-caption");
+  if (!SR) {
+    if (caption) caption.textContent = "Voice input isn't supported in this browser -- type instead.";
+    return;
+  }
+  if (jarvisListening) return;
+  jarvisListening = true;
+  jarvisSetOrbState("listening");
+  if (caption) caption.textContent = "Listening…";
+
+  jarvisRecognition = new SR();
+  jarvisRecognition.continuous = true;
+  jarvisRecognition.interimResults = true;
+  jarvisRecognition.lang = "en-US";
+  let finalTranscript = "";
+  jarvisRecognition.onresult = (ev) => {
+    let interim = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) finalTranscript += t + " ";
+      else interim += t;
+    }
+    if (caption) caption.textContent = (finalTranscript + interim) || "Listening…";
+  };
+  jarvisRecognition.onerror = () => {};
+  jarvisRecognition.onend = () => {
+    jarvisListening = false;
+    jarvisSetOrbState("idle");
+    const said = finalTranscript.trim();
+    if (said) jarvisSend(said);
+    else if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
+  };
+  jarvisRecognition.start();
+}
+
+function jarvisStopListening() {
+  if (jarvisRecognition && jarvisListening) jarvisRecognition.stop();
+}
+
+async function jarvisRefreshReadout() {
+  try {
+    const [jobs, channels] = await Promise.all([API("/api/jobs?limit=20"), API("/api/channels")]);
+    const running = jobs.filter((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status))).length;
+    const failed = jobs.filter((j) => j.status === "failed").length;
+    const autoOn = channels.filter((c) => c.auto_enabled).length;
+    const readout = document.getElementById("jarvis-readout");
+    if (readout) readout.innerHTML = `
+      <div><span>Rendering now</span><span>${running}</span></div>
+      <div><span>Failed recently</span><span>${failed}</span></div>
+      <div><span>Channels automated</span><span>${autoOn}/${channels.length}</span></div>
+    `;
+  } catch (e) { /* readout is a nice-to-have, not worth erroring over */ }
+}
+
+async function jarvisLoadActivity() {
+  const panel = document.getElementById("jarvis-tabpanel");
+  if (!panel) return;
+  panel.innerHTML = `<div class="hint">Loading…</div>`;
+  try {
+    const rows = await API("/api/jarvis/log?limit=50");
+    panel.innerHTML = rows.length ? "" : `<div class="hint">Nothing logged yet.</div>`;
+    rows.forEach((row) => {
+      const ok = row.allowed;
+      const div = el(`<div class="jarvis-msg" style="border-left-color:${ok ? "var(--green)" : "var(--red)"}">
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted)">${timeAgo(row.created_at)} · ${escapeHtml(row.source)}</div>
+        <div><b>${escapeHtml(row.action)}</b> ${ok ? "" : "— blocked"}</div>
+      </div>`);
+      panel.appendChild(div);
+    });
+  } catch (e) {
+    panel.innerHTML = `<div class="hint">Couldn't load the activity log.</div>`;
+  }
+}
+
+// ---------------------------------------------------------------- dragging
+// Core drag primitives, deliberately separate from *how* a drag is
+// initiated -- both a real mouse drag on the header and a pinch gesture
+// from the webcam (further down) feed into these same three functions, so
+// the panel doesn't care which one is moving it.
+let jarvisDragPanel = null;
+let jarvisDragOffset = { x: 0, y: 0 };
+
+function jarvisDragStart(panelEl, clientX, clientY) {
+  jarvisDragPanel = panelEl;
+  const r = panelEl.getBoundingClientRect();
+  // Switch from the centered transform:translate(-50%,-50%) starting
+  // position to explicit top/left in pixels -- can't drag a centering
+  // transform incrementally, but a fixed pixel position moves cleanly.
+  panelEl.style.transform = "none";
+  panelEl.style.top = r.top + "px";
+  panelEl.style.left = r.left + "px";
+  jarvisDragOffset = { x: clientX - r.left, y: clientY - r.top };
+  panelEl.classList.add("jarvis-dragging");
+}
+
+function jarvisDragMove(clientX, clientY) {
+  if (!jarvisDragPanel) return;
+  const r = jarvisDragPanel.getBoundingClientRect();
+  const margin = 8;
+  let left = clientX - jarvisDragOffset.x;
+  let top = clientY - jarvisDragOffset.y;
+  left = Math.max(margin, Math.min(window.innerWidth - r.width - margin, left));
+  top = Math.max(margin, Math.min(window.innerHeight - r.height - margin, top));
+  jarvisDragPanel.style.left = left + "px";
+  jarvisDragPanel.style.top = top + "px";
+}
+
+function jarvisDragEnd() {
+  if (!jarvisDragPanel) return;
+  jarvisDragPanel.classList.remove("jarvis-dragging");
+  try {
+    localStorage.setItem("jarvisPanelPos", JSON.stringify({
+      top: jarvisDragPanel.style.top, left: jarvisDragPanel.style.left,
+    }));
+  } catch (e) { /* localStorage unavailable -- position just won't persist, fine */ }
+  jarvisDragPanel = null;
+}
+
+/** Returns a cleanup function -- the panel is torn down and rebuilt fresh
+ *  every time Jarvis reopens, so leaving these window-level listeners
+ *  attached would stack a new set on every visit (the same class of bug
+ *  the push-to-talk Enter-key listeners had earlier in this file). */
+function jarvisMakeDraggable(panelEl, handleEl) {
+  try {
+    const saved = JSON.parse(localStorage.getItem("jarvisPanelPos") || "null");
+    if (saved && saved.top && saved.left) {
+      panelEl.style.transform = "none";
+      panelEl.style.top = saved.top;
+      panelEl.style.left = saved.left;
+    }
+  } catch (e) { /* ignore a corrupt/missing saved position */ }
+
+  const onDown = (e) => {
+    if (e.target.closest(".bp-close")) return;  // don't fight the close button
+    jarvisDragStart(panelEl, e.clientX, e.clientY);
+    e.preventDefault();
+  };
+  const onMove = (e) => { if (jarvisDragPanel) jarvisDragMove(e.clientX, e.clientY); };
+  const onUp = () => { if (jarvisDragPanel) jarvisDragEnd(); };
+
+  handleEl.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+
+  return () => {
+    handleEl.removeEventListener("mousedown", onDown);
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+}
+
+// ---------------------------------------------------------------- gesture control
+// Pinch (thumb tip + index fingertip touching) over the panel's header to
+// grab it, move your hand to drag, release the pinch to drop -- feeds the
+// exact same jarvisDragStart/Move/End used by mouse dragging above, so
+// there's exactly one place that owns "what dragging a panel means".
+let jarvisHandLandmarker = null;   // MediaPipe model, loaded once and reused
+let jarvisCameraStream = null;
+let jarvisGestureRAF = null;
+const PINCH_THRESHOLD = 0.055;     // normalized distance; tuned loose since a
+                                    // false "no pinch" is just an ignored frame,
+                                    // not a real cost, so err toward detecting it
+
+/** Pure logic, deliberately separate from the camera/model: given one
+ *  frame's hand landmarks (MediaPipe's 21-point hand format) and the panel
+ *  being controlled, decides whether a pinch is happening and drives the
+ *  shared drag primitives accordingly. Callable directly with synthetic
+ *  landmarks for testing, with no camera or model involved at all. */
+function jarvisProcessHandLandmarks(panelEl, landmarks, state) {
+  if (!landmarks || !landmarks.length) {
+    if (state.pinching) { jarvisDragEnd(); state.pinching = false; }
+    return null;
+  }
+  const thumb = landmarks[4], index = landmarks[8];
+  const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+  const pinching = dist < PINCH_THRESHOLD;
+
+  // Mirrored horizontally -- a front-facing camera feels backwards
+  // otherwise (move your hand right, panel goes left).
+  const midX = (thumb.x + index.x) / 2, midY = (thumb.y + index.y) / 2;
+  const screenX = (1 - midX) * window.innerWidth;
+  const screenY = midY * window.innerHeight;
+
+  if (pinching && !state.pinching) {
+    const header = panelEl.querySelector(".jarvis-header");
+    const hr = header.getBoundingClientRect();
+    const overHeader = screenX >= hr.left && screenX <= hr.right && screenY >= hr.top && screenY <= hr.bottom;
+    if (overHeader) { jarvisDragStart(panelEl, screenX, screenY); state.pinching = true; }
+  } else if (pinching && state.pinching) {
+    jarvisDragMove(screenX, screenY);
+  } else if (!pinching && state.pinching) {
+    jarvisDragEnd();
+    state.pinching = false;
+  }
+  return { screenX, screenY, pinching };
+}
+
+async function jarvisLoadHandModel() {
+  if (jarvisHandLandmarker) return jarvisHandLandmarker;
+  const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
+  const resolver = await vision.FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+  jarvisHandLandmarker = await vision.HandLandmarker.createFromOptions(resolver, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+    },
+    runningMode: "VIDEO",
+    numHands: 1,
+  });
+  return jarvisHandLandmarker;
+}
+
+function jarvisSetupGestureControl(panelEl) {
+  const state = { pinching: false, running: false };
+  let videoEl = null;
+
+  const toggle = document.getElementById("jarvis-gesture-toggle");
+  const previewWrap = document.getElementById("jarvis-cam-preview");
+
+  const stop = () => {
+    state.running = false;
+    if (jarvisGestureRAF) cancelAnimationFrame(jarvisGestureRAF);
+    jarvisGestureRAF = null;
+    if (jarvisCameraStream) { jarvisCameraStream.getTracks().forEach((t) => t.stop()); jarvisCameraStream = null; }
+    if (previewWrap) previewWrap.style.display = "none";
+    if (toggle) { toggle.textContent = "📷 Gesture Control: Off"; toggle.classList.remove("copied"); }
+  };
+
+  const start = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast("This browser doesn't support camera access.");
+      return;
+    }
+    try {
+      jarvisCameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 240, height: 180 } });
+    } catch (e) {
+      toast("Camera permission denied or unavailable.");
+      return;
+    }
+    videoEl = document.getElementById("jarvis-cam-video");
+    if (!videoEl) return;
+    videoEl.srcObject = jarvisCameraStream;
+    await videoEl.play();
+    if (previewWrap) previewWrap.style.display = "block";
+    if (toggle) { toggle.textContent = "📷 Gesture Control: On"; toggle.classList.add("copied"); }
+
+    let model;
+    try {
+      model = await jarvisLoadHandModel();
+    } catch (e) {
+      toast("Couldn't load hand-tracking -- check your connection.");
+      stop();
+      return;
+    }
+
+    state.running = true;
+    const loop = () => {
+      if (!state.running) return;
+      try {
+        const result = model.detectForVideo(videoEl, performance.now());
+        const landmarks = result.landmarks && result.landmarks[0];
+        jarvisProcessHandLandmarks(panelEl, landmarks, state);
+      } catch (e) { /* a single bad frame isn't worth stopping the whole feature over */ }
+      jarvisGestureRAF = requestAnimationFrame(loop);
+    };
+    loop();
+  };
+
+  if (toggle) {
+    toggle.addEventListener("click", () => { state.running ? stop() : start(); });
+  }
+
+  return stop;
+}
+
+async function renderJarvisPanel(body) {
+  jarvisHistory = [];
+  body.innerHTML = `<div class="jarvis-page">
+    <div class="jarvis-header">
+      <div class="jarvis-header-title">JARVIS <span style="opacity:.5;font-size:12px;text-transform:none;letter-spacing:0">— AETHER's assistant</span></div>
+      <div class="jarvis-header-status" id="jarvis-kill-toggle" title="Click to switch Jarvis on/off" style="cursor:pointer">
+        <span class="jarvis-status-dot" id="jarvis-status-dot"></span>
+        <span id="jarvis-status-text">checking…</span>
+      </div>
+    </div>
+    <div class="jarvis-body">
+      <div class="jarvis-left">
+        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;color:var(--muted);margin-bottom:10px;text-transform:uppercase">Status</div>
+        <div class="jarvis-readout" id="jarvis-readout"><div><span>Loading…</span><span></span></div></div>
+        <div class="hint" style="margin-top:20px">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity tab.</div>
+        <button class="copy-btn" id="jarvis-gesture-toggle" style="margin-top:16px;width:100%">📷 Gesture Control: Off</button>
+        <div class="hint" style="margin-top:6px">Pinch (thumb + index finger) over this header, then move your hand to drag the panel. Camera feed never leaves your browser.</div>
+        <div id="jarvis-cam-preview" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <video id="jarvis-cam-video" width="240" height="180" muted playsinline style="display:block;width:100%;transform:scaleX(-1)"></video>
+        </div>
+      </div>
+      <div class="jarvis-center">
+        <svg id="jarvis-orb" width="120" height="120" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="46" fill="rgba(232,236,239,0.05)" id="jarvis-orb-ring" stroke="var(--cyan)" stroke-width="2"/>
+          <circle cx="60" cy="60" r="30" fill="rgba(232,236,239,0.10)"/>
+          <circle cx="60" cy="60" r="6" fill="var(--cyan)"/>
+        </svg>
+        <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 7 }).map(() => `<div class="jarvis-eq-bar"></div>`).join("")}</div>
+        <div class="jarvis-sysline" id="jarvis-caption">Press and hold Enter to talk, or type below.</div>
+        <div class="jarvis-controls-row">
+          <input type="text" id="jarvis-text-input" placeholder="Type a command…" style="flex:1"/>
+          <button class="icon-btn" id="jarvis-send" title="Send">➤</button>
+        </div>
+      </div>
+      <div class="jarvis-right">
+        <div class="jarvis-tabs">
+          <button class="jarvis-tab active" data-tab="chat">Transcript</button>
+          <button class="jarvis-tab" data-tab="activity">Activity Log</button>
+        </div>
+        <div class="jarvis-tabpanel" id="jarvis-tabpanel">
+          <div class="jarvis-log" id="jarvis-log"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  // Kill switch
+  const refreshKillState = async () => {
+    const { enabled } = await API("/api/jarvis/enabled");
+    const dot = document.getElementById("jarvis-status-dot");
+    const text = document.getElementById("jarvis-status-text");
+    if (dot) dot.style.background = enabled ? "var(--green)" : "var(--red)";
+    if (dot) dot.style.boxShadow = enabled ? "0 0 10px var(--green)" : "0 0 10px var(--red)";
+    if (text) text.textContent = enabled ? "Online" : "Disabled";
+    return enabled;
+  };
+  await refreshKillState();
+  document.getElementById("jarvis-kill-toggle").addEventListener("click", async () => {
+    const { enabled } = await API("/api/jarvis/enabled");
+    await API("/api/jarvis/enabled", { method: "POST", body: JSON.stringify({ enabled: !enabled }) });
+    await refreshKillState();
+    toast(enabled ? "Jarvis switched off." : "Jarvis switched back on.");
+  });
+
+  jarvisRefreshReadout();
+
+  // Tabs
+  document.querySelectorAll(".jarvis-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".jarvis-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const panel = document.getElementById("jarvis-tabpanel");
+      if (tab.dataset.tab === "chat") {
+        panel.innerHTML = "";
+        const logDiv = el(`<div class="jarvis-log" id="jarvis-log"></div>`);
+        panel.appendChild(logDiv);
+      } else {
+        jarvisLoadActivity();
+      }
+    });
+  });
+
+  // Typed input
+  const input = document.getElementById("jarvis-text-input");
+  document.getElementById("jarvis-send").addEventListener("click", () => {
+    if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
+    }
+  });
+
+  // Push-to-talk: hold Enter anywhere in the panel EXCEPT while typing in the
+  // text box (where Enter already means "send what I typed").
+  const onKeyDown = (e) => {
+    if (e.key !== "Enter" || e.repeat) return;
+    if (document.activeElement === input) return;
+    e.preventDefault();
+    jarvisStartListening();
+  };
+  const onKeyUp = (e) => {
+    if (e.key !== "Enter") return;
+    jarvisStopListening();
+  };
+  document.addEventListener("keydown", onKeyDown);
+  document.addEventListener("keyup", onKeyUp);
+
+  const cleanupDrag = jarvisMakeDraggable(document.getElementById("bigpanel-inner"), document.querySelector(".jarvis-header"));
+  const cleanupGestures = jarvisSetupGestureControl(document.getElementById("bigpanel-inner"));
+
+  // Cleaned up whenever the panel closes/changes -- stopAllPanelPolls runs on
+  // every panel switch, so hooking removal there keeps this from piling up
+  // as a second, third, fourth global listener (or camera stream!) every
+  // time Jarvis reopens.
+  const _origStop = stopAllPanelPolls;
+  window.stopAllPanelPolls = function () {
+    document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("keyup", onKeyUp);
+    window.speechSynthesis && window.speechSynthesis.cancel();
+    cleanupDrag();
+    cleanupGestures();
+    window.stopAllPanelPolls = _origStop;
+    _origStop();
+  };
+
+  jarvisAppendMsg("assistant", "Online. Ask me how a channel's doing, or tell me to retry something.");
+}
+
 async function renderSettingsPanel(body) {
   const s = await API("/api/settings");
   const field = (k, label, ph, type = "password") =>
@@ -838,6 +1320,15 @@ async function renderSettingsPanel(body) {
       <div class="hint">Redirect URI: <code>${location.origin}/auth/youtube/callback</code></div></div>
     <div class="card"><h2>TikTok</h2>${field("tiktok_client_key", "Client Key", "", "text")}${field("tiktok_client_secret", "Client Secret", "")}
       <div class="hint">Redirect URI: <code>${location.origin}/auth/tiktok/callback</code></div></div>
+    <div class="card"><h2>Jarvis — WhatsApp</h2>
+      ${field("twilio_account_sid", "Twilio Account SID", "AC…", "text")}
+      ${field("twilio_auth_token", "Twilio Auth Token", "")}
+      ${field("twilio_whatsapp_number", "Twilio WhatsApp number", "whatsapp:+1415…", "text")}
+      ${field("jarvis_phone_allowlist", "Your phone number(s)", "+15551234567", "text")}
+      <div class="hint">Comma-separate multiple numbers. Only messages from these numbers, with a verified
+      Twilio signature, ever reach Jarvis — everything else is silently ignored.
+      Webhook URL for Twilio's WhatsApp sandbox/number: <code>${location.origin}/api/jarvis/whatsapp</code></div>
+    </div>
     <button class="btn" id="st-save">Save Settings</button>`;
 
   // ---- app lock wiring ----
@@ -888,7 +1379,8 @@ async function renderSettingsPanel(body) {
 
   $("#st-save").addEventListener("click", async () => {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
-      "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret"];
+      "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret",
+      "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });

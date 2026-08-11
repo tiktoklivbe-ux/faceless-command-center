@@ -30,6 +30,8 @@ ENV_OVERRIDES = {
     "youtube_client_secret": "YOUTUBE_CLIENT_SECRET",
     "tiktok_client_key": "TIKTOK_CLIENT_KEY",
     "tiktok_client_secret": "TIKTOK_CLIENT_SECRET",
+    "twilio_account_sid": "TWILIO_ACCOUNT_SID",
+    "twilio_auth_token": "TWILIO_AUTH_TOKEN",
 }
 
 # Every key the app knows how to store, and whether it should be masked in the UI.
@@ -52,6 +54,12 @@ KNOWN_KEYS = {
     "lock_salt": True,
     "lock_session_secret": True,
     "lock_idle_minutes": False,     # auto-lock after this many idle minutes          # "true" skips the Ken Burns pan/zoom -- much cheaper on slow instances
+
+    # Jarvis / WhatsApp
+    "twilio_account_sid": True,
+    "twilio_auth_token": True,      # also used to verify incoming webhook requests are genuinely from Twilio
+    "twilio_whatsapp_number": False,  # e.g. "whatsapp:+14155238886"
+    "jarvis_phone_allowlist": False,  # comma-separated E.164 numbers, e.g. "+15551234567"
 }
 
 

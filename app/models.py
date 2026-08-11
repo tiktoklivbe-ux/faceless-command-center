@@ -98,3 +98,26 @@ class Setting(Base):
     key = Column(String, primary_key=True)
     value_enc = Column(Text, nullable=True)
     is_secret = Column(Boolean, default=True)
+
+
+class JarvisLog(Base):
+    """Full audit trail of every action Jarvis takes or attempts.
+
+    This exists specifically so an unattended assistant is never a black
+    box: every tool call it makes -- allowed or blocked -- gets a permanent,
+    reviewable row. `allowed` distinguishes "Jarvis tried this and the
+    whitelist let it through" from "Jarvis tried this and was refused" --
+    both are worth keeping, since a pattern of blocked attempts (e.g. it
+    keeps trying something outside its allowed categories) is itself a
+    signal worth seeing.
+    """
+    __tablename__ = "jarvis_log"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    source = Column(String, default="app")       # "app" | "sms" | "whatsapp" | "imessage"
+    action = Column(String, nullable=False)       # tool name, e.g. "retry_job"
+    params = Column(Text, default="{}")           # JSON of what it was called with
+    allowed = Column(Boolean, default=True)       # False = whitelist blocked it
+    result = Column(Text, default="")             # what happened / why it was blocked
+    user_message = Column(Text, default="")       # the request that triggered this, for context

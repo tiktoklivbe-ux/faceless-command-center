@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 from .database import init_db
-from .routers import channels, settings, jobs, oauth, rundown, command, missioncontrol, lock
+from .routers import channels, settings, jobs, oauth, rundown, command, missioncontrol, lock, jarvis
 from .scheduler import automation_loop
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -33,6 +33,7 @@ app.include_router(rundown.router)
 app.include_router(command.router)
 app.include_router(missioncontrol.router)
 app.include_router(lock.router)
+app.include_router(jarvis.router)
 
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 

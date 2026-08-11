@@ -1,0 +1,222 @@
+"""
+Jarvis -- a Claude-powered assistant with tool access strictly limited to
+app/jarvis_tools.py's whitelist. See that file's docstring for why this is
+the actual safety mechanism (Claude literally cannot call anything that
+isn't defined there), not just a prompt asking it to behave.
+
+Every tool call -- allowed or refused -- is written to JarvisLog, and the
+kill switch (settings key "jarvis_enabled") is checked before anything
+else runs, so disabling Jarvis is always one flag away regardless of what
+else is happening.
+"""
+import json
+import logging
+from xml.sax.saxutils import escape as xml_escape
+
+import requests
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from .. import jarvis_tools, models
+from ..database import get_db
+from ..settings_store import get_setting, set_setting
+from ..twilio_utils import verify_twilio_signature
+
+log = logging.getLogger("jarvis")
+router = APIRouter(prefix="/api/jarvis", tags=["jarvis"])
+
+# Phone number -> conversation history. In-memory only (not persisted across
+# restarts) -- a texted conversation losing context after a redeploy is a
+# minor inconvenience; it's not worth a DB table for what's meant to be a
+# quick back-and-forth, not a long-running thread.
+_whatsapp_history: dict[str, list[dict]] = {}
+_WHATSAPP_HISTORY_CAP = 20  # messages, not full exchanges -- keeps the Claude call cheap
+
+MAX_TOOL_ROUNDS = 5  # a runaway tool-call loop stops here rather than looping forever
+
+SYSTEM_PROMPT = (
+    "You are Jarvis, the assistant inside a faceless-YouTube-channel automation app. "
+    "You can check on and manage video jobs and channel automation using your tools. "
+    "You have NO capabilities beyond the tools you've been given -- if someone asks for "
+    "something outside them (controlling other software, files outside this app, anything "
+    "you don't have a tool for), say plainly that it's outside what you're allowed to do "
+    "right now, rather than attempting to improvise around it. Be concise -- this is a "
+    "quick spoken/texted exchange, not an essay. When you take an action, say what you did "
+    "in plain terms."
+)
+
+
+class ChatIn(BaseModel):
+    message: str
+    history: list[dict] = []
+
+
+def _kill_switch_on(db: Session) -> bool:
+    return get_setting(db, "jarvis_enabled", "true") == "true"
+
+
+def _anthropic_call(db: Session, messages: list[dict]) -> dict:
+    api_key = get_setting(db, "anthropic_api_key")
+    if not api_key:
+        raise HTTPException(400, "No Anthropic key set -- Jarvis needs one in Settings to think at all.")
+    model = get_setting(db, "anthropic_model", "claude-sonnet-5")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": 1024,
+            "system": SYSTEM_PROMPT,
+            "messages": messages,
+            "tools": jarvis_tools.TOOLS,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool, result, user_message: str):
+    try:
+        db.add(models.JarvisLog(
+            source=source, action=action, params=json.dumps(params)[:2000],
+            allowed=allowed, result=json.dumps(result)[:2000], user_message=user_message[:500],
+        ))
+        db.commit()
+    except Exception:
+        log.exception("Couldn't write Jarvis activity log (continuing anyway)")
+
+
+def run_turn(db: Session, user_message: str, history: list[dict], source: str = "app") -> dict:
+    """Runs one full conversational turn, including any tool-use rounds.
+    Shared by the in-app chat endpoint and (later) SMS/WhatsApp webhooks --
+    the whitelist and logging apply identically regardless of who's asking.
+    """
+    if not _kill_switch_on(db):
+        return {"reply": "Jarvis is currently switched off. Turn it back on in the Jarvis panel to talk to me.",
+                "history": history, "actions": []}
+
+    messages = list(history) + [{"role": "user", "content": user_message}]
+    actions = []
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        data = _anthropic_call(db, messages)
+        content = data.get("content", [])
+        messages.append({"role": "assistant", "content": content})
+
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        if not tool_uses:
+            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+            return {"reply": text.strip() or "(no response)", "history": messages, "actions": actions}
+
+        # Re-check the kill switch before EVERY tool round, not just at the
+        # start -- someone could flip it off mid-conversation and that has
+        # to stop the next action, not just future conversations.
+        if not _kill_switch_on(db):
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": tu["id"],
+                 "content": "Jarvis was switched off before this could run."}
+                for tu in tool_uses
+            ]
+            messages.append({"role": "user", "content": tool_results})
+            for tu in tool_uses:
+                _log_call(db, source, tu["name"], tu.get("input", {}), False,
+                          {"error": "kill switch engaged mid-conversation"}, user_message)
+            continue
+
+        tool_results = []
+        for tu in tool_uses:
+            name, tool_input = tu["name"], tu.get("input", {})
+            allowed = name in jarvis_tools.TOOL_NAMES
+            result = jarvis_tools.call_tool(db, name, tool_input)
+            _log_call(db, source, name, tool_input, allowed, result, user_message)
+            if allowed and "error" not in result:
+                actions.append({"tool": name, "input": tool_input, "result": result})
+            tool_results.append({
+                "type": "tool_result", "tool_use_id": tu["id"], "content": json.dumps(result),
+            })
+        messages.append({"role": "user", "content": tool_results})
+
+    return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
+            "history": messages, "actions": actions}
+
+
+@router.post("/chat")
+def chat(payload: ChatIn, db: Session = Depends(get_db)):
+    return run_turn(db, payload.message, payload.history, source="app")
+
+
+@router.get("/log")
+def get_log(limit: int = 50, db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.JarvisLog)
+        .order_by(models.JarvisLog.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+    return [{
+        "id": r.id, "created_at": r.created_at.isoformat() if r.created_at else None,
+        "source": r.source, "action": r.action, "params": r.params,
+        "allowed": r.allowed, "result": r.result, "user_message": r.user_message,
+    } for r in rows]
+
+
+@router.get("/enabled")
+def get_enabled(db: Session = Depends(get_db)):
+    return {"enabled": _kill_switch_on(db)}
+
+
+@router.post("/enabled")
+def set_enabled(payload: dict, db: Session = Depends(get_db)):
+    on = bool(payload.get("enabled", True))
+    set_setting(db, "jarvis_enabled", "true" if on else "false", is_secret=False)
+    return {"enabled": on}
+
+
+def _twiml(message: str) -> Response:
+    body = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{xml_escape(message)}</Message></Response>'
+    return Response(content=body, media_type="application/xml")
+
+
+@router.post("/whatsapp")
+async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
+    """Twilio's incoming-WhatsApp-message webhook.
+
+    Two independent gates before anything Jarvis-related happens:
+    1. The request's signature must actually be from Twilio (proves it's not
+       someone who found this URL and is pretending to text as you).
+    2. The FROM number must be on your allowlist (proves it's actually your
+       phone, not just anyone who knows your Twilio number).
+    Failing either one gets a silent, valid-but-empty response -- not an
+    error that would confirm to a prober that this endpoint exists and does
+    something.
+    """
+    form = dict((await request.form()))
+    signature = request.headers.get("X-Twilio-Signature", "")
+
+    auth_token = get_setting(db, "twilio_auth_token")
+    if not verify_twilio_signature(auth_token, request.url.path, form, signature):
+        log.warning("Jarvis WhatsApp webhook: signature check failed (bad token, or not really Twilio).")
+        return _twiml("")
+
+    from_number = form.get("From", "").replace("whatsapp:", "").strip()
+    allowlist = [n.strip() for n in get_setting(db, "jarvis_phone_allowlist", "").split(",") if n.strip()]
+    if not allowlist or from_number not in allowlist:
+        log.warning("Jarvis WhatsApp webhook: message from %s, not on the allowlist.", from_number or "(unknown)")
+        return _twiml("")
+
+    body = form.get("Body", "").strip()
+    if not body:
+        return _twiml("")
+
+    history = _whatsapp_history.get(from_number, [])
+    result = run_turn(db, body, history, source="whatsapp")
+    _whatsapp_history[from_number] = result["history"][-_WHATSAPP_HISTORY_CAP:]
+
+    return _twiml(result["reply"][:1500])  # WhatsApp messages have a real length ceiling
