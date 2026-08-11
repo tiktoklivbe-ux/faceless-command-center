@@ -1022,7 +1022,15 @@ async function init() {
   setActiveSideItem(null);
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
-  await refreshAgents();
+  // Deliberately NOT awaited. The boot animation used to wait for this
+  // network round-trip to finish before it even started playing -- on
+  // localhost that request is sub-millisecond so it was never noticed, but
+  // over a real network (Render, or anyone not on localhost) it meant the
+  // screen just sat there doing nothing for however long that request took,
+  // which read exactly as "the app is laggy on load". The boot sequence now
+  // always starts immediately; agent data fills in whenever it arrives,
+  // same as any of the later 15s polls.
+  refreshAgents();
 
   runBoot();
 
