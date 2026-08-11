@@ -57,6 +57,22 @@ def _kill_switch_on(db: Session) -> bool:
     return get_setting(db, "jarvis_enabled", "true") == "true"
 
 
+def _jarvis_provider(db: Session) -> str:
+    """Which LLM answers for Jarvis. A dedicated setting rather than reusing
+    the script-writer's llm_provider -- you might reasonably want scripts on
+    one provider and Jarvis on another (e.g. Gemini for Jarvis specifically,
+    as asked for). Falls back to whichever key is actually present if
+    nothing's been explicitly chosen."""
+    explicit = get_setting(db, "jarvis_llm_provider", "")
+    if explicit in ("anthropic", "gemini"):
+        return explicit
+    if get_setting(db, "anthropic_api_key"):
+        return "anthropic"
+    if get_setting(db, "gemini_api_key"):
+        return "gemini"
+    return "anthropic"  # will fail with a clear "no key" error below, same as before
+
+
 def _anthropic_call(db: Session, messages: list[dict]) -> dict:
     api_key = get_setting(db, "anthropic_api_key")
     if not api_key:
@@ -82,6 +98,54 @@ def _anthropic_call(db: Session, messages: list[dict]) -> dict:
     return resp.json()
 
 
+# ---------------------------------------------------------------- Gemini
+# Gemini's function-calling format is structurally different from
+# Anthropic's tool-use (different schema shape, different message/turn
+# format, different response shape) -- rather than maintain two separate
+# tool definitions that could drift apart, the schemas are converted from
+# the ONE canonical list in jarvis_tools.TOOLS every call. That list stays
+# the single source of truth for what Jarvis can do, regardless of provider.
+def _to_gemini_schema(schema: dict) -> dict:
+    TYPE_MAP = {"object": "OBJECT", "string": "STRING", "integer": "INTEGER",
+                "boolean": "BOOLEAN", "array": "ARRAY", "number": "NUMBER"}
+    out = {"type": TYPE_MAP.get(schema.get("type", "object"), "STRING")}
+    if "description" in schema:
+        out["description"] = schema["description"]
+    if "properties" in schema:
+        out["properties"] = {k: _to_gemini_schema(v) for k, v in schema["properties"].items()}
+    if "required" in schema:
+        out["required"] = schema["required"]
+    if "items" in schema:
+        out["items"] = _to_gemini_schema(schema["items"])
+    return out
+
+
+def _gemini_tools() -> list[dict]:
+    return [{"functionDeclarations": [
+        {"name": t["name"], "description": t["description"], "parameters": _to_gemini_schema(t["input_schema"])}
+        for t in jarvis_tools.TOOLS
+    ]}]
+
+
+def _gemini_call(db: Session, contents: list[dict]) -> dict:
+    api_key = get_setting(db, "gemini_api_key")
+    if not api_key:
+        raise HTTPException(400, "No Gemini key set -- Jarvis needs one in Settings to think at all.")
+    model = get_setting(db, "jarvis_gemini_model", "") or "gemini-3.5-flash"
+    resp = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"x-goog-api-key": api_key, "content-type": "application/json"},
+        json={
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": contents,
+            "tools": _gemini_tools(),
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool, result, user_message: str):
     try:
         db.add(models.JarvisLog(
@@ -93,15 +157,7 @@ def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool
         log.exception("Couldn't write Jarvis activity log (continuing anyway)")
 
 
-def run_turn(db: Session, user_message: str, history: list[dict], source: str = "app") -> dict:
-    """Runs one full conversational turn, including any tool-use rounds.
-    Shared by the in-app chat endpoint and (later) SMS/WhatsApp webhooks --
-    the whitelist and logging apply identically regardless of who's asking.
-    """
-    if not _kill_switch_on(db):
-        return {"reply": "Jarvis is currently switched off. Turn it back on in the Jarvis panel to talk to me.",
-                "history": history, "actions": []}
-
+def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], source: str) -> dict:
     messages = list(history) + [{"role": "user", "content": user_message}]
     actions = []
 
@@ -145,6 +201,63 @@ def run_turn(db: Session, user_message: str, history: list[dict], source: str = 
 
     return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
             "history": messages, "actions": actions}
+
+
+def _run_turn_gemini(db: Session, user_message: str, history: list[dict], source: str) -> dict:
+    contents = list(history) + [{"role": "user", "parts": [{"text": user_message}]}]
+    actions = []
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        data = _gemini_call(db, contents)
+        candidates = data.get("candidates") or []
+        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        contents.append({"role": "model", "parts": parts})
+
+        calls = [p["functionCall"] for p in parts if "functionCall" in p]
+        if not calls:
+            text = "".join(p.get("text", "") for p in parts)
+            return {"reply": text.strip() or "(no response)", "history": contents, "actions": actions}
+
+        if not _kill_switch_on(db):
+            responses = [
+                {"functionResponse": {"name": c["name"], "response": {"error": "Jarvis was switched off before this could run."}}}
+                for c in calls
+            ]
+            contents.append({"role": "user", "parts": responses})
+            for c in calls:
+                _log_call(db, source, c["name"], c.get("args", {}), False,
+                          {"error": "kill switch engaged mid-conversation"}, user_message)
+            continue
+
+        responses = []
+        for c in calls:
+            name, tool_input = c["name"], c.get("args", {})
+            allowed = name in jarvis_tools.TOOL_NAMES
+            result = jarvis_tools.call_tool(db, name, tool_input)
+            _log_call(db, source, name, tool_input, allowed, result, user_message)
+            if allowed and "error" not in result:
+                actions.append({"tool": name, "input": tool_input, "result": result})
+            responses.append({"functionResponse": {"name": name, "response": result}})
+        contents.append({"role": "user", "parts": responses})
+
+    return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
+            "history": contents, "actions": actions}
+
+
+def run_turn(db: Session, user_message: str, history: list[dict], source: str = "app") -> dict:
+    """Runs one full conversational turn, including any tool-use rounds.
+    Shared by the in-app chat endpoint and the SMS/WhatsApp webhook -- the
+    whitelist and logging apply identically regardless of who's asking or
+    which provider is answering.
+    """
+    if not _kill_switch_on(db):
+        return {"reply": "Jarvis is currently switched off. Turn it back on in the Jarvis panel to talk to me.",
+                "history": history, "actions": []}
+
+    provider = _jarvis_provider(db)
+    if provider == "gemini":
+        return _run_turn_gemini(db, user_message, history, source)
+    return _run_turn_anthropic(db, user_message, history, source)
 
 
 @router.post("/chat")

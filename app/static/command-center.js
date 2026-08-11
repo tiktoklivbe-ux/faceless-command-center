@@ -901,19 +901,22 @@ async function jarvisLoadActivity() {
 
 // ---------------------------------------------------------------- dragging
 // Core drag primitives, deliberately separate from *how* a drag is
-// initiated -- both a real mouse drag on the header and a pinch gesture
-// from the webcam (further down) feed into these same three functions, so
-// the panel doesn't care which one is moving it.
+// initiated -- both a real mouse drag on a widget's handle and a pinch
+// gesture from the webcam (further down) feed into these same three
+// functions, so a widget doesn't care which one is moving it. Jarvis is a
+// full-screen backdrop with independent floating widgets on top (see
+// .jarvis-widget) rather than one draggable window, so each widget carries
+// its own localStorage key (set by jarvisMakeDraggable) for its position.
 let jarvisDragPanel = null;
 let jarvisDragOffset = { x: 0, y: 0 };
 
 function jarvisDragStart(panelEl, clientX, clientY) {
   jarvisDragPanel = panelEl;
   const r = panelEl.getBoundingClientRect();
-  // Switch from the centered transform:translate(-50%,-50%) starting
-  // position to explicit top/left in pixels -- can't drag a centering
-  // transform incrementally, but a fixed pixel position moves cleanly.
-  panelEl.style.transform = "none";
+  // Switch from CSS-positioned (top/left, or right for the right-side
+  // widget) to explicit top/left in pixels -- can't drag a % or right-
+  // anchored position incrementally, but a fixed pixel position moves cleanly.
+  panelEl.style.right = "auto";
   panelEl.style.top = r.top + "px";
   panelEl.style.left = r.left + "px";
   jarvisDragOffset = { x: clientX - r.left, y: clientY - r.top };
@@ -936,7 +939,8 @@ function jarvisDragEnd() {
   if (!jarvisDragPanel) return;
   jarvisDragPanel.classList.remove("jarvis-dragging");
   try {
-    localStorage.setItem("jarvisPanelPos", JSON.stringify({
+    const key = jarvisDragPanel.dataset.dragKey || "jarvisPanelPos";
+    localStorage.setItem(key, JSON.stringify({
       top: jarvisDragPanel.style.top, left: jarvisDragPanel.style.left,
     }));
   } catch (e) { /* localStorage unavailable -- position just won't persist, fine */ }
@@ -947,11 +951,12 @@ function jarvisDragEnd() {
  *  every time Jarvis reopens, so leaving these window-level listeners
  *  attached would stack a new set on every visit (the same class of bug
  *  the push-to-talk Enter-key listeners had earlier in this file). */
-function jarvisMakeDraggable(panelEl, handleEl) {
+function jarvisMakeDraggable(panelEl, handleEl, storageKey) {
+  panelEl.dataset.dragKey = storageKey;
   try {
-    const saved = JSON.parse(localStorage.getItem("jarvisPanelPos") || "null");
+    const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
     if (saved && saved.top && saved.left) {
-      panelEl.style.transform = "none";
+      panelEl.style.right = "auto";
       panelEl.style.top = saved.top;
       panelEl.style.left = saved.left;
     }
@@ -989,11 +994,13 @@ const PINCH_THRESHOLD = 0.055;     // normalized distance; tuned loose since a
                                     // not a real cost, so err toward detecting it
 
 /** Pure logic, deliberately separate from the camera/model: given one
- *  frame's hand landmarks (MediaPipe's 21-point hand format) and the panel
- *  being controlled, decides whether a pinch is happening and drives the
- *  shared drag primitives accordingly. Callable directly with synthetic
- *  landmarks for testing, with no camera or model involved at all. */
-function jarvisProcessHandLandmarks(panelEl, landmarks, state) {
+ *  frame's hand landmarks (MediaPipe's 21-point hand format) and the root
+ *  element containing the draggable widgets, decides whether a pinch is
+ *  happening -- and if it starts over any widget's drag handle, grabs THAT
+ *  widget -- then drives the shared drag primitives accordingly. Callable
+ *  directly with synthetic landmarks for testing, with no camera or model
+ *  involved at all. */
+function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
   if (!landmarks || !landmarks.length) {
     if (state.pinching) { jarvisDragEnd(); state.pinching = false; }
     return null;
@@ -1003,16 +1010,22 @@ function jarvisProcessHandLandmarks(panelEl, landmarks, state) {
   const pinching = dist < PINCH_THRESHOLD;
 
   // Mirrored horizontally -- a front-facing camera feels backwards
-  // otherwise (move your hand right, panel goes left).
+  // otherwise (move your hand right, the widget goes left).
   const midX = (thumb.x + index.x) / 2, midY = (thumb.y + index.y) / 2;
   const screenX = (1 - midX) * window.innerWidth;
   const screenY = midY * window.innerHeight;
 
   if (pinching && !state.pinching) {
-    const header = panelEl.querySelector(".jarvis-header");
-    const hr = header.getBoundingClientRect();
-    const overHeader = screenX >= hr.left && screenX <= hr.right && screenY >= hr.top && screenY <= hr.bottom;
-    if (overHeader) { jarvisDragStart(panelEl, screenX, screenY); state.pinching = true; }
+    const handles = rootEl.querySelectorAll(".jarvis-widget-handle");
+    for (const handle of handles) {
+      const hr = handle.getBoundingClientRect();
+      const over = screenX >= hr.left && screenX <= hr.right && screenY >= hr.top && screenY <= hr.bottom;
+      if (over) {
+        jarvisDragStart(handle.closest(".jarvis-widget"), screenX, screenY);
+        state.pinching = true;
+        break;
+      }
+    }
   } else if (pinching && state.pinching) {
     jarvisDragMove(screenX, screenY);
   } else if (!pinching && state.pinching) {
@@ -1112,16 +1125,6 @@ async function renderJarvisPanel(body) {
       </div>
     </div>
     <div class="jarvis-body">
-      <div class="jarvis-left">
-        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;color:var(--muted);margin-bottom:10px;text-transform:uppercase">Status</div>
-        <div class="jarvis-readout" id="jarvis-readout"><div><span>Loading…</span><span></span></div></div>
-        <div class="hint" style="margin-top:20px">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity tab.</div>
-        <button class="copy-btn" id="jarvis-gesture-toggle" style="margin-top:16px;width:100%">📷 Gesture Control: Off</button>
-        <div class="hint" style="margin-top:6px">Pinch (thumb + index finger) over this header, then move your hand to drag the panel. Camera feed never leaves your browser.</div>
-        <div id="jarvis-cam-preview" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
-          <video id="jarvis-cam-video" width="240" height="180" muted playsinline style="display:block;width:100%;transform:scaleX(-1)"></video>
-        </div>
-      </div>
       <div class="jarvis-center">
         <svg id="jarvis-orb" width="120" height="120" viewBox="0 0 120 120">
           <circle cx="60" cy="60" r="46" fill="rgba(232,236,239,0.05)" id="jarvis-orb-ring" stroke="var(--cyan)" stroke-width="2"/>
@@ -1135,7 +1138,18 @@ async function renderJarvisPanel(body) {
           <button class="icon-btn" id="jarvis-send" title="Send">➤</button>
         </div>
       </div>
-      <div class="jarvis-right">
+      <div class="jarvis-widget jarvis-left">
+        <div class="jarvis-widget-handle">⠿ Status</div>
+        <div class="jarvis-readout" id="jarvis-readout"><div><span>Loading…</span><span></span></div></div>
+        <div class="hint" style="margin-top:20px">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity widget.</div>
+        <button class="copy-btn" id="jarvis-gesture-toggle" style="margin-top:16px;width:100%">📷 Gesture Control: Off</button>
+        <div class="hint" style="margin-top:6px">Pinch (thumb + index finger) over a widget's "⠿" handle, then move your hand to drag it. Camera feed never leaves your browser.</div>
+        <div id="jarvis-cam-preview" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <video id="jarvis-cam-video" width="240" height="180" muted playsinline style="display:block;width:100%;transform:scaleX(-1)"></video>
+        </div>
+      </div>
+      <div class="jarvis-widget jarvis-right">
+        <div class="jarvis-widget-handle">⠿ Log</div>
         <div class="jarvis-tabs">
           <button class="jarvis-tab active" data-tab="chat">Transcript</button>
           <button class="jarvis-tab" data-tab="activity">Activity Log</button>
@@ -1210,7 +1224,14 @@ async function renderJarvisPanel(body) {
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("keyup", onKeyUp);
 
-  const cleanupDrag = jarvisMakeDraggable(document.getElementById("bigpanel-inner"), document.querySelector(".jarvis-header"));
+  // Two independent floating widgets, each with its own drag handle and
+  // its own remembered position -- not one draggable window.
+  const cleanupDragLeft = jarvisMakeDraggable(
+    document.querySelector(".jarvis-left"), document.querySelector(".jarvis-left .jarvis-widget-handle"), "jarvisLeftPos"
+  );
+  const cleanupDragRight = jarvisMakeDraggable(
+    document.querySelector(".jarvis-right"), document.querySelector(".jarvis-right .jarvis-widget-handle"), "jarvisRightPos"
+  );
   const cleanupGestures = jarvisSetupGestureControl(document.getElementById("bigpanel-inner"));
 
   // Cleaned up whenever the panel closes/changes -- stopAllPanelPolls runs on
@@ -1222,7 +1243,8 @@ async function renderJarvisPanel(body) {
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("keyup", onKeyUp);
     window.speechSynthesis && window.speechSynthesis.cancel();
-    cleanupDrag();
+    cleanupDragLeft();
+    cleanupDragRight();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;
     _origStop();
@@ -1320,6 +1342,16 @@ async function renderSettingsPanel(body) {
       <div class="hint">Redirect URI: <code>${location.origin}/auth/youtube/callback</code></div></div>
     <div class="card"><h2>TikTok</h2>${field("tiktok_client_key", "Client Key", "", "text")}${field("tiktok_client_secret", "Client Secret", "")}
       <div class="hint">Redirect URI: <code>${location.origin}/auth/tiktok/callback</code></div></div>
+    <div class="card"><h2>Jarvis — Brain</h2>
+      <label>Which LLM answers for Jarvis</label>
+      <select id="st-jarvis_llm_provider">
+        <option value="anthropic" ${(!s.jarvis_llm_provider.value || s.jarvis_llm_provider.value === "anthropic") ? "selected" : ""}>Anthropic (Claude)</option>
+        <option value="gemini" ${s.jarvis_llm_provider.value === "gemini" ? "selected" : ""}>Gemini</option>
+      </select>
+      <div class="hint">Independent of the Script Writer provider above — you can run scripts on one and Jarvis on the other.
+      Gemini uses the key already entered under Script Writer.</div>
+      ${field("jarvis_gemini_model", "Gemini model (optional)", "gemini-3.5-flash", "text")}
+    </div>
     <div class="card"><h2>Jarvis — WhatsApp</h2>
       ${field("twilio_account_sid", "Twilio Account SID", "AC…", "text")}
       ${field("twilio_auth_token", "Twilio Auth Token", "")}
@@ -1380,7 +1412,8 @@ async function renderSettingsPanel(body) {
   $("#st-save").addEventListener("click", async () => {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
       "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret",
-      "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist"];
+      "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist",
+      "jarvis_llm_provider", "jarvis_gemini_model"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });

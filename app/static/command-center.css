@@ -387,15 +387,6 @@ html, body {
 #bigpanel-inner.dir-top    { transform: translateY(-40px); }
 #bigpanel-inner.dir-bottom { transform: translateY(40px); }
 #bigpanel.open #bigpanel-inner { transform: none; }
-/* The rule above (for sliding the normal drawer panels into place) is more
-   specific than a plain .fullpage class rule and was winning over Jarvis's
-   own centering transform -- the panel's top-left corner, not its center,
-   was landing at 50%/50%, leaving most of it hanging off-screen before any
-   dragging even happened. This wins back the centering specifically for
-   the floating/draggable panel. Once dragging starts, JS sets an inline
-   transform:none directly on the element, which always wins over any CSS
-   rule regardless -- this only matters for the initial centered position. */
-#bigpanel.open #bigpanel-inner.fullpage { transform: translate(-50%, -50%); }
 #bigpanel h1 { font-family: var(--font-head); font-size: 20px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
 #bigpanel .bp-sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
 .bp-close { position: absolute; top: 20px; right: 22px; }
@@ -479,29 +470,23 @@ video { width: 100%; border-radius: 10px; background: #000; border: 1px solid va
 #bigpanel-inner.wide .bp-close { z-index: 5; }
 
 /* Jarvis "fullpage" mode: breaks completely out of the right-side drawer
-   layout used by every other panel. A floating HUD window rather than a
-   flat fixed panel -- draggable by its header (see jarvisMakeDraggable in
-   command-center.js), closer to the "floating panels over a dark screen"
-   look than a rigid full-viewport takeover. top/left get overridden inline
-   once it's been dragged; these are just the centered starting position. */
+   layout used by every other panel. Genuinely full-viewport, as originally
+   asked for -- the LEFT and RIGHT sub-panels (see .jarvis-left/.jarvis-right
+   below) are what's individually draggable as floating widgets over this
+   backdrop, not the whole screen itself, which can't meaningfully be
+   "dragged" once it already fills the viewport. */
 #bigpanel-inner.fullpage {
-  /* Deliberately well short of the full viewport (not 94vw/88vh) -- a
-     panel that size leaves almost no room to actually drag it anywhere
-     before hitting the edge-of-screen clamp, which defeats the point of
-     it being draggable at all. */
-  position: fixed; width: min(880px, 80vw); height: min(560px, 74vh);
-  top: 50%; left: 50%; transform: translate(-50%, -50%);
-  border: 1px solid var(--border); border-radius: 14px; padding: 0;
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  border: none; border-radius: 0; padding: 0; transform: none;
   background: radial-gradient(ellipse at 30% 20%, #0d1830 0%, #04070f 60%);
-  box-shadow: 0 30px 90px rgba(0,0,0,0.55), 0 0 0 1px rgba(232,236,239,0.05);
-  overflow: hidden;
 }
-/* While actively being dragged, no transition lag between cursor and panel,
-   and dragging by touch/gesture shouldn't also select page text. */
-#bigpanel-inner.fullpage.jarvis-dragging { transition: none; user-select: none; }
 #bigpanel-inner.fullpage .bp-close {
-  z-index: 20; top: 18px; right: 20px;
+  z-index: 20; top: 24px; right: 28px;
 }
+/* While a floating widget inside is actively being dragged: no transition
+   lag between cursor and card, and dragging by touch/gesture shouldn't
+   also select page text. */
+.jarvis-widget.jarvis-dragging { transition: none; user-select: none; }
 #bigpanel-inner.fullpage #bp-body { height: 100%; }
 .msc-wrap { display: grid; grid-template-columns: 190px 1fr; height: 100%; min-height: 100vh; }
 .msc-nav {
@@ -635,15 +620,32 @@ button.msc-link-card { cursor: pointer; }
 }
 @keyframes jarvisPulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.jarvis-body { display: grid; grid-template-columns: 300px 1fr 320px; gap: 0; flex: 1; min-height: 0; }
-.jarvis-left {
-  display: flex; flex-direction: column; padding: 24px 20px;
-  border-right: 1px solid rgba(232, 236, 239, 0.12); min-height: 0;
-}
+/* Full-screen HUD backdrop with floating widgets scattered over it, rather
+   than a fixed three-column grid -- closer to the reference layout (small
+   independent panels positioned around the screen) and what actually makes
+   "draggable" mean something: each widget below is its own small card,
+   individually repositionable, over a JARVIS core that fills the screen. */
+.jarvis-body { position: relative; flex: 1; min-height: 0; }
 .jarvis-center {
+  position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 20px; min-height: 0;
+  padding: 20px;
 }
+.jarvis-widget {
+  position: absolute; width: 280px; max-height: 66vh;
+  background: rgba(8, 14, 26, 0.74); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 18px; backdrop-filter: blur(10px); overflow-y: auto;
+  box-shadow: 0 16px 46px rgba(0,0,0,0.45);
+}
+.jarvis-widget-handle {
+  cursor: grab; padding-bottom: 9px; margin-bottom: 12px;
+  border-bottom: 1px solid rgba(232, 236, 239, 0.14);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--muted); user-select: none;
+}
+.jarvis-widget-handle:active { cursor: grabbing; }
+.jarvis-left { top: 96px; left: 28px; }
+.jarvis-right { top: 96px; right: 28px; width: 360px; }
 .jarvis-sysline {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px;
   color: var(--muted); opacity: 0.7; margin-bottom: 8px;
@@ -690,7 +692,7 @@ button.msc-link-card { cursor: pointer; }
   width: auto; padding: 11px 26px; gap: 6px; font-size: 12px; font-weight: 700;
   letter-spacing: 2px; border-radius: 4px; font-family: var(--font-mono);
 }
-.jarvis-right { display: flex; flex-direction: column; min-height: 0; padding: 24px 20px; border-left: 1px solid rgba(232, 236, 239, 0.12); }
+.jarvis-right .jarvis-log { max-height: 50vh; }
 
 .jarvis-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border-soft); }
 .jarvis-tab {
@@ -782,8 +784,11 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-settings-grid input[type="checkbox"] { width: 18px; height: 18px; }
 
 @media (max-width: 1100px) {
-  .jarvis-body { grid-template-columns: 1fr; }
-  .jarvis-left, .jarvis-right { border: none; }
+  /* Not enough width for floating side widgets without them overlapping
+     the center -- stack everything instead of trying to keep them afloat. */
+  .jarvis-left, .jarvis-right { position: static; width: auto; max-width: 92vw; margin: 12px auto; }
+  .jarvis-center { position: static; }
+  .jarvis-body { display: flex; flex-direction: column; overflow-y: auto; }
   .jarvis-header { padding: 16px 60px 14px 20px; }
 }
 
