@@ -783,12 +783,171 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-settings-grid input[type="color"] { width: 60px; height: 32px; padding: 2px; border-radius: 6px; border: 1px solid var(--border-soft); background: transparent; }
 .jarvis-settings-grid input[type="checkbox"] { width: 18px; height: 18px; }
 
+/* ================================================================
+   JARVIS HUD -- a full cockpit-dashboard layout: an angular SVG frame
+   with scattered widgets positioned over it, each carrying real data
+   from this app (never anything invented). Positions are percentages
+   of the full-screen container so it scales; below 1100px it falls
+   back to a simple stacked layout since there's no room for floating
+   widgets without them overlapping.
+   ================================================================ */
+.jarvis-hud { position: absolute; inset: 0; overflow: hidden; }
+.jarvis-frame {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+.jarvis-frame path, .jarvis-frame circle, .jarvis-frame line {
+  fill: none; stroke: var(--cyan); stroke-width: 1.5; opacity: 0.55;
+}
+.jarvis-frame .jf-fill { fill: var(--cyan); stroke: none; opacity: 0.7; }
+.jarvis-frame .jf-dim { opacity: 0.22; }
+
+/* -------- top clock -------- */
+.jarvis-clock {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  font-family: var(--font-mono); font-size: 26px; letter-spacing: 3px;
+  color: var(--cyan); text-shadow: 0 0 14px rgba(232,236,239,0.4);
+}
+
+/* -------- top-left arc gauge: today's video progress -------- */
+.jarvis-gauge {
+  position: absolute; top: 44px; left: 56px; width: 130px; text-align: center;
+}
+.jarvis-gauge svg { display: block; }
+.jarvis-gauge-label {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 2px;
+  color: var(--muted); text-transform: uppercase; margin-top: 2px;
+}
+.jarvis-gauge-value { font-family: var(--font-head); font-size: 13px; color: var(--cyan); }
+
+/* -------- top-right sync spinner -------- */
+.jarvis-spin {
+  position: absolute; top: 40px; right: 60px; width: 46px; height: 46px;
+  color: var(--cyan); opacity: 0.7;
+  animation: jarvisSpin 3.2s linear infinite;
+}
+@keyframes jarvisSpin { to { transform: rotate(360deg); } }
+
+/* -------- left nav stack (was Safari/QuickTime/iTunes/Mail) -------- */
+.jarvis-nav-stack {
+  position: absolute; top: 22%; left: 40px; width: 190px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.jarvis-nav-item {
+  position: relative; text-align: left; padding: 10px 14px;
+  background: linear-gradient(90deg, rgba(232,236,239,0.10), rgba(232,236,239,0.02));
+  border: 1px solid var(--border); border-left: 3px solid var(--cyan);
+  color: var(--ink); font-family: var(--font-body); font-size: 12px; letter-spacing: 1px;
+  text-transform: uppercase; cursor: pointer; clip-path: polygon(0 0, 100% 0, 94% 100%, 0% 100%);
+  transition: background 0.15s, border-color 0.15s;
+}
+.jarvis-nav-item:hover { background: rgba(232,236,239,0.16); border-left-color: #fff; }
+
+/* -------- bottom-left JARVIS dial (kill switch) -------- */
+.jarvis-dial {
+  position: absolute; bottom: 60px; left: 40px; width: 190px; height: 190px;
+  border-radius: 50%; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle, rgba(232,236,239,0.06), transparent 70%);
+}
+.jarvis-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.jarvis-dial-label {
+  font-family: var(--font-head); font-size: 15px; letter-spacing: 3px; color: var(--cyan);
+  text-shadow: 0 0 10px rgba(232,236,239,0.4); z-index: 1;
+}
+.jarvis-dial-status {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px; color: var(--muted);
+  text-transform: uppercase; margin-top: 4px; z-index: 1;
+}
+
+/* -------- center emblem: the AI glyph + orb -------- */
+.jarvis-center-emblem {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -46%);
+  display: flex; flex-direction: column; align-items: center;
+}
+.jarvis-glyph { display: block; opacity: 0.85; }
+.jarvis-glyph .jf-core { filter: drop-shadow(0 0 16px var(--cyan)); }
+
+/* -------- chat input (was the Google search box) -------- */
+.jarvis-searchbox {
+  position: absolute; top: 60%; left: 50%; transform: translateX(-124%);
+  width: 260px; display: flex; align-items: center; gap: 8px;
+  background: rgba(8,14,26,0.7); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; backdrop-filter: blur(6px);
+}
+.jarvis-searchbox input {
+  flex: 1; background: transparent; border: none; color: var(--ink);
+  font-family: var(--font-body); font-size: 13px; outline: none;
+}
+.jarvis-caption-float {
+  position: absolute; top: calc(60% + 44px); left: 50%; transform: translateX(-124%);
+  width: 260px; font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  line-height: 1.5;
+}
+
+/* -------- schedule widget (was the calendar) -------- */
+.jarvis-schedule {
+  position: absolute; top: 20%; right: 30%; width: 200px;
+  background: rgba(8,14,26,0.6); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; backdrop-filter: blur(6px);
+}
+.jarvis-schedule-title {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 2px; color: var(--muted);
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.jarvis-schedule-body { font-size: 13px; color: var(--ink); line-height: 1.5; }
+
+/* -------- agent row (was the suit schematics) -------- */
+.jarvis-agent-row {
+  position: absolute; top: 24%; right: 6%; display: flex; gap: 18px;
+}
+.jarvis-agent-glyph { width: 56px; text-align: center; }
+.jarvis-agent-glyph svg { display: block; opacity: 0.75; }
+.jarvis-agent-glyph.on svg { opacity: 1; filter: drop-shadow(0 0 8px var(--cyan)); }
+.jarvis-agent-glyph-label {
+  font-family: var(--font-mono); font-size: 8px; letter-spacing: 1px; color: var(--muted);
+  text-transform: uppercase; margin-top: 4px;
+}
+
+/* -------- transcript/activity (was the targeting reticle) -------- */
+.jarvis-hud .jarvis-widget.jarvis-right { top: 42%; right: 5%; width: 320px; }
+.jarvis-hud .jarvis-widget.jarvis-left {
+  top: auto; left: auto; position: absolute; bottom: 60px; right: 5%; width: 260px;
+}
+
+/* -------- stat bars (was CPU/RAM) -------- */
+.jarvis-stat-bars {
+  position: absolute; bottom: 220px; right: 5%; width: 220px;
+}
+.jarvis-stat-bar { margin-bottom: 12px; }
+.jarvis-stat-bar-label {
+  display: flex; justify-content: space-between; font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; margin-bottom: 4px;
+}
+.jarvis-stat-bar-track { height: 6px; background: rgba(232,236,239,0.08); border-radius: 3px; overflow: hidden; }
+.jarvis-stat-bar-fill { height: 100%; background: linear-gradient(90deg, var(--cyan), rgba(232,236,239,0.4)); }
+
+/* -------- gesture toggle, tucked near the top-right gauge -------- */
+.jarvis-gesture-btn {
+  position: absolute; top: 14px; right: 130px; width: 34px; height: 34px;
+  border-radius: 50%; background: rgba(232,236,239,0.06); border: 1px solid var(--border);
+  color: var(--ink); cursor: pointer; font-size: 14px;
+}
+.jarvis-gesture-btn.copied { border-color: var(--green); color: var(--green); }
+.jarvis-hud #jarvis-cam-preview { position: absolute; top: 56px; right: 130px; width: 180px; z-index: 5; }
+
 @media (max-width: 1100px) {
-  /* Not enough width for floating side widgets without them overlapping
-     the center -- stack everything instead of trying to keep them afloat. */
-  .jarvis-left, .jarvis-right { position: static; width: auto; max-width: 92vw; margin: 12px auto; }
-  .jarvis-center { position: static; }
-  .jarvis-body { display: flex; flex-direction: column; overflow-y: auto; }
+  /* Not enough width for a scattered cockpit layout -- fall back to a
+     simple stacked list of the same real widgets, frame hidden. */
+  .jarvis-frame, .jarvis-clock, .jarvis-gauge, .jarvis-spin, .jarvis-worldmap, .jarvis-radar { display: none; }
+  .jarvis-hud { position: static; display: flex; flex-direction: column; gap: 12px; padding: 70px 16px 16px; overflow-y: auto; height: 100%; }
+  .jarvis-nav-stack, .jarvis-dial, .jarvis-center-emblem, .jarvis-searchbox, .jarvis-caption-float,
+  .jarvis-schedule, .jarvis-agent-row, .jarvis-stat-bars,
+  .jarvis-hud .jarvis-widget.jarvis-right, .jarvis-hud .jarvis-widget.jarvis-left {
+    position: static; width: auto; max-width: 100%; transform: none; margin: 0 auto;
+  }
+  .jarvis-nav-stack { flex-direction: row; flex-wrap: wrap; }
+  .jarvis-gesture-btn { position: static; margin: 8px auto; }
   .jarvis-header { padding: 16px 60px 14px 20px; }
 }
 

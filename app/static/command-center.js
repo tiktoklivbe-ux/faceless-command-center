@@ -864,18 +864,58 @@ function jarvisStopListening() {
   if (jarvisRecognition && jarvisListening) jarvisRecognition.stop();
 }
 
+function jarvisStatBar(label, value, max) {
+  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : (value > 0 ? 100 : 0);
+  return `<div class="jarvis-stat-bar">
+    <div class="jarvis-stat-bar-label"><span>${label}</span><span>${value}</span></div>
+    <div class="jarvis-stat-bar-track"><div class="jarvis-stat-bar-fill" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
 async function jarvisRefreshReadout() {
   try {
-    const [jobs, channels] = await Promise.all([API("/api/jobs?limit=20"), API("/api/channels")]);
+    const [jobs, channels] = await Promise.all([API("/api/jobs?limit=30"), API("/api/channels")]);
     const running = jobs.filter((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status))).length;
     const failed = jobs.filter((j) => j.status === "failed").length;
     const autoOn = channels.filter((c) => c.auto_enabled).length;
+
+    // "Today" by local calendar day, matching what a person means by "today".
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const doneToday = jobs.filter((j) => {
+      if (!["published", "ready_for_review"].includes(String(j.status))) return false;
+      const t = j.created_at ? new Date(j.created_at.endsWith("Z") ? j.created_at : j.created_at + "Z") : null;
+      return t && t >= todayStart;
+    }).length;
+    const targetToday = channels.reduce((sum, c) => sum + (c.auto_enabled ? (c.auto_per_day || 0) : 0), 0);
+
     const readout = document.getElementById("jarvis-readout");
-    if (readout) readout.innerHTML = `
-      <div><span>Rendering now</span><span>${running}</span></div>
-      <div><span>Failed recently</span><span>${failed}</span></div>
-      <div><span>Channels automated</span><span>${autoOn}/${channels.length}</span></div>
-    `;
+    if (readout) readout.innerHTML =
+      jarvisStatBar("Rendering now", running, 1) +
+      jarvisStatBar("Failed recently", failed, Math.max(failed, 5)) +
+      jarvisStatBar("Channels automated", autoOn, channels.length || 1);
+
+    const gaugeValue = document.getElementById("jarvis-gauge-value");
+    if (gaugeValue) gaugeValue.textContent = `${doneToday}/${targetToday || "—"}`;
+    const gaugeWrap = document.querySelector(".jarvis-gauge svg");
+    if (gaugeWrap && targetToday > 0) gaugeWrap.outerHTML = jarvisArcGaugeSVG(doneToday / targetToday);
+
+    const schedule = document.querySelector("#jarvis-schedule .jarvis-schedule-body");
+    if (schedule) {
+      const auto = channels.filter((c) => c.auto_enabled);
+      schedule.innerHTML = auto.length
+        ? auto.map((c) => `${escapeHtml(c.name)} — ${c.auto_per_day}/day${c.auto_publish_scheduled ? " · auto-publish" : ""}`).join("<br>")
+        : "No channels on auto-schedule.";
+    }
+
+    const agentRow = document.getElementById("jarvis-agent-row");
+    if (agentRow) {
+      agentRow.innerHTML = JARVIS_AGENT_IDS.map((id) => {
+        const a = (state.agents || []).find((x) => x.id === id);
+        const working = a && a.status === "running";
+        const name = (a && a.name) || id;
+        return `<div class="jarvis-agent-glyph ${working ? "on" : ""}">${jarvisAgentGlyphSVG(working)}<div class="jarvis-agent-glyph-label">${escapeHtml(name)}</div></div>`;
+      }).join("");
+    }
   } catch (e) { /* readout is a nice-to-have, not worth erroring over */ }
 }
 
@@ -1114,52 +1154,187 @@ function jarvisSetupGestureControl(panelEl) {
   return stop;
 }
 
+// ---------------------------------------------------------------- HUD art
+// Inline SVG for the cockpit frame and glyphs -- no external assets, matches
+// the app's "no build step" approach. Structurally modeled on the reference
+// layout (angular corner brackets, arc gauges, scattered widgets) but every
+// piece of content is either abstract/generic or real app data -- nothing
+// here references or resembles the specific reference image's subject.
+function jarvisFrameSVG() {
+  return `<svg class="jarvis-frame" viewBox="0 0 1920 1080" preserveAspectRatio="none">
+    <!-- corner brackets -->
+    <path d="M20,120 L20,20 L120,20" />
+    <path d="M1900,120 L1900,20 L1800,20" />
+    <path d="M20,960 L20,1060 L120,1060" />
+    <path d="M1900,960 L1900,1060 L1800,1060" />
+    <!-- top arc under the clock -->
+    <path d="M760,10 A400,400 0 0 1 1160,10" class="jf-dim" />
+    <!-- bottom chevron -->
+    <path d="M860,1050 L960,1010 L1060,1050" class="jf-dim" />
+    <!-- edge accent lines -->
+    <line x1="0" y1="300" x2="0" y2="780" stroke-width="2" class="jf-dim" />
+    <line x1="1920" y1="300" x2="1920" y2="780" stroke-width="2" class="jf-dim" />
+    <circle cx="15" cy="300" r="3" class="jf-fill" />
+    <circle cx="15" cy="780" r="3" class="jf-fill" />
+    <circle cx="1905" cy="300" r="3" class="jf-fill" />
+    <circle cx="1905" cy="780" r="3" class="jf-fill" />
+  </svg>`;
+}
+
+function jarvisWorldMapSVG() {
+  // Abstract dotted landmass shapes -- ambient decoration only, no real
+  // geodata, deliberately not meant to read as any specific place.
+  const dots = [];
+  for (let i = 0; i < 70; i++) {
+    const x = 20 + ((i * 37) % 260);
+    const y = 10 + Math.floor(i / 9) * 12 + ((i * 13) % 5);
+    if ((i * 29) % 4 === 0) continue;
+    dots.push(`<circle cx="${x}" cy="${y}" r="1.4" class="jf-fill" opacity="0.35"/>`);
+  }
+  return `<svg class="jarvis-worldmap" style="position:absolute;bottom:16px;left:16px;width:260px;height:80px;opacity:0.6" viewBox="0 0 280 90">${dots.join("")}</svg>`;
+}
+
+function jarvisRadarSVG() {
+  return `<svg class="jarvis-radar" style="position:absolute;bottom:20px;right:20px;width:100px;height:100px;opacity:0.55" viewBox="0 0 100 100">
+    <circle cx="50" cy="50" r="46"/><circle cx="50" cy="50" r="30"/><circle cx="50" cy="50" r="14"/>
+    <line x1="50" y1="4" x2="50" y2="96" class="jf-dim"/><line x1="4" y1="50" x2="96" y2="50" class="jf-dim"/>
+  </svg>`;
+}
+
+/** The center emblem -- a geometric circuit-line face/glyph, not a person.
+ *  jarvis-orb-ring / jarvis-eq stay as real functional hooks (pulse color
+ *  while listening/thinking, matched by jarvisSetOrbState). */
+function jarvisGlyphSVG() {
+  return `<svg id="jarvis-orb" class="jarvis-glyph" width="260" height="260" viewBox="0 0 260 260">
+    <circle cx="130" cy="130" r="110" id="jarvis-orb-ring" stroke="var(--cyan)" stroke-width="1.5"/>
+    <circle cx="130" cy="130" r="86" stroke="var(--cyan)" stroke-width="1" opacity="0.4"/>
+    <!-- angular "face" facets -->
+    <path d="M70,90 L130,55 L190,90 L190,150 L130,190 L70,150 Z" stroke="var(--cyan)" stroke-width="1.5" opacity="0.7"/>
+    <line x1="70" y1="90" x2="190" y2="150" stroke="var(--cyan)" stroke-width="1" opacity="0.3"/>
+    <line x1="190" y1="90" x2="70" y2="150" stroke="var(--cyan)" stroke-width="1" opacity="0.3"/>
+    <circle cx="100" cy="105" r="6" fill="var(--cyan)" opacity="0.8"/>
+    <circle cx="160" cy="105" r="6" fill="var(--cyan)" opacity="0.8"/>
+    <!-- glowing core, chest position -->
+    <circle cx="130" cy="150" r="16" fill="rgba(232,236,239,0.15)" class="jf-core"/>
+    <circle cx="130" cy="150" r="7" fill="var(--cyan)" class="jf-core"/>
+  </svg>`;
+}
+
+const JARVIS_AGENT_IDS = ["athena", "iris", "hephaestus"];
+function jarvisAgentGlyphSVG(working) {
+  return `<svg width="44" height="56" viewBox="0 0 44 56">
+    <path d="M22,4 L38,14 L38,42 L22,52 L6,42 L6,14 Z" stroke="var(--cyan)" stroke-width="1.3" opacity="${working ? 1 : 0.5}"/>
+    <circle cx="22" cy="22" r="6" stroke="var(--cyan)" stroke-width="1.2"/>
+    <line x1="22" y1="28" x2="22" y2="42" stroke="var(--cyan)" stroke-width="1.2"/>
+    ${working ? `<circle cx="22" cy="22" r="2.4" fill="var(--cyan)"/>` : ""}
+  </svg>`;
+}
+
+function jarvisArcGaugeSVG(frac) {
+  const r = 50, cx = 60, cy = 60;
+  const start = Math.PI, end = Math.PI + Math.PI * Math.max(0, Math.min(1, frac));
+  const x1 = cx + r * Math.cos(start), y1 = cy + r * Math.sin(start);
+  const x2 = cx + r * Math.cos(end), y2 = cy + r * Math.sin(end);
+  const large = frac > 0.5 ? 1 : 0;
+  return `<svg width="130" height="70" viewBox="0 0 120 65">
+    <path d="M10,60 A50,50 0 0 1 110,60" stroke="var(--border)" stroke-width="6" opacity="0.4"/>
+    <path d="M${x1 - 0},${y1 - 0} A${r},${r} 0 ${large} 1 ${x2},${y2}" stroke="var(--cyan)" stroke-width="6" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function jarvisDialSVG() {
+  return `<svg viewBox="0 0 190 190">
+    <circle cx="95" cy="95" r="86" stroke="var(--border)" stroke-width="2"/>
+    <circle cx="95" cy="95" r="86" id="jarvis-dial-ring" stroke="var(--green)" stroke-width="3" stroke-dasharray="540" stroke-dashoffset="0" transform="rotate(-90 95 95)"/>
+    <circle cx="95" cy="95" r="70" stroke="var(--border)" stroke-width="1" opacity="0.5"/>
+  </svg>`;
+}
+
 async function renderJarvisPanel(body) {
   jarvisHistory = [];
   body.innerHTML = `<div class="jarvis-page">
-    <div class="jarvis-header">
-      <div class="jarvis-header-title">JARVIS <span style="opacity:.5;font-size:12px;text-transform:none;letter-spacing:0">— AETHER's assistant</span></div>
-      <div class="jarvis-header-status" id="jarvis-kill-toggle" title="Click to switch Jarvis on/off" style="cursor:pointer">
-        <span class="jarvis-status-dot" id="jarvis-status-dot"></span>
-        <span id="jarvis-status-text">checking…</span>
+    <div class="jarvis-hud">
+      ${jarvisFrameSVG()}
+      ${jarvisWorldMapSVG()}
+      ${jarvisRadarSVG()}
+      <div class="jarvis-clock" id="jarvis-clock">00:00</div>
+      <div class="jarvis-gauge">
+        ${jarvisArcGaugeSVG(0)}
+        <div class="jarvis-gauge-value" id="jarvis-gauge-value">0/0</div>
+        <div class="jarvis-gauge-label">Today's videos</div>
       </div>
-    </div>
-    <div class="jarvis-body">
-      <div class="jarvis-center">
-        <svg id="jarvis-orb" width="120" height="120" viewBox="0 0 120 120">
-          <circle cx="60" cy="60" r="46" fill="rgba(232,236,239,0.05)" id="jarvis-orb-ring" stroke="var(--cyan)" stroke-width="2"/>
-          <circle cx="60" cy="60" r="30" fill="rgba(232,236,239,0.10)"/>
-          <circle cx="60" cy="60" r="6" fill="var(--cyan)"/>
-        </svg>
+      <svg class="jarvis-spin" viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" stroke="currentColor" stroke-width="2" stroke-dasharray="18 82"/></svg>
+      <button class="jarvis-gesture-btn" id="jarvis-gesture-toggle" title="Toggle webcam gesture control">📷</button>
+      <div id="jarvis-cam-preview" style="display:none">
+        <video id="jarvis-cam-video" width="180" height="135" muted playsinline style="display:block;width:100%;border:1px solid var(--border);border-radius:8px;transform:scaleX(-1)"></video>
+      </div>
+
+      <div class="jarvis-nav-stack" id="jarvis-nav-stack">
+        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
+        <button class="jarvis-nav-item" data-nav="missioncontrol">🛰️ Mission Control</button>
+        <button class="jarvis-nav-item" data-nav="jobs">🎬 Videos</button>
+        <button class="jarvis-nav-item" data-nav="channels">📺 Channels</button>
+        <button class="jarvis-nav-item" data-nav="settings">⚙️ Settings</button>
+      </div>
+
+      <div class="jarvis-dial" id="jarvis-kill-toggle" title="Click to switch Jarvis on/off">
+        ${jarvisDialSVG()}
+        <div class="jarvis-dial-label">JARVIS</div>
+        <div class="jarvis-dial-status"><span class="jarvis-status-dot" id="jarvis-status-dot"></span> <span id="jarvis-status-text">checking…</span></div>
+      </div>
+
+      <div class="jarvis-center-emblem">
+        ${jarvisGlyphSVG()}
         <div class="jarvis-eq" id="jarvis-eq">${Array.from({ length: 7 }).map(() => `<div class="jarvis-eq-bar"></div>`).join("")}</div>
-        <div class="jarvis-sysline" id="jarvis-caption">Press and hold Enter to talk, or type below.</div>
-        <div class="jarvis-controls-row">
-          <input type="text" id="jarvis-text-input" placeholder="Type a command…" style="flex:1"/>
-          <button class="icon-btn" id="jarvis-send" title="Send">➤</button>
-        </div>
       </div>
-      <div class="jarvis-widget jarvis-left">
-        <div class="jarvis-widget-handle">⠿ Status</div>
-        <div class="jarvis-readout" id="jarvis-readout"><div><span>Loading…</span><span></span></div></div>
-        <div class="hint" style="margin-top:20px">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity widget.</div>
-        <button class="copy-btn" id="jarvis-gesture-toggle" style="margin-top:16px;width:100%">📷 Gesture Control: Off</button>
-        <div class="hint" style="margin-top:6px">Pinch (thumb + index finger) over a widget's "⠿" handle, then move your hand to drag it. Camera feed never leaves your browser.</div>
-        <div id="jarvis-cam-preview" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
-          <video id="jarvis-cam-video" width="240" height="180" muted playsinline style="display:block;width:100%;transform:scaleX(-1)"></video>
-        </div>
+
+      <div class="jarvis-searchbox">
+        <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
+        <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
       </div>
+      <div class="jarvis-caption-float" id="jarvis-caption">Hold Enter to talk, or type above.</div>
+
+      <div class="jarvis-schedule" id="jarvis-schedule">
+        <div class="jarvis-schedule-title">Schedule</div>
+        <div class="jarvis-schedule-body">Loading…</div>
+      </div>
+
+      <div class="jarvis-agent-row" id="jarvis-agent-row"></div>
+
       <div class="jarvis-widget jarvis-right">
         <div class="jarvis-widget-handle">⠿ Log</div>
         <div class="jarvis-tabs">
           <button class="jarvis-tab active" data-tab="chat">Transcript</button>
-          <button class="jarvis-tab" data-tab="activity">Activity Log</button>
+          <button class="jarvis-tab" data-tab="activity">Activity</button>
         </div>
         <div class="jarvis-tabpanel" id="jarvis-tabpanel">
           <div class="jarvis-log" id="jarvis-log"></div>
         </div>
       </div>
+
+      <div class="jarvis-stat-bars" id="jarvis-readout"></div>
+
+      <div class="jarvis-widget jarvis-left">
+        <div class="jarvis-widget-handle">⠿ Notes</div>
+        <div class="hint">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity tab.</div>
+      </div>
     </div>
   </div>`;
+
+  // Live clock, matching the reference's top readout -- cleaned up on close.
+  const clockEl = document.getElementById("jarvis-clock");
+  const tickClock = () => { if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+  tickClock();
+  const clockInterval = setInterval(tickClock, 1000);
+
+  // Nav stack -- same destinations as the sidebar, just styled for this HUD.
+  document.querySelectorAll(".jarvis-nav-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const which = btn.dataset.nav;
+      if (which === "orbit") closeBigPanel();
+      else { openBigPanel(which); setActiveSideItem(which); }
+    });
+  });
 
   // Kill switch
   const refreshKillState = async () => {
@@ -1180,6 +1355,7 @@ async function renderJarvisPanel(body) {
   });
 
   jarvisRefreshReadout();
+  const readoutInterval = setInterval(jarvisRefreshReadout, 8000);
 
   // Tabs
   document.querySelectorAll(".jarvis-tab").forEach((tab) => {
@@ -1243,6 +1419,8 @@ async function renderJarvisPanel(body) {
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("keyup", onKeyUp);
     window.speechSynthesis && window.speechSynthesis.cancel();
+    clearInterval(clockInterval);
+    clearInterval(readoutInterval);
     cleanupDragLeft();
     cleanupDragRight();
     cleanupGestures();
