@@ -1010,7 +1010,11 @@ button.msc-link-card { cursor: pointer; }
 /* Slotted into the gap between the nav stack and the center emblem --
    the only vertical band on the left half not already claimed by the
    nav stack (22%-~57%) above or the kill dial (bottom 60-250px) below. */
-.jarvis-hud .jarvis-widget.jarvis-camdock { top: 22%; left: 250px; width: 160px; padding: 10px 12px; }
+.jarvis-hud .jarvis-widget.jarvis-camdock { top: 22%; left: 250px; width: 160px; padding: 10px 12px; transition: width 0.25s; }
+/* "Expand the camera" -- a real tool call Jarvis can make, not just a
+   bigger CSS box for its own sake: this is what lets you actually stretch
+   a gesture out in front of a large-enough feed to matter. */
+.jarvis-hud .jarvis-widget.jarvis-camdock.jf-expanded { width: 420px; z-index: 20; }
 .jarvis-camdock-body {
   width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden;
   background: rgba(0,0,0,0.4); border: 1px solid rgba(232,236,239,0.18);

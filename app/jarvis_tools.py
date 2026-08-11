@@ -143,6 +143,18 @@ TOOLS = [
         },
     },
     {
+        "name": "control_camera_dock",
+        "description": "Control the camera preview on Jarvis's own screen -- open or close "
+                        "the camera feed, expand or shrink the preview, or center it on "
+                        "screen. Use this when asked to turn the camera on/off, make it "
+                        "bigger/smaller, or move it to the middle.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"action": {"type": "string", "enum": ["open", "close", "expand", "shrink", "center"]}},
+            "required": ["action"],
+        },
+    },
+    {
         "name": "list_project_files",
         "description": "List files and folders at a path inside this app's own project "
                         "folder (e.g. '', 'app', 'storage/jobs'). Cannot see or list "
@@ -253,6 +265,18 @@ def _is_safe_public_host(hostname: str) -> bool:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
             return False
     return True
+
+
+def control_camera_dock(db, action):
+    """The actual DOM effect happens client-side (see jarvisCameraDockAction
+    in command-center.js, driven off this call's entry in the chat
+    response's `actions` list) -- this function is what lets Claude decide
+    to do it at all via a real tool call, and validates the action is one
+    of the ones the frontend actually knows how to perform."""
+    valid = {"open", "close", "expand", "shrink", "center"}
+    if action not in valid:
+        return {"error": f"'{action}' isn't a camera action Jarvis knows -- use one of: {', '.join(sorted(valid))}."}
+    return {"ok": True, "action": action}
 
 
 def fetch_url(db, url):
@@ -454,6 +478,7 @@ DISPATCH = {
     "list_available_commands": list_available_commands,
     "run_whitelisted_command": run_whitelisted_command,
     "fetch_url": fetch_url,
+    "control_camera_dock": control_camera_dock,
     "list_project_files": list_project_files,
     "read_project_file": read_project_file,
     "write_project_file": write_project_file,
