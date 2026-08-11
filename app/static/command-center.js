@@ -1160,20 +1160,64 @@ function jarvisSetupGestureControl(panelEl) {
 // layout (angular corner brackets, arc gauges, scattered widgets) but every
 // piece of content is either abstract/generic or real app data -- nothing
 // here references or resembles the specific reference image's subject.
+/** A small hexagon outline, for the edge-panel texture strips. */
+function _hex(cx, cy, r) {
+  const pts = Array.from({ length: 6 }, (_, i) => {
+    const a = (Math.PI / 3) * i - Math.PI / 6;
+    return `${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`;
+  }).join(" ");
+  return `<polygon points="${pts}" class="jf-hex" />`;
+}
+function _hexColumn(x, yStart, yEnd, r) {
+  const out = [];
+  for (let y = yStart, i = 0; y < yEnd; y += r * 1.9, i++) {
+    out.push(_hex(x + (i % 2 ? r * 0.9 : 0), y, r));
+  }
+  return out.join("");
+}
+function _ticks(x1, x2, y, count) {
+  const out = [];
+  for (let i = 0; i <= count; i++) {
+    const x = x1 + ((x2 - x1) * i) / count;
+    out.push(`<line x1="${x}" y1="${y}" x2="${x}" y2="${y + (i % 4 === 0 ? 14 : 7)}" class="jf-dim" stroke-width="1.5"/>`);
+  }
+  return out.join("");
+}
+
 function jarvisFrameSVG() {
   return `<svg class="jarvis-frame" viewBox="0 0 1920 1080" preserveAspectRatio="none">
-    <!-- corner brackets -->
-    <path d="M20,120 L20,20 L120,20" />
-    <path d="M1900,120 L1900,20 L1800,20" />
-    <path d="M20,960 L20,1060 L120,1060" />
-    <path d="M1900,960 L1900,1060 L1800,1060" />
-    <!-- top arc under the clock -->
-    <path d="M760,10 A400,400 0 0 1 1160,10" class="jf-dim" />
-    <!-- bottom chevron -->
-    <path d="M860,1050 L960,1010 L1060,1050" class="jf-dim" />
-    <!-- edge accent lines -->
-    <line x1="0" y1="300" x2="0" y2="780" stroke-width="2" class="jf-dim" />
-    <line x1="1920" y1="300" x2="1920" y2="780" stroke-width="2" class="jf-dim" />
+    <!-- corner brackets: double-line viewfinder style -->
+    <path d="M20,140 L20,20 L140,20" />
+    <path d="M36,140 L36,36 L140,36" class="jf-dim" />
+    <path d="M1900,140 L1900,20 L1780,20" />
+    <path d="M1884,140 L1884,36 L1780,36" class="jf-dim" />
+    <path d="M20,940 L20,1060 L140,1060" />
+    <path d="M36,940 L36,1044 L140,1044" class="jf-dim" />
+    <path d="M1900,940 L1900,1060 L1780,1060" />
+    <path d="M1884,940 L1884,1044 L1780,1044" class="jf-dim" />
+
+    <!-- small indicator clusters, top corners -->
+    <rect x="50" y="55" width="10" height="10" />
+    <rect x="66" y="55" width="10" height="10" class="jf-dim" />
+    <rect x="82" y="55" width="10" height="10" class="jf-dim" />
+    <circle cx="1850" cy="60" r="5" />
+    <circle cx="1866" cy="60" r="5" class="jf-dim" />
+    <circle cx="1882" cy="60" r="5" class="jf-dim" />
+
+    <!-- top arc under the clock, with tick marks -->
+    <path d="M700,14 A420,420 0 0 1 1220,14" />
+    ${_ticks(700, 1220, 14, 24)}
+
+    <!-- bottom chevron + rule -->
+    <path d="M840,1055 L960,1005 L1080,1055" class="jf-dim" />
+    <line x1="300" y1="1062" x2="820" y2="1062" class="jf-dim" stroke-width="1.5" />
+    <line x1="1100" y1="1062" x2="1620" y2="1062" class="jf-dim" stroke-width="1.5" />
+
+    <!-- edge hex-panel texture -->
+    <line x1="4" y1="180" x2="4" y2="900" stroke-width="1.5" class="jf-dim" />
+    <line x1="1916" y1="180" x2="1916" y2="900" stroke-width="1.5" class="jf-dim" />
+    <g transform="translate(0,220)">${_hexColumn(20, 0, 620, 16)}</g>
+    <g transform="translate(1870,220)">${_hexColumn(20, 0, 620, 16)}</g>
     <circle cx="15" cy="300" r="3" class="jf-fill" />
     <circle cx="15" cy="780" r="3" class="jf-fill" />
     <circle cx="1905" cy="300" r="3" class="jf-fill" />
@@ -1223,10 +1267,10 @@ function jarvisGlyphSVG() {
 const JARVIS_AGENT_IDS = ["athena", "iris", "hephaestus"];
 function jarvisAgentGlyphSVG(working) {
   return `<svg width="44" height="56" viewBox="0 0 44 56">
-    <path d="M22,4 L38,14 L38,42 L22,52 L6,42 L6,14 Z" stroke="var(--cyan)" stroke-width="1.3" opacity="${working ? 1 : 0.5}"/>
-    <circle cx="22" cy="22" r="6" stroke="var(--cyan)" stroke-width="1.2"/>
-    <line x1="22" y1="28" x2="22" y2="42" stroke="var(--cyan)" stroke-width="1.2"/>
-    ${working ? `<circle cx="22" cy="22" r="2.4" fill="var(--cyan)"/>` : ""}
+    <path d="M22,4 L38,14 L38,42 L22,52 L6,42 L6,14 Z" stroke="var(--cyan)" stroke-width="1.6" opacity="${working ? 1 : 0.9}"/>
+    <circle cx="22" cy="22" r="6" stroke="var(--cyan)" stroke-width="1.4"/>
+    <line x1="22" y1="28" x2="22" y2="42" stroke="var(--cyan)" stroke-width="1.4"/>
+    <circle cx="22" cy="22" r="2.4" fill="var(--cyan)" opacity="${working ? 1 : 0.6}"/>
   </svg>`;
 }
 
@@ -1282,6 +1326,7 @@ async function renderJarvisPanel(body) {
         <div class="jarvis-dial-label">JARVIS</div>
         <div class="jarvis-dial-status"><span class="jarvis-status-dot" id="jarvis-status-dot"></span> <span id="jarvis-status-text">checking…</span></div>
       </div>
+      <div class="jarvis-dial-note">Jarvis can only manage jobs, channels, and automation in this app — nothing else. Every action is logged in the Activity tab.</div>
 
       <div class="jarvis-center-emblem">
         ${jarvisGlyphSVG()}
@@ -1313,11 +1358,6 @@ async function renderJarvisPanel(body) {
       </div>
 
       <div class="jarvis-stat-bars" id="jarvis-readout"></div>
-
-      <div class="jarvis-widget jarvis-left">
-        <div class="jarvis-widget-handle">⠿ Notes</div>
-        <div class="hint">Jarvis can only manage jobs, channels, and automation in this app -- nothing else. Every action it takes is logged in the Activity tab.</div>
-      </div>
     </div>
   </div>`;
 
@@ -1400,11 +1440,6 @@ async function renderJarvisPanel(body) {
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("keyup", onKeyUp);
 
-  // Two independent floating widgets, each with its own drag handle and
-  // its own remembered position -- not one draggable window.
-  const cleanupDragLeft = jarvisMakeDraggable(
-    document.querySelector(".jarvis-left"), document.querySelector(".jarvis-left .jarvis-widget-handle"), "jarvisLeftPos"
-  );
   const cleanupDragRight = jarvisMakeDraggable(
     document.querySelector(".jarvis-right"), document.querySelector(".jarvis-right .jarvis-widget-handle"), "jarvisRightPos"
   );
@@ -1421,7 +1456,6 @@ async function renderJarvisPanel(body) {
     window.speechSynthesis && window.speechSynthesis.cancel();
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
-    cleanupDragLeft();
     cleanupDragRight();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;

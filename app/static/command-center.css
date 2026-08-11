@@ -633,9 +633,9 @@ button.msc-link-card { cursor: pointer; }
 }
 .jarvis-widget {
   position: absolute; width: 280px; max-height: 66vh;
-  background: rgba(8, 14, 26, 0.74); border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(8, 14, 26, 0.74); border: 1px solid rgba(232,236,239,0.35); border-radius: 4px;
   padding: 16px 18px; backdrop-filter: blur(10px); overflow-y: auto;
-  box-shadow: 0 16px 46px rgba(0,0,0,0.45);
+  box-shadow: 0 16px 46px rgba(0,0,0,0.45), 0 0 24px rgba(232,236,239,0.06), 0 0 0 1px rgba(232,236,239,0.03) inset;
 }
 .jarvis-widget-handle {
   cursor: grab; padding-bottom: 9px; margin-bottom: 12px;
@@ -791,16 +791,27 @@ button.msc-link-card { cursor: pointer; }
    back to a simple stacked layout since there's no room for floating
    widgets without them overlapping.
    ================================================================ */
-.jarvis-hud { position: absolute; inset: 0; overflow: hidden; }
+.jarvis-hud {
+  position: absolute; inset: 0; overflow: hidden;
+  /* A faint grid, so idle black space still reads as "console surface"
+     rather than empty void -- the reference is dense/detailed everywhere,
+     not just where a widget happens to sit. */
+  background-image:
+    linear-gradient(rgba(232,236,239,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232,236,239,0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
 .jarvis-frame {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none;
 }
 .jarvis-frame path, .jarvis-frame circle, .jarvis-frame line {
-  fill: none; stroke: var(--cyan); stroke-width: 1.5; opacity: 0.55;
+  fill: none; stroke: var(--cyan); stroke-width: 2; opacity: 0.85;
+  filter: drop-shadow(0 0 4px rgba(232,236,239,0.5));
 }
-.jarvis-frame .jf-fill { fill: var(--cyan); stroke: none; opacity: 0.7; }
-.jarvis-frame .jf-dim { opacity: 0.22; }
+.jarvis-frame .jf-fill { fill: var(--cyan); stroke: none; opacity: 0.9; }
+.jarvis-frame .jf-dim { opacity: 0.4; }
+.jarvis-frame .jf-hex { opacity: 0.5; stroke-width: 1; }
 
 /* -------- top clock -------- */
 .jarvis-clock {
@@ -834,62 +845,80 @@ button.msc-link-card { cursor: pointer; }
   display: flex; flex-direction: column; gap: 10px;
 }
 .jarvis-nav-item {
-  position: relative; text-align: left; padding: 10px 14px;
-  background: linear-gradient(90deg, rgba(232,236,239,0.10), rgba(232,236,239,0.02));
-  border: 1px solid var(--border); border-left: 3px solid var(--cyan);
+  position: relative; text-align: left; padding: 12px 16px;
+  background: linear-gradient(90deg, rgba(232,236,239,0.14), rgba(232,236,239,0.03));
+  border: 1px solid rgba(232,236,239,0.4); border-left: 3px solid var(--cyan);
   color: var(--ink); font-family: var(--font-body); font-size: 12px; letter-spacing: 1px;
   text-transform: uppercase; cursor: pointer; clip-path: polygon(0 0, 100% 0, 94% 100%, 0% 100%);
+  box-shadow: 0 0 14px rgba(232,236,239,0.06);
   transition: background 0.15s, border-color 0.15s;
 }
-.jarvis-nav-item:hover { background: rgba(232,236,239,0.16); border-left-color: #fff; }
+.jarvis-nav-item:hover { background: rgba(232,236,239,0.2); border-left-color: #fff; box-shadow: 0 0 20px rgba(232,236,239,0.18); }
 
 /* -------- bottom-left JARVIS dial (kill switch) -------- */
 .jarvis-dial {
   position: absolute; bottom: 60px; left: 40px; width: 190px; height: 190px;
   border-radius: 50%; cursor: pointer;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  background: radial-gradient(circle, rgba(232,236,239,0.06), transparent 70%);
+  background: radial-gradient(circle, rgba(232,236,239,0.1), transparent 70%);
+  filter: drop-shadow(0 0 18px rgba(232,236,239,0.15));
 }
 .jarvis-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .jarvis-dial-label {
-  font-family: var(--font-head); font-size: 15px; letter-spacing: 3px; color: var(--cyan);
-  text-shadow: 0 0 10px rgba(232,236,239,0.4); z-index: 1;
+  font-family: var(--font-head); font-size: 16px; letter-spacing: 3px; color: var(--cyan);
+  text-shadow: 0 0 12px rgba(232,236,239,0.6); z-index: 1;
 }
 .jarvis-dial-status {
   font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px; color: var(--muted);
   text-transform: uppercase; margin-top: 4px; z-index: 1;
 }
+.jarvis-dial-note {
+  position: absolute; bottom: 14px; left: 40px; width: 190px;
+  font-size: 10.5px; color: var(--muted); line-height: 1.5; text-align: center;
+}
 
 /* -------- center emblem: the AI glyph + orb -------- */
 .jarvis-center-emblem {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -46%);
+  /* Biased upward (-58% not -50%) so its bottom edge clears the chat input
+     docked near the bottom -- a dominant emblem and a reachable input both
+     matter, this is what keeps them from fighting for the same space. */
+  position: absolute; top: 48%; left: 50%; transform: translate(-50%, -58%);
   display: flex; flex-direction: column; align-items: center;
 }
-.jarvis-glyph { display: block; opacity: 0.85; }
-.jarvis-glyph .jf-core { filter: drop-shadow(0 0 16px var(--cyan)); }
+/* Deliberately large -- this is the dominant element of the whole screen in
+   the reference layout, not a small icon among equals. */
+.jarvis-glyph { display: block; opacity: 1; width: min(40vw, 440px); height: auto; filter: drop-shadow(0 0 22px rgba(232,236,239,0.2)); }
+.jarvis-glyph .jf-core { filter: drop-shadow(0 0 20px var(--cyan)); }
 
 /* -------- chat input (was the Google search box) -------- */
+/* Directly below the (now large) center emblem rather than beside it --
+   with the emblem taking up to 46vw, anything at the same vertical band
+   needs to sit outside that width or it collides. Below reads naturally
+   too: "ask the thing you're looking at". */
 .jarvis-searchbox {
-  position: absolute; top: 60%; left: 50%; transform: translateX(-124%);
-  width: 260px; display: flex; align-items: center; gap: 8px;
-  background: rgba(8,14,26,0.7); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; backdrop-filter: blur(6px);
+  position: absolute; bottom: 16%; left: 50%; transform: translateX(-50%);
+  width: 320px; display: flex; align-items: center; gap: 8px;
+  background: rgba(8,14,26,0.78); border: 1px solid rgba(232,236,239,0.35); border-radius: 6px;
+  padding: 9px 12px; backdrop-filter: blur(6px);
+  box-shadow: 0 0 20px rgba(232,236,239,0.08);
 }
 .jarvis-searchbox input {
   flex: 1; background: transparent; border: none; color: var(--ink);
   font-family: var(--font-body); font-size: 13px; outline: none;
 }
 .jarvis-caption-float {
-  position: absolute; top: calc(60% + 44px); left: 50%; transform: translateX(-124%);
-  width: 260px; font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  position: absolute; bottom: calc(16% - 32px); left: 50%; transform: translateX(-50%);
+  width: 320px; text-align: center; font-family: var(--font-mono); font-size: 10px; color: var(--muted);
   line-height: 1.5;
 }
 
 /* -------- schedule widget (was the calendar) -------- */
+/* Upper-right, clear of the emblem's column and above the agent row. */
 .jarvis-schedule {
-  position: absolute; top: 20%; right: 30%; width: 200px;
-  background: rgba(8,14,26,0.6); border: 1px solid var(--border); border-radius: 6px;
+  position: absolute; top: 8%; right: 4%; width: 210px;
+  background: rgba(8,14,26,0.7); border: 1px solid rgba(232,236,239,0.3); border-radius: 6px;
   padding: 12px 14px; backdrop-filter: blur(6px);
+  box-shadow: 0 0 16px rgba(232,236,239,0.06);
 }
 .jarvis-schedule-title {
   font-family: var(--font-mono); font-size: 9px; letter-spacing: 2px; color: var(--muted);
@@ -902,22 +931,24 @@ button.msc-link-card { cursor: pointer; }
   position: absolute; top: 24%; right: 6%; display: flex; gap: 18px;
 }
 .jarvis-agent-glyph { width: 56px; text-align: center; }
-.jarvis-agent-glyph svg { display: block; opacity: 0.75; }
-.jarvis-agent-glyph.on svg { opacity: 1; filter: drop-shadow(0 0 8px var(--cyan)); }
+.jarvis-agent-glyph svg { display: block; opacity: 0.95; filter: drop-shadow(0 0 4px rgba(232,236,239,0.15)); }
+.jarvis-agent-glyph.on svg { opacity: 1; filter: drop-shadow(0 0 10px var(--cyan)); }
 .jarvis-agent-glyph-label {
   font-family: var(--font-mono); font-size: 8px; letter-spacing: 1px; color: var(--muted);
   text-transform: uppercase; margin-top: 4px;
 }
 
 /* -------- transcript/activity (was the targeting reticle) -------- */
-.jarvis-hud .jarvis-widget.jarvis-right { top: 42%; right: 5%; width: 320px; }
+.jarvis-hud .jarvis-widget.jarvis-right { top: 44%; right: 3%; width: 300px; }
+/* "Notes" -- genuinely on the left this time (it was accidentally
+   right-anchored before, stacking on top of the transcript widget). */
 .jarvis-hud .jarvis-widget.jarvis-left {
-  top: auto; left: auto; position: absolute; bottom: 60px; right: 5%; width: 260px;
+  top: 70%; left: 2%; bottom: auto; right: auto; width: 240px; max-height: 24vh;
 }
 
 /* -------- stat bars (was CPU/RAM) -------- */
 .jarvis-stat-bars {
-  position: absolute; bottom: 220px; right: 5%; width: 220px;
+  position: absolute; bottom: 70px; right: 4%; width: 210px;
 }
 .jarvis-stat-bar { margin-bottom: 12px; }
 .jarvis-stat-bar-label {
