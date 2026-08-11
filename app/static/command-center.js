@@ -809,10 +809,40 @@ async function jarvisSpeak(text, onDone) {
     const cleanup = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
     audio.addEventListener("ended", cleanup);
     audio.addEventListener("error", cleanup);
-    audio.play().catch(() => { jarvisElevenLabsUnavailable = true; _jarvisSpeakBrowser(text, onDone); });
+    audio.play().catch((playErr) => {
+      // This is a real ElevenLabs response failing to autoplay -- almost
+      // always the browser's autoplay policy (the reply arrives seconds
+      // after the click that triggered it, past the window browsers count
+      // as "still a user gesture"), NOT a broken key or voice. That's a
+      // one-off, not proof ElevenLabs itself is unavailable, so this
+      // message falls back to the browser voice but the NEXT one still
+      // tries ElevenLabs again -- jarvisUnlockAudio() (wired to the first
+      // click in the panel) is what actually fixes it going forward.
+      console.warn("Jarvis: ElevenLabs audio blocked from autoplaying:", playErr);
+      _jarvisSpeakBrowser(text, onDone);
+    });
   } catch (e) {
     _jarvisSpeakBrowser(text, onDone);
   }
+}
+
+/** Autoplay policies only allow audio.play() to work reliably once the page
+ *  has "unlocked" audio with a real, synchronous user gesture. A chat
+ *  reply's play() call happens seconds after the click that triggered it
+ *  (a network round trip to Claude + ElevenLabs in between) -- often too
+ *  late for the browser to still count it as gesture-driven. Playing (and
+ *  instantly pausing) a near-silent clip synchronously inside a genuine
+ *  click handler unlocks the audio element for the rest of the page's
+ *  session, so the later async play() actually works. */
+let jarvisAudioUnlocked = false;
+function jarvisUnlockAudio() {
+  if (jarvisAudioUnlocked) return;
+  jarvisAudioUnlocked = true;
+  try {
+    const a = new Audio("data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA");
+    a.volume = 0;
+    a.play().then(() => a.pause()).catch(() => {});
+  } catch (e) { /* nothing to unlock without Audio support anyway */ }
 }
 
 // Lazily created so the browser's autoplay policy doesn't block it -- an
@@ -903,12 +933,6 @@ async function jarvisSend(message) {
   if (!message || !message.trim()) return;
   if (jarvisBusy) { toast("Jarvis is still answering -- one at a time."); return; }
   jarvisBusy = true;
-  // Pause the ambient mic for the whole exchange -- otherwise it can hear
-  // Jarvis's own spoken reply and mistake his own voice saying his name
-  // for you talking to him again. jarvisResumeAmbientListening() below
-  // (both success and error paths) brings it back once he's done.
-  jarvisAmbientPaused = true;
-  if (jarvisRecognition) { try { jarvisRecognition.stop(); } catch (e) {} }
   jarvisAppendMsg("user", message);
   const caption = document.getElementById("jarvis-caption");
   if (caption) caption.textContent = "…";
@@ -941,7 +965,6 @@ async function jarvisSend(message) {
     jarvisSpeak(r.reply, () => {
       jarvisSetOrbState("idle");
       jarvisBusy = false;
-      jarvisResumeAmbientListening();
     });
   } catch (e) {
     thinking.remove();
@@ -950,31 +973,24 @@ async function jarvisSend(message) {
     if (caption) caption.textContent = msg;
     jarvisSetOrbState("idle");
     jarvisBusy = false;
-    jarvisResumeAmbientListening();
   }
 }
 
-// No more push-to-talk -- the mic is on the whole time the panel's open,
-// and just ignores everything until it hears its own name, then captures
-// whatever you say after that as the actual request. Chrome/Edge stop
-// SpeechRecognition on their own after a few seconds of silence even with
-// continuous=true, so onend restarts it automatically unless we
-// deliberately paused it (panel closed, or Jarvis is mid-reply). genId
+// Push-to-talk: hold Enter, recognition runs while it's held. Chrome/Edge
+// stop SpeechRecognition on their own after a few seconds of silence even
+// with continuous=true, though -- that's a browser quirk, not you
+// releasing the key, and was cutting people off mid-sentence. genId
 // invalidates a restart still in flight from a stale recognition session
-// so a late-firing onend can't race a resume that already started a fresh
-// one (same pattern as the camera dock's start/stop race fix above).
-const JARVIS_WAKE_RE = /\bjarvis\b/i;
-const JARVIS_SILENCE_MS = 1600;  // how long after you stop talking before the captured request is sent
-let jarvisAmbientActive = false;   // "should be ambiently listening" -- survives pause/resume
-let jarvisAmbientPaused = false;   // true while deliberately stopped for a reply, not torn down
-let jarvisAwake = false;           // true once the wake word's been heard, until the request is sent
-let jarvisCommandBuffer = "";
-let jarvisSilenceTimer = null;
-let jarvisAmbientGen = 0;
+// (mirrors the camera dock's start/stop race fix above), and the key-held
+// state restarts recognition transparently instead of finalizing when it
+// ends on its own while the key's still down, carrying the transcript so
+// far across the restart so nothing already said gets lost.
+let jarvisKeyHeld = false;
+let jarvisTranscriptSoFar = "";
+let jarvisRecognitionGen = 0;
 
-function _jarvisAmbientLoop() {
-  if (!jarvisAmbientActive) return;
-  const myGen = ++jarvisAmbientGen;
+function _jarvisStartRecognition() {
+  const myGen = ++jarvisRecognitionGen;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const caption = document.getElementById("jarvis-caption");
   jarvisRecognition = new SR();
@@ -982,80 +998,52 @@ function _jarvisAmbientLoop() {
   jarvisRecognition.interimResults = true;
   jarvisRecognition.lang = "en-US";
   jarvisRecognition.onresult = (ev) => {
-    let interim = "", newFinal = "";
+    let interim = "";
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const t = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) newFinal += t + " ";
+      if (ev.results[i].isFinal) jarvisTranscriptSoFar += t + " ";
       else interim += t;
     }
-    if (!jarvisAwake) {
-      const combined = newFinal + " " + interim;
-      const m = combined.match(JARVIS_WAKE_RE);
-      if (m) {
-        jarvisAwake = true;
-        jarvisSetOrbState("listening");
-        jarvisCommandBuffer = combined.slice(m.index + m[0].length).trim();
-        if (caption) caption.textContent = jarvisCommandBuffer || "I'm listening…";
-        _jarvisResetSilenceTimer();
-      }
-      return;
-    }
-    if (newFinal) jarvisCommandBuffer += newFinal;
-    if (caption) caption.textContent = (jarvisCommandBuffer + interim).trim() || "I'm listening…";
-    _jarvisResetSilenceTimer();
+    if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
   jarvisRecognition.onerror = () => {};
   jarvisRecognition.onend = () => {
-    if (myGen !== jarvisAmbientGen) return;  // a newer session already took over
-    if (!jarvisAmbientActive || jarvisAmbientPaused) return;  // torn down, or deliberately paused for a reply
-    _jarvisAmbientLoop();  // just the browser's silence timeout -- keep listening
-  };
-  try { jarvisRecognition.start(); } catch (e) { /* one's already starting -- it wins */ }
-}
-
-function _jarvisResetSilenceTimer() {
-  if (jarvisSilenceTimer) clearTimeout(jarvisSilenceTimer);
-  jarvisSilenceTimer = setTimeout(() => {
-    const said = jarvisCommandBuffer.trim();
-    jarvisAwake = false;
-    jarvisCommandBuffer = "";
-    if (!said) {
-      jarvisSetOrbState("idle");
-      const caption = document.getElementById("jarvis-caption");
-      if (caption) caption.textContent = 'Say "Jarvis" to talk to me.';
+    if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
+    if (jarvisKeyHeld) {
+      // Ended on its own while the key's still down -- not the user
+      // stopping, just the browser's silence timeout. Keep listening.
+      try { _jarvisStartRecognition(); } catch (e) { /* fall through to finalize below */ }
       return;
     }
-    jarvisSend(said);
-  }, JARVIS_SILENCE_MS);
+    jarvisSetOrbState("idle");
+    const said = jarvisTranscriptSoFar.trim();
+    if (said) jarvisSend(said);
+    else if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
+  };
+  jarvisRecognition.start();
 }
 
-function jarvisStartAmbientListening() {
+function jarvisStartListening() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const caption = document.getElementById("jarvis-caption");
   if (!SR) {
     if (caption) caption.textContent = "Voice input isn't supported in this browser -- type instead.";
     return;
   }
-  jarvisAmbientActive = true;
-  jarvisAmbientPaused = false;
-  if (caption) caption.textContent = 'Say "Jarvis" to talk to me.';
-  _jarvisAmbientLoop();
+  if (jarvisKeyHeld || jarvisBusy) return;
+  jarvisUnlockAudio();
+  jarvisKeyHeld = true;
+  jarvisTranscriptSoFar = "";
+  jarvisSetOrbState("listening");
+  if (caption) caption.textContent = "Listening…";
+  _jarvisStartRecognition();
 }
 
-function jarvisResumeAmbientListening() {
-  if (!jarvisAmbientActive) return;
-  jarvisAmbientPaused = false;
-  _jarvisAmbientLoop();
-}
-
-function jarvisStopAmbientListening() {
-  jarvisAmbientActive = false;
-  jarvisAmbientPaused = false;
-  jarvisAwake = false;
-  jarvisCommandBuffer = "";
-  jarvisAmbientGen++;
-  if (jarvisSilenceTimer) { clearTimeout(jarvisSilenceTimer); jarvisSilenceTimer = null; }
-  if (jarvisRecognition) { try { jarvisRecognition.stop(); } catch (e) {} }
+function jarvisStopListening() {
+  jarvisKeyHeld = false;  // lets a since-fired onend finalize instead of restarting
+  if (jarvisRecognition) {
+    try { jarvisRecognition.stop(); } catch (e) { /* already stopped/starting -- onend will still fire */ }
+  }
 }
 
 function jarvisStatBar(label, value, max) {
@@ -1659,9 +1647,7 @@ async function renderJarvisPanel(body) {
   jarvisHistory = [];
   jarvisSeenBlockedIds = null;
   jarvisBusy = false;
-  jarvisAwake = false;
-  jarvisAmbientPaused = false;
-  jarvisCommandBuffer = "";
+  jarvisKeyHeld = false;
   body.innerHTML = `<div class="jarvis-page">
     <div class="jarvis-hud">
       ${jarvisFrameSVG()}
@@ -1708,7 +1694,7 @@ async function renderJarvisPanel(body) {
         <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
         <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
       </div>
-      <div class="jarvis-caption-float" id="jarvis-caption">Say "Jarvis" to talk to me, or type above.</div>
+      <div class="jarvis-caption-float" id="jarvis-caption">Hold Enter to talk, or type above.</div>
 
       <div class="jarvis-schedule" id="jarvis-schedule">
         <div class="jarvis-schedule-title">Schedule</div>
@@ -1790,19 +1776,31 @@ async function renderJarvisPanel(body) {
   // Typed input
   const input = document.getElementById("jarvis-text-input");
   document.getElementById("jarvis-send").addEventListener("click", () => {
+    jarvisUnlockAudio();
     if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
+      jarvisUnlockAudio();
       if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
     }
   });
 
-  // No push-to-talk anymore -- the mic is always on while the panel's
-  // open; it just waits to hear "Jarvis" before it treats anything as a
-  // request. Typing + Enter in the text box above still sends directly.
-  jarvisStartAmbientListening();
+  // Push-to-talk: hold Enter anywhere in the panel EXCEPT while typing in the
+  // text box (where Enter already means "send what I typed").
+  const onKeyDown = (e) => {
+    if (e.key !== "Enter" || e.repeat) return;
+    if (document.activeElement === input) return;
+    e.preventDefault();
+    jarvisStartListening();
+  };
+  const onKeyUp = (e) => {
+    if (e.key !== "Enter") return;
+    jarvisStopListening();
+  };
+  document.addEventListener("keydown", onKeyDown);
+  document.addEventListener("keyup", onKeyUp);
 
   const cleanupDragRight = jarvisMakeDraggable(
     document.querySelector(".jarvis-right"), document.querySelector(".jarvis-right .jarvis-widget-handle"), "jarvisRightPos"
@@ -1818,7 +1816,10 @@ async function renderJarvisPanel(body) {
   // time Jarvis reopens.
   const _origStop = stopAllPanelPolls;
   window.stopAllPanelPolls = function () {
-    jarvisStopAmbientListening();
+    document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("keyup", onKeyUp);
+    jarvisKeyHeld = false;
+    if (jarvisRecognition) { try { jarvisRecognition.stop(); } catch (e) {} }
     window.speechSynthesis && window.speechSynthesis.cancel();
     if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
     clearInterval(clockInterval);
