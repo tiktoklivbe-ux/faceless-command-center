@@ -265,6 +265,40 @@ def chat(payload: ChatIn, db: Session = Depends(get_db)):
     return run_turn(db, payload.message, payload.history, source="app")
 
 
+class SpeakIn(BaseModel):
+    text: str
+
+
+@router.post("/speak")
+def speak(payload: SpeakIn, db: Session = Depends(get_db)):
+    """Jarvis's spoken replies, via the same ElevenLabs account/key already
+    used for video narration -- not the browser's built-in TTS voice. 404s
+    (rather than a synthetic fallback) when no key is set, so the frontend
+    can fall back to speechSynthesis instead of silently playing nothing."""
+    from ..pipeline.voice_stage import DEFAULT_VOICE_ID
+
+    api_key = get_setting(db, "elevenlabs_api_key")
+    if not api_key:
+        raise HTTPException(404, "No ElevenLabs API key configured.")
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(400, "No text to speak.")
+    voice_id = get_setting(db, "jarvis_voice_id") or DEFAULT_VOICE_ID
+    resp = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
+        json={
+            "text": text[:2000],  # a runaway reply shouldn't turn into a multi-minute TTS call
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.45, "similarity_boost": 0.8},
+        },
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(502, f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:300]}")
+    return Response(content=resp.content, media_type="audio/mpeg")
+
+
 @router.get("/log")
 def get_log(limit: int = 50, db: Session = Depends(get_db)):
     rows = (

@@ -62,6 +62,7 @@ KNOWN_KEYS = {
     "jarvis_phone_allowlist": False,  # comma-separated E.164 numbers, e.g. "+15551234567"
     "jarvis_llm_provider": False,   # "anthropic" | "gemini" -- which LLM answers for Jarvis specifically
     "jarvis_gemini_model": False,   # defaults to gemini-3.5-flash if unset
+    "jarvis_voice_id": False,       # ElevenLabs voice id for Jarvis's spoken replies; defaults to DEFAULT_VOICE_ID if unset
 }
 
 

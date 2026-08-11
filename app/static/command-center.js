@@ -762,14 +762,58 @@ let jarvisHistory = [];
 let jarvisRecognition = null;
 let jarvisListening = false;
 
-function jarvisSpeak(text) {
+function _jarvisSpeakBrowser(text, onDone) {
   try {
-    if (!window.speechSynthesis || !text) return;
+    if (!window.speechSynthesis || !text) { if (onDone) onDone(); return; }
     window.speechSynthesis.cancel();  // don't stack replies if one's still talking
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.02;
+    if (onDone) { u.onend = onDone; u.onerror = onDone; }
     window.speechSynthesis.speak(u);
-  } catch (e) { /* speech synthesis just isn't available -- fine, text still shows */ }
+  } catch (e) { if (onDone) onDone(); /* speech synthesis just isn't available -- fine, text still shows */ }
+}
+
+// Set once an ElevenLabs call actually fails (missing key, quota, etc) so
+// repeated replies in one session don't each hit the API and wait on a
+// failure before falling back -- one bad response is enough to know.
+let jarvisElevenLabsUnavailable = false;
+let jarvisSpeakAudio = null;
+
+/** Jarvis's spoken replies -- ElevenLabs (the same account already used for
+ *  video narration) when a key is configured, the browser's built-in voice
+ *  otherwise. onDone fires once speech actually finishes, however it was
+ *  produced, so the caller can drive the "speaking" orb state accurately
+ *  instead of guessing a fixed duration. */
+async function jarvisSpeak(text, onDone) {
+  if (!text) { if (onDone) onDone(); return; }
+  if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
+  if (jarvisElevenLabsUnavailable) { _jarvisSpeakBrowser(text, onDone); return; }
+  try {
+    const r = await fetch("/api/jarvis/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!r.ok) {
+      // 404 = no ElevenLabs key configured; anything else = a real API
+      // failure. Either way, fall back rather than go silent, but only
+      // stop retrying ElevenLabs (and keep using the browser voice) once
+      // we've actually confirmed it doesn't work this session.
+      jarvisElevenLabsUnavailable = true;
+      _jarvisSpeakBrowser(text, onDone);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    jarvisSpeakAudio = audio;
+    const cleanup = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
+    audio.addEventListener("ended", cleanup);
+    audio.addEventListener("error", cleanup);
+    audio.play().catch(() => { jarvisElevenLabsUnavailable = true; _jarvisSpeakBrowser(text, onDone); });
+  } catch (e) {
+    _jarvisSpeakBrowser(text, onDone);
+  }
 }
 
 // Lazily created so the browser's autoplay policy doesn't block it -- an
@@ -872,8 +916,7 @@ async function jarvisSend(message) {
       toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
     }
     jarvisSetOrbState("speaking");
-    jarvisSpeak(r.reply);
-    setTimeout(() => jarvisSetOrbState("idle"), 1200);
+    jarvisSpeak(r.reply, () => jarvisSetOrbState("idle"));
   } catch (e) {
     thinking.remove();
     const msg = "Couldn't reach Jarvis: " + e.message;
@@ -1352,9 +1395,36 @@ function _circuitTrace(cx, cy, angleDeg, r1, r2, seed) {
   return { d: `M${cx.toFixed(1)},${cy.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`, x2, y2 };
 }
 
+/** The dense fine-grained circuit texture that filled the background of the
+ *  reference photo -- tiny vias and short trace stubs scattered around the
+ *  chip, not just the dozen big radiating traces. Deterministic pseudo-
+ *  random placement (index-driven, no Math.random) so it's stable across
+ *  re-renders, same approach as jarvisWorldMapSVG's dot scatter. */
+function _pcbTexture(cx, cy, rInner, rOuter) {
+  const out = [];
+  for (let i = 0; i < 130; i++) {
+    // two co-prime-ish strides so the scatter doesn't visibly repeat
+    const angle = (i * 137.5) % 360;
+    const rad = (angle * Math.PI) / 180;
+    const dist = rInner + ((i * 53) % (rOuter - rInner));
+    const x = cx + Math.cos(rad) * dist, y = cy + Math.sin(rad) * dist;
+    if (i % 3 === 0) {
+      out.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${1.4 + (i % 3) * 0.4}" class="jf-pcb"/>`);
+    } else {
+      const legAngle = Math.round(angle / 90) * 90 + ((i % 2) * 2 - 1) * 45;
+      const legRad = (legAngle * Math.PI) / 180;
+      const len = 6 + (i % 4) * 3;
+      const x2 = x + Math.cos(legRad) * len, y2 = y + Math.sin(legRad) * len;
+      out.push(`<line x1="${x.toFixed(1)}" y1="${y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="jf-pcb"/>`);
+    }
+  }
+  return out.join("");
+}
+
 function jarvisGlyphSVG() {
   const cx = 220, cy = 220, chipR = 70;
   const traceCount = 12;
+  const pcbBg = _pcbTexture(cx, cy, chipR + 20, 210);
   let traces = "";
   for (let i = 0; i < traceCount; i++) {
     const angle = (360 / traceCount) * i + (i % 3) * 6;
@@ -1374,6 +1444,7 @@ function jarvisGlyphSVG() {
   }
 
   return `<svg id="jarvis-orb" class="jarvis-glyph" viewBox="0 0 440 440">
+    ${pcbBg}
     ${traces}
     ${pins.join("")}
     <rect x="${cx - half}" y="${cy - half}" width="${half * 2}" height="${half * 2}" rx="4" class="jf-chip-body" id="jarvis-orb-ring"/>
@@ -1584,6 +1655,7 @@ async function renderJarvisPanel(body) {
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("keyup", onKeyUp);
     window.speechSynthesis && window.speechSynthesis.cancel();
+    if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
     clearInterval(securityInterval);
@@ -1695,6 +1767,10 @@ async function renderSettingsPanel(body) {
       <div class="hint">Independent of the Script Writer provider above — you can run scripts on one and Jarvis on the other.
       Gemini uses the key already entered under Script Writer.</div>
       ${field("jarvis_gemini_model", "Gemini model (optional)", "gemini-3.5-flash", "text")}
+      ${field("jarvis_voice_id", "ElevenLabs voice ID for Jarvis (optional)", "leave blank for the default voice", "text")}
+      <div class="hint">Jarvis speaks with your ElevenLabs key (entered under Voice — ElevenLabs below) once one's set — same
+      account as your video narration, just a separate voice if you want Jarvis to sound different. Without a key,
+      Jarvis falls back to your browser's built-in voice.</div>
     </div>
     <div class="card"><h2>Jarvis — WhatsApp</h2>
       ${field("twilio_account_sid", "Twilio Account SID", "AC…", "text")}
@@ -1757,7 +1833,7 @@ async function renderSettingsPanel(body) {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
       "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret",
       "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist",
-      "jarvis_llm_provider", "jarvis_gemini_model"];
+      "jarvis_llm_provider", "jarvis_gemini_model", "jarvis_voice_id"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });
