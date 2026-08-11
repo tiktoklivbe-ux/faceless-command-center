@@ -772,12 +772,72 @@ function jarvisSpeak(text) {
   } catch (e) { /* speech synthesis just isn't available -- fine, text still shows */ }
 }
 
+// Lazily created so the browser's autoplay policy doesn't block it -- an
+// AudioContext can only start from a real user gesture, and by the time
+// Jarvis first "thinks" the user has already clicked/typed into the panel.
+let jarvisAudioCtx = null;
+function _jarvisAudioCtx() {
+  if (!jarvisAudioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    jarvisAudioCtx = new AC();
+  }
+  if (jarvisAudioCtx.state === "suspended") jarvisAudioCtx.resume().catch(() => {});
+  return jarvisAudioCtx;
+}
+
+/** Synthesized cues -- no audio files, just oscillators with a short gain
+ *  envelope so nothing clicks or hangs on. */
+function jarvisPlayTone(kind) {
+  const ctx = _jarvisAudioCtx();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const beep = (freq, start, dur, type, peak) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now + start);
+    gain.gain.setValueAtTime(0, now + start);
+    gain.gain.linearRampToValueAtTime(peak, now + start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + start + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now + start);
+    osc.stop(now + start + dur + 0.02);
+  };
+  if (kind === "thinking") {
+    // a short rising sweep -- "processing", not an alarm
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(620, now + 0.22);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.06, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } else if (kind === "alert") {
+    // two urgent square-wave beeps -- distinct from "thinking", meant to be noticed
+    beep(880, 0, 0.14, "square", 0.09);
+    beep(880, 0.18, 0.14, "square", 0.09);
+  }
+}
+
 function jarvisSetOrbState(state) {
-  // state: "idle" | "listening" | "thinking" | "speaking"
+  // state: "idle" | "listening" | "thinking" | "speaking" | "alert" -- the
+  // color/animation itself lives in CSS, keyed off this class on the
+  // emblem wrapper (see .jarvis-center-emblem.jv-* rules), so the chip,
+  // its traces, and its nodes all shift together.
   const eq = document.getElementById("jarvis-eq");
-  const dot = document.getElementById("jarvis-orb-ring");
+  const emblem = document.querySelector(".jarvis-center-emblem");
   if (eq) eq.classList.toggle("jarvis-eq-active", state === "listening" || state === "speaking");
-  if (dot) dot.setAttribute("stroke", state === "listening" ? "#ff6b6b" : state === "thinking" ? "#ffc46b" : "var(--cyan)");
+  if (emblem) {
+    emblem.classList.remove("jv-idle", "jv-listening", "jv-thinking", "jv-speaking", "jv-alert");
+    emblem.classList.add("jv-" + state);
+  }
+  if (state === "thinking") jarvisPlayTone("thinking");
+  if (state === "alert") jarvisPlayTone("alert");
 }
 
 function jarvisAppendMsg(role, text) {
@@ -870,6 +930,34 @@ function jarvisStatBar(label, value, max) {
     <div class="jarvis-stat-bar-label"><span>${label}</span><span>${value}</span></div>
     <div class="jarvis-stat-bar-track"><div class="jarvis-stat-bar-fill" style="width:${pct}%"></div></div>
   </div>`;
+}
+
+// Real intruder/security-alert signal: JarvisLog already records every
+// refused tool call (a request that fell outside the whitelist, a
+// non-allowlisted WhatsApp sender, a bad Twilio signature, a kill-switch
+// refusal). A newly-appeared allowed:false row IS an unauthorized attempt --
+// this isn't decorative, it's the same audit trail the Activity tab reads.
+// Log ids are opaque hex strings, not sequential ints, so "new" is tracked
+// with a seen-set rather than a numeric high-water mark.
+let jarvisSeenBlockedIds = null;
+async function jarvisCheckSecurity() {
+  try {
+    const rows = await API("/api/jarvis/log?limit=20");
+    const blocked = rows.filter((r) => r.allowed === false);
+    if (jarvisSeenBlockedIds === null) {
+      // First poll after opening the panel -- baseline against existing
+      // history instead of alarming on old, already-seen refusals.
+      jarvisSeenBlockedIds = new Set(blocked.map((r) => r.id));
+      return;
+    }
+    const fresh = blocked.filter((r) => !jarvisSeenBlockedIds.has(r.id));
+    if (fresh.length) {
+      fresh.forEach((r) => jarvisSeenBlockedIds.add(r.id));
+      jarvisSetOrbState("alert");
+      toast("Jarvis blocked an unauthorized action -- check Activity.");
+      setTimeout(() => jarvisSetOrbState("idle"), 5000);
+    }
+  } catch (e) { /* security polling is best-effort; never block the UI over it */ }
 }
 
 async function jarvisRefreshReadout() {
@@ -1096,14 +1184,15 @@ function jarvisSetupGestureControl(panelEl) {
   let videoEl = null;
 
   const toggle = document.getElementById("jarvis-gesture-toggle");
-  const previewWrap = document.getElementById("jarvis-cam-preview");
+  const empty = document.getElementById("jarvis-camdock-empty");
 
   const stop = () => {
     state.running = false;
     if (jarvisGestureRAF) cancelAnimationFrame(jarvisGestureRAF);
     jarvisGestureRAF = null;
     if (jarvisCameraStream) { jarvisCameraStream.getTracks().forEach((t) => t.stop()); jarvisCameraStream = null; }
-    if (previewWrap) previewWrap.style.display = "none";
+    if (videoEl) videoEl.style.display = "none";
+    if (empty) empty.style.display = "block";
     if (toggle) { toggle.textContent = "📷 Gesture Control: Off"; toggle.classList.remove("copied"); }
   };
 
@@ -1122,7 +1211,8 @@ function jarvisSetupGestureControl(panelEl) {
     if (!videoEl) return;
     videoEl.srcObject = jarvisCameraStream;
     await videoEl.play();
-    if (previewWrap) previewWrap.style.display = "block";
+    videoEl.style.display = "block";
+    if (empty) empty.style.display = "none";
     if (toggle) { toggle.textContent = "📷 Gesture Control: On"; toggle.classList.add("copied"); }
 
     let model;
@@ -1245,22 +1335,50 @@ function jarvisRadarSVG() {
   </svg>`;
 }
 
-/** The center emblem -- a geometric circuit-line face/glyph, not a person.
- *  jarvis-orb-ring / jarvis-eq stay as real functional hooks (pulse color
- *  while listening/thinking, matched by jarvisSetOrbState). */
+/** The center emblem -- a chip die with circuit traces radiating outward,
+ *  not a person. jarvis-orb-ring / jarvis-eq / the state class on
+ *  .jarvis-center-emblem are the real functional hooks, matched by
+ *  jarvisSetOrbState (idle/listening/thinking/speaking/alert). */
+/** One elbowed circuit trace from the chip's edge out toward the frame --
+ *  own line art (not the reference photo, which carries a stock-site
+ *  watermark neither reproduced nor referenced here). Snaps its second leg
+ *  to a 45deg step so it reads as a circuit trace, not a straight ray. */
+function _circuitTrace(cx, cy, angleDeg, r1, r2, seed) {
+  const rad = (angleDeg * Math.PI) / 180;
+  const x1 = cx + Math.cos(rad) * r1, y1 = cy + Math.sin(rad) * r1;
+  const bendDeg = Math.round(angleDeg / 45) * 45 + ((seed % 2) * 2 - 1) * 15;
+  const rad2 = (bendDeg * Math.PI) / 180;
+  const x2 = x1 + Math.cos(rad2) * (r2 - r1), y2 = y1 + Math.sin(rad2) * (r2 - r1);
+  return { d: `M${cx.toFixed(1)},${cy.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`, x2, y2 };
+}
+
 function jarvisGlyphSVG() {
-  return `<svg id="jarvis-orb" class="jarvis-glyph" width="260" height="260" viewBox="0 0 260 260">
-    <circle cx="130" cy="130" r="110" id="jarvis-orb-ring" stroke="var(--cyan)" stroke-width="1.5"/>
-    <circle cx="130" cy="130" r="86" stroke="var(--cyan)" stroke-width="1" opacity="0.4"/>
-    <!-- angular "face" facets -->
-    <path d="M70,90 L130,55 L190,90 L190,150 L130,190 L70,150 Z" stroke="var(--cyan)" stroke-width="1.5" opacity="0.7"/>
-    <line x1="70" y1="90" x2="190" y2="150" stroke="var(--cyan)" stroke-width="1" opacity="0.3"/>
-    <line x1="190" y1="90" x2="70" y2="150" stroke="var(--cyan)" stroke-width="1" opacity="0.3"/>
-    <circle cx="100" cy="105" r="6" fill="var(--cyan)" opacity="0.8"/>
-    <circle cx="160" cy="105" r="6" fill="var(--cyan)" opacity="0.8"/>
-    <!-- glowing core, chest position -->
-    <circle cx="130" cy="150" r="16" fill="rgba(232,236,239,0.15)" class="jf-core"/>
-    <circle cx="130" cy="150" r="7" fill="var(--cyan)" class="jf-core"/>
+  const cx = 220, cy = 220, chipR = 70;
+  const traceCount = 12;
+  let traces = "";
+  for (let i = 0; i < traceCount; i++) {
+    const angle = (360 / traceCount) * i + (i % 3) * 6;
+    const t = _circuitTrace(cx, cy, angle, chipR, 195, i);
+    const dash = 60 + (i % 4) * 14;
+    traces += `<path d="${t.d}" class="jf-trace" style="stroke-dasharray:${dash}" />`;
+    traces += `<circle cx="${t.x2}" cy="${t.y2}" r="3.2" class="jf-trace-node" />`;
+  }
+  // The chip: a dark body with small pin ticks along each edge, and a
+  // lighter die square in the middle -- JARVIS sits across the die.
+  const half = 46, pins = [];
+  for (let i = -3; i <= 3; i++) {
+    pins.push(`<line x1="${cx - half - 8}" y1="${cy + i * 12}" x2="${cx - half}" y2="${cy + i * 12}" class="jf-pin"/>`);
+    pins.push(`<line x1="${cx + half}" y1="${cy + i * 12}" x2="${cx + half + 8}" y2="${cy + i * 12}" class="jf-pin"/>`);
+    pins.push(`<line x1="${cx + i * 12}" y1="${cy - half - 8}" x2="${cx + i * 12}" y2="${cy - half}" class="jf-pin"/>`);
+    pins.push(`<line x1="${cx + i * 12}" y1="${cy + half}" x2="${cx + i * 12}" y2="${cy + half + 8}" class="jf-pin"/>`);
+  }
+
+  return `<svg id="jarvis-orb" class="jarvis-glyph" viewBox="0 0 440 440">
+    ${traces}
+    ${pins.join("")}
+    <rect x="${cx - half}" y="${cy - half}" width="${half * 2}" height="${half * 2}" rx="4" class="jf-chip-body" id="jarvis-orb-ring"/>
+    <rect x="${cx - half + 14}" y="${cy - half + 14}" width="${(half - 14) * 2}" height="${(half - 14) * 2}" rx="2" class="jf-chip-die"/>
+    <text x="${cx}" y="${cy + 4}" text-anchor="middle" class="jf-chip-label">JARVIS</text>
   </svg>`;
 }
 
@@ -1296,6 +1414,7 @@ function jarvisDialSVG() {
 
 async function renderJarvisPanel(body) {
   jarvisHistory = [];
+  jarvisSeenBlockedIds = null;
   body.innerHTML = `<div class="jarvis-page">
     <div class="jarvis-hud">
       ${jarvisFrameSVG()}
@@ -1308,9 +1427,14 @@ async function renderJarvisPanel(body) {
         <div class="jarvis-gauge-label">Today's videos</div>
       </div>
       <svg class="jarvis-spin" viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" stroke="currentColor" stroke-width="2" stroke-dasharray="18 82"/></svg>
-      <button class="jarvis-gesture-btn" id="jarvis-gesture-toggle" title="Toggle webcam gesture control">📷</button>
-      <div id="jarvis-cam-preview" style="display:none">
-        <video id="jarvis-cam-video" width="180" height="135" muted playsinline style="display:block;width:100%;border:1px solid var(--border);border-radius:8px;transform:scaleX(-1)"></video>
+
+      <div class="jarvis-widget jarvis-camdock" id="jarvis-cam-preview">
+        <div class="jarvis-widget-handle">⠿ Camera</div>
+        <div class="jarvis-camdock-body">
+          <video id="jarvis-cam-video" width="180" height="135" muted playsinline style="display:none"></video>
+          <div class="jarvis-camdock-empty" id="jarvis-camdock-empty">No camera connected.<br>Click below to enable gesture control.</div>
+        </div>
+        <button class="jarvis-gesture-btn" id="jarvis-gesture-toggle" title="Toggle webcam gesture control">📷 Gesture Control: Off</button>
       </div>
 
       <div class="jarvis-nav-stack" id="jarvis-nav-stack">
@@ -1394,8 +1518,11 @@ async function renderJarvisPanel(body) {
     toast(enabled ? "Jarvis switched off." : "Jarvis switched back on.");
   });
 
+  jarvisSetOrbState("idle");
   jarvisRefreshReadout();
+  jarvisCheckSecurity();
   const readoutInterval = setInterval(jarvisRefreshReadout, 8000);
+  const securityInterval = setInterval(jarvisCheckSecurity, 8000);
 
   // Tabs
   document.querySelectorAll(".jarvis-tab").forEach((tab) => {
@@ -1443,6 +1570,9 @@ async function renderJarvisPanel(body) {
   const cleanupDragRight = jarvisMakeDraggable(
     document.querySelector(".jarvis-right"), document.querySelector(".jarvis-right .jarvis-widget-handle"), "jarvisRightPos"
   );
+  const cleanupDragCam = jarvisMakeDraggable(
+    document.querySelector(".jarvis-camdock"), document.querySelector(".jarvis-camdock .jarvis-widget-handle"), "jarvisCamPos"
+  );
   const cleanupGestures = jarvisSetupGestureControl(document.getElementById("bigpanel-inner"));
 
   // Cleaned up whenever the panel closes/changes -- stopAllPanelPolls runs on
@@ -1456,7 +1586,9 @@ async function renderJarvisPanel(body) {
     window.speechSynthesis && window.speechSynthesis.cancel();
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
+    clearInterval(securityInterval);
     cleanupDragRight();
+    cleanupDragCam();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;
     _origStop();
