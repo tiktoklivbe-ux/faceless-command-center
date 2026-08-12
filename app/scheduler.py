@@ -27,6 +27,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from . import models, ntfy_utils, render_gate, twilio_utils
@@ -189,12 +190,13 @@ def check_and_send_alerts(db: Session) -> None:
     tick alongside the render loop, not gated behind it, so a failure gets
     flagged even while nothing else is rendering.
 
-    Two independent checks, each deduplicated against a settings-stored set
-    of ids already alerted on so a restart or the next tick doesn't re-send
-    the same failure -- this is what keeps it from turning into spam. Off by
-    default requires nothing (it silently no-ops with nothing configured);
-    can be explicitly disabled via jarvis_proactive_alerts="false" even with
-    a channel set up, if you want Jarvis reachable but not proactive.
+    Three independent checks -- failures, blocked/unauthorized actions, and
+    successful publishes -- each deduplicated against its own settings-stored
+    set of ids already alerted on so a restart or the next tick doesn't
+    re-send the same one. Off by default requires nothing (it silently
+    no-ops with nothing configured); can be explicitly disabled via
+    jarvis_proactive_alerts="false" even with a channel set up, if you want
+    Jarvis reachable but not proactive.
     """
     if get_setting(db, "jarvis_proactive_alerts", "true") == "false":
         return
@@ -248,6 +250,39 @@ def check_and_send_alerts(db: Session) -> None:
         if sent:
             alerted_logs.update(r.id for r in new_blocked)
             set_setting(db, "jarvis_alerted_log_ids", ",".join(list(alerted_logs)[-500:]), is_secret=False)
+
+    # -- newly published videos -- real posts, not just "job finished with
+    # nothing connected to post to" (gated on an actual platform video id
+    # existing, not just status=PUBLISHED, since a channel with nothing
+    # connected also reaches PUBLISHED with nothing having actually posted).
+    alerted_published = {x for x in get_setting(db, "jarvis_alerted_published_ids", "").split(",") if x}
+    published = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.status == models.JobStatus.PUBLISHED)
+        .filter(or_(models.VideoJob.youtube_video_id.isnot(None), models.VideoJob.tiktok_publish_id.isnot(None)))
+        .order_by(models.VideoJob.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    new_published = [j for j in published if j.id not in alerted_published]
+    if new_published:
+        lines = []
+        for j in new_published[:5]:
+            platforms = []
+            if j.youtube_video_id:
+                platforms.append(f"YouTube ({j.youtube_video_id})")
+            if j.tiktok_publish_id:
+                platforms.append("TikTok")
+            lines.append(f"- \"{j.title or j.topic or 'untitled'}\" ({j.channel.name if j.channel else '?'}): "
+                         f"{', '.join(platforms)}")
+        extra = f"\n(+{len(new_published) - 5} more)" if len(new_published) > 5 else ""
+        plural = "s" if len(new_published) != 1 else ""
+        sent = _send_proactive_alert(
+            db, f"Jarvis: {len(new_published)} video{plural} posted:\n" + "\n".join(lines) + extra
+        )
+        if sent:
+            alerted_published.update(j.id for j in new_published)
+            set_setting(db, "jarvis_alerted_published_ids", ",".join(list(alerted_published)[-500:]), is_secret=False)
 
 
 def _today_start() -> datetime:

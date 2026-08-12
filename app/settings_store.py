@@ -71,6 +71,7 @@ KNOWN_KEYS = {
     "jarvis_proactive_alerts": False,  # "false" turns off proactive WhatsApp alerts; on by default once Twilio's configured
     "jarvis_alerted_job_ids": False,   # internal: comma-separated job ids already alerted on, so failures aren't re-sent every tick
     "jarvis_alerted_log_ids": False,   # internal: same, for blocked/unauthorized JarvisLog rows
+    "jarvis_alerted_published_ids": False,  # internal: same, for successfully-published video jobs
 }
 
 
