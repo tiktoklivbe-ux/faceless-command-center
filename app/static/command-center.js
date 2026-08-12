@@ -1148,19 +1148,58 @@ function _jarvisStartRecognition() {
     const caption = document.getElementById("jarvis-caption");
     if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
-  jarvisRecognition.onerror = () => {};
+  // Silently swallowing every error here (the old `() => {}`) is exactly
+  // why holding Enter could look and feel like nothing was happening: if
+  // mic permission was ever denied, EVERY start() fails immediately with
+  // "not-allowed", onend fires right after, and since the key's still held
+  // the code above just restarts recognition -- which fails the same way
+  // again, forever, with the caption stuck on "Listening..." the whole
+  // time and zero indication anything's wrong. Now it actually says so,
+  // and stops retrying on the errors that can't self-recover.
+  let jarvisLastError = null;
+  jarvisRecognition.onerror = (ev) => {
+    if (myGen !== jarvisRecognitionGen) return;
+    jarvisLastError = ev.error;
+    const caption = document.getElementById("jarvis-caption");
+    const FATAL = {
+      "not-allowed": "Mic access is blocked -- allow microphone access for this site in your browser's settings, then try again.",
+      "service-not-allowed": "Mic access is blocked -- allow microphone access for this site in your browser's settings, then try again.",
+      "audio-capture": "No microphone found -- check it's connected and not in use by another app.",
+    };
+    if (FATAL[ev.error]) {
+      jarvisKeyHeld = false;  // stop the auto-restart below; retrying a permission error forever is the exact bug this fixes
+      if (caption) caption.textContent = FATAL[ev.error];
+      jarvisSetOrbState("idle");
+    } else if (ev.error !== "no-speech" && ev.error !== "aborted") {
+      // no-speech/aborted are routine (silence timeout, a deliberate
+      // restart) -- anything else is worth surfacing rather than hiding.
+      if (caption) caption.textContent = `Mic error: ${ev.error} -- try again, or type instead.`;
+    }
+  };
   jarvisRecognition.onend = () => {
     if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
     if (jarvisKeyHeld) {
       // Ended on its own while the key's still down -- not the user
       // stopping, just the browser's silence timeout. Keep listening.
-      try { _jarvisStartRecognition(); } catch (e) { /* fall through to finalize below */ }
-      return;
+      try {
+        _jarvisStartRecognition();
+        return;
+      } catch (e) {
+        // The old comment here claimed this "falls through to finalize
+        // below" -- it didn't; an unconditional `return` right after the
+        // try/catch meant a restart failure was silently swallowed with
+        // the caption stuck on "Listening..." and nothing actually
+        // listening anymore. Now it actually finalizes instead of hanging.
+        jarvisKeyHeld = false;
+      }
     }
     jarvisSetOrbState("idle");
     const said = jarvisTranscriptSoFar.trim();
     if (said) jarvisSend(said);
-    else {
+    // Don't stomp the error message onerror just set (e.g. "Mic access is
+    // blocked...") with this generic fallback -- FATAL errors above already
+    // set jarvisKeyHeld=false, which is what routes execution here.
+    else if (!jarvisLastError) {
       const caption = document.getElementById("jarvis-caption");
       if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
     }
