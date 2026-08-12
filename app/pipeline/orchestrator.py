@@ -9,6 +9,7 @@ see assemble_stage's Voice/Visual concurrency).
 """
 import json
 import os
+import re
 import time
 import traceback
 import logging
@@ -296,7 +297,14 @@ def _run_job_inner(job_id: str):
             _t = time.time()
             script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes, kind=job.kind)
             job.title = script.get("title", "")[:200]
-            job.description = script.get("description", "")
+            description = script.get("description", "")
+            # Hashtags stay tied to THIS channel's own niche (the prompt in
+            # script_stage.py is instructed to never borrow another channel's
+            # tags) -- appended to the description so they ride along to
+            # both YouTube and TikTok without a schema change, and re-parsed
+            # out in _publish for YouTube's separate `tags` field / TikTok's caption.
+            hashtags = [h for h in script.get("hashtags", []) if h.startswith("#")]
+            job.description = f"{description}\n\n{' '.join(hashtags)}".strip() if hashtags else description
             segments = script.get("segments", [])
             job.script_text = "\n".join(s["narration"] for s in segments)
             db.commit()
@@ -370,6 +378,11 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
     attempted = []
     failures = []
 
+    # Pulled back out of the description (see script_stage/orchestrator's
+    # script-stage step) so each platform's own hashtag/tag field gets them
+    # too, not just the description text.
+    hashtags = re.findall(r"#\w+", job.description or "")
+
     if channel.youtube_connected:
         attempted.append("YouTube")
         try:
@@ -380,7 +393,8 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             )
             privacy = getattr(channel, "youtube_privacy", None) or "public"
             video_id = publish_youtube.upload_video(
-                access_token, video_path, job.title, job.description, privacy_status=privacy
+                access_token, video_path, job.title, job.description, privacy_status=privacy,
+                tags=[h.lstrip("#") for h in hashtags],
             )
             job.youtube_video_id = video_id
             _log(db, job, f"Publish Agent: YouTube upload complete: video ID {video_id} "
@@ -403,7 +417,11 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             access_token = publish_tiktok.refresh_access_token(
                 db, crypto.decrypt(channel.tiktok_refresh_token_enc)
             )
-            publish_id = publish_tiktok.publish_video(access_token, video_path, job.title)
+            # TikTok's "title" field is really the caption -- hashtags belong
+            # in it directly (that's how TikTok's own discovery reads tags),
+            # unlike YouTube where they're a separate structured field.
+            tiktok_caption = f"{job.title} {' '.join(hashtags)}".strip()
+            publish_id = publish_tiktok.publish_video(access_token, video_path, tiktok_caption)
             job.tiktok_publish_id = publish_id
             _log(db, job, f"Publish Agent: TikTok upload complete: publish ID {publish_id} "
                           f"(posted as private/self-only unless your app has passed TikTok review).")

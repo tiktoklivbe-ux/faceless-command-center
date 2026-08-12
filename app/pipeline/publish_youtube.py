@@ -144,14 +144,27 @@ def update_video_privacy(access_token: str, video_id: str, privacy_status: str =
 
 
 def upload_video(access_token: str, video_path: Path, title: str, description: str,
-                  privacy_status: str = "public") -> str:
+                  privacy_status: str = "public", tags: list[str] | None = None) -> str:
     """Resumable upload: reserve an upload URL, then PUT the file bytes."""
+    snippet = {
+        "title": title[:100],
+        "description": description[:5000],
+        "categoryId": "24",  # Entertainment
+    }
+    if tags:
+        # YouTube caps the combined tags string around 500 chars -- keep
+        # adding tags until that budget runs out rather than an arbitrary
+        # count, so a handful of longer niche tags don't get silently cut.
+        budget, kept = 480, []
+        for t in tags:
+            if budget - len(t) - 1 < 0:
+                break
+            kept.append(t)
+            budget -= len(t) + 1
+        if kept:
+            snippet["tags"] = kept
     metadata = {
-        "snippet": {
-            "title": title[:100],
-            "description": description[:5000],
-            "categoryId": "24",  # Entertainment
-        },
+        "snippet": snippet,
         "status": {"privacyStatus": privacy_status, "selfDeclaredMadeForKids": False},
     }
     init = requests.post(

@@ -45,10 +45,18 @@ SYSTEM_PROMPT = textwrap.dedent("""
     - Each segment also gets a short "visual_prompt": a plain description of an image
       that would accompany that line (for an AI image generator) -- concrete, visual,
       no text-in-image requests.
+    - Also produce "hashtags": 15-20 relevant hashtags to maximize reach and get the
+      video in front of more of the right people. Stay strictly on-niche for THIS
+      channel (e.g. a creepy/storytime channel gets horror/storytime/creepypasta-style
+      tags, never finance ones, and vice versa) -- do not drift into a different
+      niche's tags just because they're popular. Mix a few broad discovery tags
+      (#fyp #viral #shorts) with several specific, on-topic ones. Each tag starts
+      with # and has no spaces (e.g. "#creepypasta", "#truestory").
     - Return ONLY valid JSON, no markdown fences, matching this shape:
     {
       "title": "...",
       "description": "...",
+      "hashtags": ["#...", "#...", ...],
       "segments": [ {"narration": "...", "visual_prompt": "..."}, ... ]
     }
 """).strip()
@@ -96,10 +104,17 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
       -- concrete, visual, no text-in-image requests, and no real person's
       likeness (describe the SUBJECT MATTER -- a mansion, a stack of cash,
       a stadium -- not "a photo of [named person]").
+    - Also produce "hashtags": 15-20 relevant hashtags to maximize reach and get the
+      video in front of more of the right people. Stay strictly on-niche for THIS
+      channel (this is long-form finance/net-worth-adjacent content -- think
+      #networth #howmuch #finance #money, never a different channel's niche like
+      horror/storytime). Mix a few broad discovery tags with several specific,
+      on-topic ones. Each tag starts with # and has no spaces.
     - Return ONLY valid JSON, no markdown fences, matching this shape:
     {
       "title": "...",
       "description": "...",
+      "hashtags": ["#...", "#...", ...],
       "segments": [ {"narration": "...", "visual_prompt": "..."}, ... ]
     }
 """).strip()
@@ -146,6 +161,7 @@ def _salvage_truncated(text: str) -> dict | None:
     try:
         title_m = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
         desc_m = re.search(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        tags_m = re.search(r'"hashtags"\s*:\s*\[([^\]]*)\]', text)
         seg_pattern = re.compile(
             r'\{\s*"narration"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"visual_prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
         )
@@ -155,9 +171,13 @@ def _salvage_truncated(text: str) -> dict | None:
         ]
         if not segments:
             return None
+        hashtags = []
+        if tags_m:
+            hashtags = [_unescape(t) for t in re.findall(r'"((?:[^"\\]|\\.)*)"', tags_m.group(1))]
         return {
             "title": _unescape(title_m.group(1)) if title_m else "",
             "description": _unescape(desc_m.group(1)) if desc_m else "",
+            "hashtags": hashtags,
             "segments": segments,
         }
     except re.error:
@@ -262,6 +282,7 @@ def _template_fallback(niche: str, topic: str) -> dict:
         "title": f"[DRAFT] {subject[:80]}",
         "description": f"An automatically generated placeholder video about {subject}. "
                         f"Add an Anthropic or OpenAI API key in Settings to generate real scripts.",
+        "hashtags": ["#fyp", "#viral", "#shorts", "#storytime", "#draft"],
         "segments": [
             {"narration": f"Here's something most people don't know about {subject}.",
              "visual_prompt": f"a moody establishing shot related to {subject}"},
