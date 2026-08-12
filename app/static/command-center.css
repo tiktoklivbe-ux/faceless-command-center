@@ -1103,6 +1103,17 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-camdock.jf-fullscreen .jarvis-camdock-body {
   width: 100%; height: 100%; border-radius: 0; border: none; aspect-ratio: auto;
 }
+/* object-fit:cover (the default, fine for the small dock) was scaling the
+   4:3 camera feed up to fill a full-viewport container of a totally
+   different shape (typically 16:9 or wider), cropping most of the sides
+   off to do it -- which reads as "zoomed in", not just "bigger". contain
+   shows the whole feed with no cropping at all, at the cost of empty
+   space on the sides if the aspect ratios don't match, which is the
+   correct tradeoff for "I want to see all of myself", not part of me
+   blown up. */
+.jarvis-camdock.jf-fullscreen .jarvis-camdock-body video {
+  object-fit: contain;
+}
 /* Handle and toggle become a small overlay pinned top-left, still usable
    to drag/exit/turn off instead of vanishing along with the rest of the
    widget's normal box. */
