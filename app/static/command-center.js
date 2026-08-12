@@ -760,6 +760,32 @@ async function renderMissionControlPanel(body) {
 // for why the whitelist is an actual safety boundary, not a suggestion.
 let jarvisHistory = [];
 let jarvisRecognition = null;
+// Local, per-browser transcript so reopening Jarvis (or reloading the page
+// entirely) picks up where the conversation left off instead of resetting
+// to a fresh greeting every time -- jarvisHistory alone isn't enough since
+// it's just an in-memory variable that a page reload wipes. Capped so this
+// can't grow into a real localStorage problem over weeks of use.
+const JARVIS_CONVO_KEY = "jarvisConversation";
+const JARVIS_CONVO_CAP = 40;
+
+function jarvisSaveConversation(transcript) {
+  try {
+    localStorage.setItem(JARVIS_CONVO_KEY, JSON.stringify({
+      history: jarvisHistory.slice(-JARVIS_CONVO_CAP),
+      transcript: transcript.slice(-JARVIS_CONVO_CAP),
+    }));
+  } catch (e) { /* localStorage unavailable or full -- conversation just won't persist */ }
+}
+
+function jarvisLoadConversation() {
+  try {
+    const raw = localStorage.getItem(JARVIS_CONVO_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.history) || !Array.isArray(parsed.transcript)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
 
 function _jarvisSpeakBrowser(text, onDone) {
   try {
@@ -843,6 +869,22 @@ function jarvisUnlockAudio() {
     a.volume = 0;
     a.play().then(() => a.pause()).catch(() => {});
   } catch (e) { /* nothing to unlock without Audio support anyway */ }
+  // Desktop-notification permission needs a genuine user gesture too, or
+  // most browsers silently ignore the request -- this fires at exactly the
+  // same moments (send, push-to-talk) so one real interaction covers both.
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") Notification.requestPermission().catch(() => {});
+}
+
+function jarvisNotify(title, body) {
+  try {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const n = new Notification(title, { body });
+    // Clicking it should actually take you back to Jarvis, not just sit
+    // there -- otherwise a notification you can't act on trains you to
+    // ignore the next one.
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch (e) { /* notifications are a nice-to-have, never worth erroring over */ }
 }
 
 // Lazily created so the browser's autoplay policy doesn't block it -- an
@@ -913,7 +955,10 @@ function jarvisSetOrbState(state) {
   if (state === "alert") jarvisPlayTone("alert");
 }
 
-function jarvisAppendMsg(role, text) {
+let jarvisTranscript = [];
+
+function jarvisAppendMsg(role, text, opts) {
+  if (!opts || !opts.skipRecord) jarvisTranscript.push({ role, text });
   const log = document.getElementById("jarvis-log");
   if (!log) return;
   const div = el(`<div class="jarvis-msg jarvis-${role}"></div>`);
@@ -953,8 +998,13 @@ async function jarvisSend(message) {
     thinking.remove();
     jarvisHistory = r.history || jarvisHistory;
     jarvisAppendMsg("assistant", r.reply);
+    jarvisSaveConversation(jarvisTranscript);
     if (caption) caption.textContent = r.reply.slice(0, 90);
     else toast(`Jarvis: ${r.reply.slice(0, 120)}`);
+    // A reply that lands while you're on another tab is easy to miss
+    // entirely otherwise -- audio keeps playing regardless, but a desktop
+    // notification is what actually gets your attention if you've moved on.
+    if (document.hidden) jarvisNotify("Jarvis", r.reply.slice(0, 180));
     if (r.actions && r.actions.length) {
       toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
       // Some tool calls have a real effect on THIS page, not just the
@@ -1125,6 +1175,7 @@ async function jarvisCheckSecurity() {
       fresh.forEach((r) => jarvisSeenBlockedIds.add(r.id));
       jarvisSetOrbState("alert");
       toast("Jarvis blocked an unauthorized action -- check Activity.");
+      jarvisNotify("Jarvis -- security alert", "Blocked an unauthorized action. Check the Activity tab.");
       setTimeout(() => jarvisSetOrbState("idle"), 5000);
     }
   } catch (e) { /* security polling is best-effort; never block the UI over it */ }
@@ -1692,7 +1743,11 @@ function jarvisDialSVG() {
 }
 
 async function renderJarvisPanel(body) {
-  jarvisHistory = [];
+  // Pick up the last conversation instead of always starting fresh --
+  // restored below (after the log DOM exists) rather than reset here.
+  const savedConvo = jarvisLoadConversation();
+  jarvisHistory = (savedConvo && savedConvo.history) || [];
+  jarvisTranscript = [];
   jarvisSeenBlockedIds = null;
   jarvisBusy = false;
   jarvisKeyHeld = false;
@@ -1895,7 +1950,16 @@ async function renderJarvisPanel(body) {
     _origStop();
   };
 
-  jarvisAppendMsg("assistant", "Online. Ask me how a channel's doing, or tell me to retry something.");
+  if (savedConvo && savedConvo.transcript.length) {
+    // Replay the saved transcript into the fresh log rather than a canned
+    // greeting -- skipRecord since jarvisAppendMsg would otherwise push a
+    // second copy of each restored line onto jarvisTranscript.
+    savedConvo.transcript.forEach((m) => jarvisAppendMsg(m.role, m.text, { skipRecord: true }));
+    jarvisTranscript = savedConvo.transcript.slice();
+    jarvisAppendMsg("assistant", "Welcome back.", { skipRecord: true });
+  } else {
+    jarvisAppendMsg("assistant", "Online. Ask me how a channel's doing, or tell me to retry something.");
+  }
 }
 
 async function renderSettingsPanel(body) {
@@ -2212,6 +2276,17 @@ async function init() {
   $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
   setActiveSideItem(null);
   jarvisSetupGlobalPushToTalk();
+  // Browsers sometimes pause speechSynthesis (not the ElevenLabs <audio>
+  // path -- real <audio> elements aren't affected) when a tab goes to the
+  // background, as a power-saving quirk rather than anything intentional
+  // in this app. Resuming it the moment the tab becomes visible again
+  // means switching back mid-reply picks the voice back up instead of
+  // leaving it silently stuck.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && window.speechSynthesis && window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+  });
   // General fix for the whole "focused button reacts to Enter" bug class --
   // the sidebar Jarvis icon was the first one found, but the HUD has its
   // OWN buttons too (nav-items, tabs, the gesture toggle, send, the kill
