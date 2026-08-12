@@ -27,8 +27,9 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import config, models, render_gate
+from . import config, models, render_gate, twilio_utils
 from .pipeline import ffmpeg_utils, orchestrator
+from .settings_store import get_setting
 
 # ---------------------------------------------------------------- tool schemas
 # Anthropic tool-use format. Keep descriptions honest and specific -- a vague
@@ -143,14 +144,34 @@ TOOLS = [
         },
     },
     {
-        "name": "control_camera_dock",
-        "description": "Control the camera preview on Jarvis's own screen -- open or close "
-                        "the camera feed, expand or shrink the preview, or center it on "
-                        "screen. Use this when asked to turn the camera on/off, make it "
-                        "bigger/smaller, or move it to the middle.",
+        "name": "send_notification",
+        "description": "Send a message to the user right now, on request (e.g. 'text me when "
+                        "you're done', 'let me know'). Goes out over WhatsApp if that's "
+                        "configured, and always also shows as a desktop notification in the "
+                        "app if the user has that browser tab open. This is for a message "
+                        "YOU decide to send outside the normal reply -- not needed for a "
+                        "normal conversational answer, which the user already sees.",
         "input_schema": {
             "type": "object",
-            "properties": {"action": {"type": "string", "enum": ["open", "close", "expand", "shrink", "center"]}},
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "control_camera_dock",
+        "description": "Control the camera preview on Jarvis's own screen -- open or close "
+                        "the camera feed, expand/shrink/fullscreen it, restore it back to a "
+                        "normal-sized widget, or move it to the center or a corner of the "
+                        "screen. 'fullscreen' fills the whole screen with the camera feed "
+                        "(the cockpit HUD frame stays visible on top, and Jarvis's own "
+                        "emblem moves to a small corner presence) -- use it when asked to "
+                        "make the camera take up the whole screen.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"action": {"type": "string", "enum": [
+                "open", "close", "expand", "shrink", "fullscreen", "restore",
+                "center", "top-left", "top-right", "bottom-left", "bottom-right",
+            ]}},
             "required": ["action"],
         },
     },
@@ -286,13 +307,38 @@ def _is_safe_public_host(hostname: str) -> bool:
     return True
 
 
+def send_notification(db, message):
+    """Sends over WhatsApp if Twilio is fully configured with at least one
+    allowlisted number, and always returns ok so the frontend fires a
+    desktop notification too (see jarvisSend's actions handling in
+    command-center.js) -- that one doesn't need any setup, so it's the
+    channel that actually works even before WhatsApp is wired up."""
+    message = (message or "").strip()
+    if not message:
+        return {"error": "Nothing to send -- message was empty."}
+    account_sid = get_setting(db, "twilio_account_sid")
+    auth_token = get_setting(db, "twilio_auth_token")
+    from_number = get_setting(db, "twilio_whatsapp_number")
+    numbers = [n.strip() for n in get_setting(db, "jarvis_phone_allowlist", "").split(",") if n.strip()]
+    sent_whatsapp = False
+    if account_sid and auth_token and from_number and numbers:
+        for to_number in numbers:
+            if twilio_utils.send_whatsapp_message(account_sid, auth_token, from_number, to_number, message):
+                sent_whatsapp = True
+    return {"ok": True, "sent_whatsapp": sent_whatsapp, "message": message}
+
+
 def control_camera_dock(db, action):
     """The actual DOM effect happens client-side (see jarvisCameraDockAction
     in command-center.js, driven off this call's entry in the chat
     response's `actions` list) -- this function is what lets Claude decide
     to do it at all via a real tool call, and validates the action is one
-    of the ones the frontend actually knows how to perform."""
-    valid = {"open", "close", "expand", "shrink", "center"}
+    of the ones the frontend actually knows how to perform. "center" was
+    the only place it could be moved to -- added the four corners too, so
+    "put it in the corner" has somewhere real to go instead of only ever
+    landing in the middle."""
+    valid = {"open", "close", "expand", "shrink", "center", "fullscreen", "restore",
+              "top-left", "top-right", "bottom-left", "bottom-right"}
     if action not in valid:
         return {"error": f"'{action}' isn't a camera action Jarvis knows -- use one of: {', '.join(sorted(valid))}."}
     return {"ok": True, "action": action}
@@ -528,6 +574,7 @@ DISPATCH = {
     "run_whitelisted_command": run_whitelisted_command,
     "fetch_url": fetch_url,
     "control_camera_dock": control_camera_dock,
+    "send_notification": send_notification,
     "add_note": add_note,
     "list_notes": list_notes,
     "list_project_files": list_project_files,

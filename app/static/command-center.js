@@ -1014,6 +1014,13 @@ async function jarvisSend(message) {
         if (a.tool === "control_camera_dock" && a.result && a.result.ok) {
           jarvisCameraDockAction(a.result.action);
         }
+        // send_notification always fires a desktop notification here
+        // regardless of tab visibility -- this is Jarvis choosing to send
+        // something on request, not the passive "you missed a reply" case
+        // above, so it should show even if you're already looking at it.
+        if (a.tool === "send_notification" && a.result && a.result.ok) {
+          jarvisNotify("Jarvis", a.result.message);
+        }
       });
     }
     jarvisSetOrbState("speaking");
@@ -1419,17 +1426,35 @@ async function jarvisLoadHandModel() {
  *  WHETHER and WHEN to do this from the conversation (a real tool call,
  *  not a keyword match on my end); this is just the DOM action once it
  *  has, since the backend tool itself can't touch the page. */
+// "center" used to be the only place the camera dock could be moved to on
+// request -- these are the actual named spots Jarvis can now move it to.
+const JARVIS_DOCK_SPOTS = {
+  "center": (r) => ({ top: (window.innerHeight - r.height) / 2, left: (window.innerWidth - r.width) / 2 }),
+  "top-left": () => ({ top: 20, left: 20 }),
+  "top-right": (r) => ({ top: 20, left: window.innerWidth - r.width - 20 }),
+  "bottom-left": (r) => ({ top: window.innerHeight - r.height - 20, left: 20 }),
+  "bottom-right": (r) => ({ top: window.innerHeight - r.height - 20, left: window.innerWidth - r.width - 20 }),
+};
+
 function jarvisCameraDockAction(action) {
   const dock = document.querySelector(".jarvis-camdock");
   if (!dock) return;
+  const hud = document.querySelector(".jarvis-hud");
   if (action === "open") { if (jarvisCameraOpen) jarvisCameraOpen(); }
   else if (action === "close") { if (jarvisCameraClose) jarvisCameraClose(); }
   else if (action === "expand") { dock.classList.add("jf-expanded"); }
   else if (action === "shrink") { dock.classList.remove("jf-expanded"); }
-  else if (action === "center") {
+  else if (action === "fullscreen") {
+    dock.classList.add("jf-fullscreen");
+    if (hud) hud.classList.add("jf-camera-fullscreen");
+  } else if (action === "restore") {
+    dock.classList.remove("jf-fullscreen", "jf-expanded");
+    if (hud) hud.classList.remove("jf-camera-fullscreen");
+  } else if (JARVIS_DOCK_SPOTS[action]) {
     const rect = dock.getBoundingClientRect();
-    const top = Math.max(20, (window.innerHeight - rect.height) / 2);
-    const left = Math.max(20, (window.innerWidth - rect.width) / 2);
+    const spot = JARVIS_DOCK_SPOTS[action](rect);
+    const top = Math.max(20, Math.min(window.innerHeight - rect.height - 20, spot.top));
+    const left = Math.max(20, Math.min(window.innerWidth - rect.width - 20, spot.left));
     dock.style.right = "auto";
     dock.style.top = `${top}px`;
     dock.style.left = `${left}px`;

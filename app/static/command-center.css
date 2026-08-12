@@ -804,6 +804,12 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-frame {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none;
+  /* Explicit and above the fullscreen camera dock's z-index -- without
+     this, an element with z-index:auto (the frame, by default) renders
+     BELOW any sibling with a real z-index regardless of DOM order, which
+     would hide the cockpit chrome behind the fullscreen feed instead of
+     keeping it visible as an overlay on top of you. */
+  z-index: 18;
   /* One glow for the whole frame instead of a separate drop-shadow on every
      individual path/circle/line -- the frame SVG has 60-100+ of those
      (hex texture columns, tick marks, corner brackets), so a per-element
@@ -1045,6 +1051,46 @@ button.msc-link-card { cursor: pointer; }
   color: var(--ink); cursor: pointer; font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px;
 }
 .jarvis-gesture-btn.copied { border-color: var(--green); color: var(--green); }
+
+/* -------- fullscreen camera mode -------- */
+/* The feed fills the whole HUD -- but stays UNDER the cockpit frame
+   (z-index below .jarvis-frame's implicit stacking) so the corner
+   brackets, arc gauges and hex texture still read as an overlay on top of
+   you, not a totally different screen. That's "the Jarvis vibe" staying
+   intact instead of the chrome just disappearing. */
+.jarvis-hud .jarvis-widget.jarvis-camdock.jf-fullscreen {
+  position: fixed; inset: 0; width: 100%; height: 100%; max-height: none;
+  z-index: 15; border-radius: 0; padding: 0; background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+.jarvis-camdock.jf-fullscreen .jarvis-camdock-body {
+  width: 100%; height: 100%; border-radius: 0; border: none; aspect-ratio: auto;
+}
+/* Handle and toggle become a small overlay pinned top-left, still usable
+   to drag/exit/turn off instead of vanishing along with the rest of the
+   widget's normal box. */
+.jarvis-camdock.jf-fullscreen .jarvis-widget-handle {
+  position: absolute; top: 16px; left: 16px; z-index: 2;
+  background: rgba(8,14,26,0.7); padding: 6px 10px; border-radius: 4px; border-bottom: none;
+}
+.jarvis-camdock.jf-fullscreen .jarvis-gesture-btn {
+  position: absolute; bottom: 16px; left: 16px; width: auto; z-index: 2;
+  background: rgba(8,14,26,0.7);
+}
+
+/* Jarvis "stays in the room" -- shrunk to a corner presence instead of
+   disappearing behind the fullscreen feed, so you can still see him
+   thinking/listening/speaking (the state-color system is unchanged) while
+   the camera's the main thing on screen. */
+.jarvis-hud.jf-camera-fullscreen .jarvis-center-emblem {
+  top: auto; bottom: 28px; left: auto; right: 28px; transform: none;
+  z-index: 16; pointer-events: none;
+}
+.jarvis-hud.jf-camera-fullscreen .jarvis-glyph { width: 130px; }
+.jarvis-hud.jf-camera-fullscreen .jarvis-searchbox,
+.jarvis-hud.jf-camera-fullscreen .jarvis-caption-float {
+  z-index: 16;
+}
 
 @media (max-width: 1100px) {
   /* Not enough width for a scattered cockpit layout -- fall back to a
