@@ -1462,6 +1462,51 @@ function jarvisCameraDockAction(action) {
   }
 }
 
+/** The "futuristic tabs to open things" ask -- appears the moment gesture
+ *  control turns on, gone the moment it turns off, real data throughout
+ *  (no invented content): recent video jobs, channels, and saved notes.
+ *  Deliberately NOT a raw file-browser tab -- that would mean a new public
+ *  REST endpoint exposing the whole project tree with no LLM-mediated
+ *  whitelist in front of it, a materially bigger exposure than anything
+ *  else built so far. Notes covers the "files" instinct safely instead. */
+function jarvisShowQuickAccess() {
+  const panel = document.getElementById("jarvis-quickaccess");
+  if (!panel) return;
+  panel.style.display = "block";
+  jarvisLoadQuickAccessTab("jobs");
+}
+
+function jarvisHideQuickAccess() {
+  const panel = document.getElementById("jarvis-quickaccess");
+  if (panel) panel.style.display = "none";
+}
+
+async function jarvisLoadQuickAccessTab(tab) {
+  const panel = document.getElementById("jarvis-qa-panel");
+  if (!panel) return;
+  panel.innerHTML = `<div class="hint">Loading…</div>`;
+  try {
+    if (tab === "jobs") {
+      const jobs = await API("/api/jobs?limit=15");
+      panel.innerHTML = jobs.length
+        ? jobs.map((j) => `<div class="qa-row"><b>${escapeHtml(j.title || j.topic || "Untitled")}</b><span class="qa-status qa-${escapeHtml(String(j.status))}">${escapeHtml(String(j.status))}</span></div>`).join("")
+        : `<div class="hint">No jobs yet.</div>`;
+    } else if (tab === "channels") {
+      const channels = await API("/api/channels");
+      panel.innerHTML = channels.length
+        ? channels.map((c) => `<div class="qa-row"><b>${escapeHtml(c.name)}</b><span class="qa-status">${c.auto_enabled ? `${c.auto_per_day}/day` : "manual"}</span></div>`).join("")
+        : `<div class="hint">No channels yet.</div>`;
+    } else if (tab === "notes") {
+      const r = await API("/api/jarvis/notes?limit=10");
+      panel.innerHTML = (r.notes && r.notes.length)
+        ? r.notes.map((n) => `<div class="qa-row qa-note">${escapeHtml(n)}</div>`).join("")
+        : `<div class="hint">No notes yet -- ask Jarvis to save one.</div>`;
+    }
+  } catch (e) {
+    panel.innerHTML = `<div class="hint">Couldn't load that right now.</div>`;
+  }
+}
+
 function jarvisSetupGestureControl(panelEl) {
   // `running` used to be the only flag the toggle checked, but it only
   // becomes true once hand-tracking finishes loading (a CDN fetch that
@@ -1487,6 +1532,8 @@ function jarvisSetupGestureControl(panelEl) {
     if (videoEl) videoEl.style.display = "none";
     if (empty) empty.style.display = "block";
     if (toggle) { toggle.textContent = "📷 Gesture Control: Off"; toggle.classList.remove("copied"); }
+    jarvisCameraDockAction("restore");
+    jarvisHideQuickAccess();
   };
 
   const start = async () => {
@@ -1523,6 +1570,13 @@ function jarvisSetupGestureControl(panelEl) {
     videoEl.style.display = "block";
     if (empty) empty.style.display = "none";
     if (toggle) { toggle.textContent = "📷 Gesture Control: On"; toggle.classList.add("copied"); }
+    // Opening the camera used to leave it as the small 160px dock -- "large
+    // camera control" and gesture tracking both want a feed you can
+    // actually see and gesture in front of, so opening it now goes
+    // straight to the same fullscreen mode the "make it fullscreen" tool
+    // call uses, not a separate path.
+    jarvisCameraDockAction("fullscreen");
+    jarvisShowQuickAccess();
 
     let model;
     try {
@@ -1808,6 +1862,16 @@ async function renderJarvisPanel(body) {
         <button class="jarvis-gesture-btn" id="jarvis-gesture-toggle" title="Toggle webcam gesture control">📷 Gesture Control: Off</button>
       </div>
 
+      <div class="jarvis-widget jarvis-quickaccess" id="jarvis-quickaccess" style="display:none">
+        <div class="jarvis-widget-handle">⠿ Quick Access</div>
+        <div class="jarvis-tabs">
+          <button class="jarvis-tab qa-tab active" data-qa-tab="jobs">Jobs</button>
+          <button class="jarvis-tab qa-tab" data-qa-tab="channels">Channels</button>
+          <button class="jarvis-tab qa-tab" data-qa-tab="notes">Notes</button>
+        </div>
+        <div class="jarvis-tabpanel" id="jarvis-qa-panel"><div class="hint">Loading…</div></div>
+      </div>
+
       <div class="jarvis-nav-stack" id="jarvis-nav-stack">
         <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
         <button class="jarvis-nav-item" data-nav="missioncontrol">🛰️ Mission Control</button>
@@ -1919,9 +1983,9 @@ async function renderJarvisPanel(body) {
   const readoutInterval = setInterval(jarvisPollTick, 8000);
 
   // Tabs
-  document.querySelectorAll(".jarvis-tab").forEach((tab) => {
+  document.querySelectorAll(".jarvis-tab:not(.qa-tab)").forEach((tab) => {
     tab.addEventListener("click", () => {
-      document.querySelectorAll(".jarvis-tab").forEach((t) => t.classList.remove("active"));
+      document.querySelectorAll(".jarvis-tab:not(.qa-tab)").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
       const panel = document.getElementById("jarvis-tabpanel");
       if (tab.dataset.tab === "chat") {
@@ -1933,6 +1997,20 @@ async function renderJarvisPanel(body) {
       }
     });
   });
+
+  // Quick Access tabs -- a SEPARATE tab strip (Jobs/Channels/Notes), scoped
+  // off .qa-tab specifically so it can't collide with the Transcript/
+  // Activity tabs above despite sharing the same visual .jarvis-tab style.
+  document.querySelectorAll(".qa-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".qa-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      jarvisLoadQuickAccessTab(tab.dataset.qaTab);
+    });
+  });
+  const cleanupDragQuickAccess = jarvisMakeDraggable(
+    document.querySelector(".jarvis-quickaccess"), document.querySelector(".jarvis-quickaccess .jarvis-widget-handle"), "jarvisQuickAccessPos"
+  );
 
   // Typed input
   const input = document.getElementById("jarvis-text-input");
@@ -1980,6 +2058,7 @@ async function renderJarvisPanel(body) {
     jarvisDragPanel = null;
     cleanupDragRight();
     cleanupDragCam();
+    cleanupDragQuickAccess();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;
     _origStop();

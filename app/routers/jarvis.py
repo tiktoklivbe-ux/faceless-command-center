@@ -275,6 +275,15 @@ def chat(payload: ChatIn, db: Session = Depends(get_db)):
     return run_turn(db, payload.message, payload.history, source="app")
 
 
+@router.get("/notes")
+def get_notes(limit: int = 10, db: Session = Depends(get_db)):
+    """Read-only, for the HUD's Quick Access panel -- reuses the same
+    add_note/list_notes tool logic Jarvis itself uses, so there's exactly
+    one place notes are actually read from, not a second parallel
+    implementation that could drift from it."""
+    return jarvis_tools.list_notes(db, limit)
+
+
 class SpeakIn(BaseModel):
     text: str
 

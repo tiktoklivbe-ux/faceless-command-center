@@ -165,7 +165,11 @@ TOOLS = [
                         "screen. 'fullscreen' fills the whole screen with the camera feed "
                         "(the cockpit HUD frame stays visible on top, and Jarvis's own "
                         "emblem moves to a small corner presence) -- use it when asked to "
-                        "make the camera take up the whole screen.",
+                        "make the camera take up the whole screen. 'open' is ALSO what turns "
+                        "on gesture/hand-tracking control -- the camera feed and gesture "
+                        "control are the same thing, so 'turn on gesture control', 'turn on "
+                        "the camera', and 'enable hand tracking' should all use action=open "
+                        "(and 'turn off/close/stop' either of those should use action=close).",
         "input_schema": {
             "type": "object",
             "properties": {"action": {"type": "string", "enum": [

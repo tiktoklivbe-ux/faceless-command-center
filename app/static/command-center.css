@@ -1052,6 +1052,26 @@ button.msc-link-card { cursor: pointer; }
 }
 .jarvis-gesture-btn.copied { border-color: var(--green); color: var(--green); }
 
+/* -------- quick access: appears with gesture control, real data -------- */
+.jarvis-hud .jarvis-widget.jarvis-quickaccess {
+  top: 62%; left: 2.5%; width: 230px; z-index: 17;
+  box-shadow: 0 16px 46px rgba(0,0,0,0.5), 0 0 30px rgba(232,236,239,0.1), 0 0 0 1px rgba(232,236,239,0.05) inset;
+}
+.jarvis-qa-row, .qa-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid rgba(232,236,239,0.08);
+  font-size: 11.5px; color: var(--ink);
+}
+.qa-row:last-child { border-bottom: none; }
+.qa-row b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.qa-status {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--muted); white-space: nowrap; flex-shrink: 0;
+}
+.qa-status.qa-failed { color: #ff6b6b; }
+.qa-status.qa-published, .qa-status.qa-ready_for_review { color: var(--green); }
+.qa-note { display: block; white-space: pre-wrap; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
+
 /* -------- fullscreen camera mode -------- */
 /* The feed fills the whole HUD -- but stays UNDER the cockpit frame
    (z-index below .jarvis-frame's implicit stacking) so the corner
@@ -1100,7 +1120,7 @@ button.msc-link-card { cursor: pointer; }
   .jarvis-nav-stack, .jarvis-dial, .jarvis-center-emblem, .jarvis-searchbox, .jarvis-caption-float,
   .jarvis-schedule, .jarvis-agent-row, .jarvis-stat-bars,
   .jarvis-hud .jarvis-widget.jarvis-right, .jarvis-hud .jarvis-widget.jarvis-left,
-  .jarvis-hud .jarvis-widget.jarvis-camdock {
+  .jarvis-hud .jarvis-widget.jarvis-camdock, .jarvis-hud .jarvis-widget.jarvis-quickaccess {
     position: static; width: auto; max-width: 260px; transform: none; margin: 0 auto;
   }
   .jarvis-nav-stack { flex-direction: row; flex-wrap: wrap; }
