@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from . import models, render_gate, twilio_utils
+from . import models, ntfy_utils, render_gate, twilio_utils
 from .database import SessionLocal
 from .pipeline import orchestrator
 from .settings_store import get_setting, set_setting
@@ -160,39 +160,46 @@ def _proactive_alert_recipients(db: Session) -> list[str]:
 
 
 def _send_proactive_alert(db: Session, body: str) -> bool:
-    """Returns True only if at least one recipient actually got the message --
-    the caller uses this to decide whether it's safe to mark the underlying
-    failure/block as "alerted". If Twilio's temporarily down or misconfigured,
-    returning False here means the same failure gets retried next tick
-    instead of being silently and permanently lost the moment credentials
-    happen to be broken."""
+    """Tries every configured channel -- WhatsApp (Twilio) and ntfy.sh -- not
+    just one, so setting up either one is enough to actually get alerted.
+    Returns True if AT LEAST ONE channel actually delivered the message; the
+    caller uses this to decide whether it's safe to mark the underlying
+    failure/block as "alerted". If everything configured is temporarily down
+    or misconfigured, returning False means the same failure gets retried
+    next tick instead of being silently and permanently lost."""
+    sent_any = False
+
     account_sid = get_setting(db, "twilio_account_sid")
     auth_token = get_setting(db, "twilio_auth_token")
     from_number = get_setting(db, "twilio_whatsapp_number")
-    sent_any = False
     for to_number in _proactive_alert_recipients(db):
         if twilio_utils.send_whatsapp_message(account_sid, auth_token, from_number, to_number, body):
             sent_any = True
+
+    ntfy_topic = get_setting(db, "ntfy_topic")
+    if ntfy_topic and ntfy_utils.send_ntfy_message(ntfy_topic, body):
+        sent_any = True
+
     return sent_any
 
 
 def check_and_send_alerts(db: Session) -> None:
-    """Jarvis texting YOU without being asked first -- the other half of the
-    WhatsApp integration, which until now only ever replied to messages you
-    sent. Runs every tick alongside the render loop, not gated behind it, so
-    a failure gets flagged even while nothing else is rendering.
+    """Jarvis reaching out to YOU without being asked first, over WhatsApp
+    and/or ntfy.sh (whichever's configured -- either is enough). Runs every
+    tick alongside the render loop, not gated behind it, so a failure gets
+    flagged even while nothing else is rendering.
 
     Two independent checks, each deduplicated against a settings-stored set
     of ids already alerted on so a restart or the next tick doesn't re-send
     the same failure -- this is what keeps it from turning into spam. Off by
-    default requires nothing (it silently no-ops with no Twilio configured);
+    default requires nothing (it silently no-ops with nothing configured);
     can be explicitly disabled via jarvis_proactive_alerts="false" even with
-    Twilio set up, if you want Jarvis reachable but not proactive.
+    a channel set up, if you want Jarvis reachable but not proactive.
     """
     if get_setting(db, "jarvis_proactive_alerts", "true") == "false":
         return
-    if not _proactive_alert_recipients(db):
-        return  # nothing configured to alert -- not worth querying the DB for nothing
+    if not _proactive_alert_recipients(db) and not get_setting(db, "ntfy_topic"):
+        return  # nothing configured on either channel -- not worth querying the DB for nothing
 
     # -- newly failed video jobs --
     alerted_jobs = {x for x in get_setting(db, "jarvis_alerted_job_ids", "").split(",") if x}

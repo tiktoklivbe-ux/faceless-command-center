@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import config, models, render_gate, twilio_utils
+from . import config, models, ntfy_utils, render_gate, twilio_utils
 from .pipeline import ffmpeg_utils, orchestrator
 from .settings_store import get_setting
 
@@ -146,7 +146,8 @@ TOOLS = [
     {
         "name": "send_notification",
         "description": "Send a message to the user right now, on request (e.g. 'text me when "
-                        "you're done', 'let me know'). Goes out over WhatsApp if that's "
+                        "you're done', 'let me know', 'notify me'). Goes out over WhatsApp "
+                        "and/or ntfy (a free push notification service) if either is "
                         "configured, and always also shows as a desktop notification in the "
                         "app if the user has that browser tab open. This is for a message "
                         "YOU decide to send outside the normal reply -- not needed for a "
@@ -313,10 +314,11 @@ def _is_safe_public_host(hostname: str) -> bool:
 
 def send_notification(db, message):
     """Sends over WhatsApp if Twilio is fully configured with at least one
-    allowlisted number, and always returns ok so the frontend fires a
-    desktop notification too (see jarvisSend's actions handling in
-    command-center.js) -- that one doesn't need any setup, so it's the
-    channel that actually works even before WhatsApp is wired up."""
+    allowlisted number, and over ntfy.sh if a topic is set -- either, both,
+    or neither can be configured. Always returns ok so the frontend also
+    fires a desktop notification (see jarvisSend's actions handling in
+    command-center.js), since that one needs no setup at all and works
+    even before either real channel is wired up."""
     message = (message or "").strip()
     if not message:
         return {"error": "Nothing to send -- message was empty."}
@@ -329,7 +331,11 @@ def send_notification(db, message):
         for to_number in numbers:
             if twilio_utils.send_whatsapp_message(account_sid, auth_token, from_number, to_number, message):
                 sent_whatsapp = True
-    return {"ok": True, "sent_whatsapp": sent_whatsapp, "message": message}
+
+    ntfy_topic = get_setting(db, "ntfy_topic")
+    sent_ntfy = bool(ntfy_topic) and ntfy_utils.send_ntfy_message(ntfy_topic, message)
+
+    return {"ok": True, "sent_whatsapp": sent_whatsapp, "sent_ntfy": sent_ntfy, "message": message}
 
 
 def control_camera_dock(db, action):

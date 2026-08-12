@@ -80,3 +80,4 @@ class SettingsIn(BaseModel):
     jarvis_gemini_model: Optional[str] = None
     jarvis_voice_id: Optional[str] = None
     jarvis_proactive_alerts: Optional[str] = None
+    ntfy_topic: Optional[str] = None

@@ -60,6 +60,11 @@ KNOWN_KEYS = {
     "twilio_auth_token": True,      # also used to verify incoming webhook requests are genuinely from Twilio
     "twilio_whatsapp_number": False,  # e.g. "whatsapp:+14155238886"
     "jarvis_phone_allowlist": False,  # comma-separated E.164 numbers, e.g. "+15551234567"
+    # Jarvis / ntfy.sh -- free forever, no account, no card. The topic name
+    # is secret-like: on the public server, anyone who knows it can both
+    # push to it and read what's sent, so it's the "password" here, not
+    # just a label.
+    "ntfy_topic": True,
     "jarvis_llm_provider": False,   # "anthropic" | "gemini" -- which LLM answers for Jarvis specifically
     "jarvis_gemini_model": False,   # defaults to gemini-3.5-flash if unset
     "jarvis_voice_id": False,       # ElevenLabs voice id for Jarvis's spoken replies; defaults to DEFAULT_VOICE_ID if unset

@@ -2421,12 +2421,22 @@ async function renderSettingsPanel(body) {
       <div class="hint">Comma-separate multiple numbers. Only messages from these numbers, with a verified
       Twilio signature, ever reach Jarvis — everything else is silently ignored.
       Webhook URL for Twilio's WhatsApp sandbox/number: <code>${location.origin}/api/jarvis/whatsapp</code></div>
-      <label>Proactive alerts</label>
+    </div>
+    <div class="card"><h2>Jarvis — Push Notifications (ntfy, free)</h2>
+      ${field("ntfy_topic", "ntfy topic", "e.g. jarvis-9f2a1c7e-alerts", "text")}
+      <div class="hint">Free forever, no account needed. Install the <b>ntfy</b> app
+      (<a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy.sh</a> — iOS/Android/web), subscribe to the
+      exact topic name you enter here, and save. Treat the topic name like a password — anyone who knows it can
+      read and send to it on the public server, so use a long, hard-to-guess one, not something like "jarvis".</div>
+    </div>
+    <div class="card"><h2>Jarvis — Proactive Alerts</h2>
+      <label>When something needs your attention</label>
       <select id="st-jarvis_proactive_alerts">
-        <option value="true" ${(s.jarvis_proactive_alerts && s.jarvis_proactive_alerts.value) !== "false" ? "selected" : ""}>On — text me the moment a video fails or Jarvis blocks an unauthorized action (Recommended)</option>
+        <option value="true" ${(s.jarvis_proactive_alerts && s.jarvis_proactive_alerts.value) !== "false" ? "selected" : ""}>On — alert me the moment a video fails or Jarvis blocks an unauthorized action (Recommended)</option>
         <option value="false" ${(s.jarvis_proactive_alerts && s.jarvis_proactive_alerts.value) === "false" ? "selected" : ""}>Off — I'll only hear from Jarvis when I message him first</option>
       </select>
-      <div class="hint">Each failure/blocked-attempt is only ever texted once, so this can't turn into spam.</div>
+      <div class="hint">Goes out over whichever of WhatsApp / ntfy you've set up above (either is enough, both is fine
+      too). Each failure/blocked-attempt is only ever sent once, so this can't turn into spam.</div>
     </div>
     <button class="btn" id="st-save">Save Settings</button>`;
 
@@ -2480,7 +2490,7 @@ async function renderSettingsPanel(body) {
     const keys = ["llm_provider", "anthropic_api_key", "anthropic_model", "gemini_api_key", "openai_api_key", "elevenlabs_api_key",
       "fast_render", "fast_render", "image_provider", "stability_api_key", "youtube_client_id", "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret",
       "twilio_account_sid", "twilio_auth_token", "twilio_whatsapp_number", "jarvis_phone_allowlist",
-      "jarvis_llm_provider", "jarvis_gemini_model", "jarvis_voice_id", "jarvis_proactive_alerts"];
+      "jarvis_llm_provider", "jarvis_gemini_model", "jarvis_voice_id", "jarvis_proactive_alerts", "ntfy_topic"];
     const payload = {};
     keys.forEach((k) => { const e = $("#st-" + k); if (e && e.value) payload[k] = e.value; });
     await API("/api/settings", { method: "POST", body: JSON.stringify(payload) });
