@@ -804,10 +804,19 @@ button.msc-link-card { cursor: pointer; }
 .jarvis-frame {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none;
+  /* One glow for the whole frame instead of a separate drop-shadow on every
+     individual path/circle/line -- the frame SVG has 60-100+ of those
+     (hex texture columns, tick marks, corner brackets), so a per-element
+     filter meant that many separate GPU compositing operations happening
+     together. That's expensive enough to visibly stutter/flicker whenever
+     something nearby forces a repaint (a state change, an interval tick) --
+     which lines up with every "flickers/glitches" report so far always
+     landing right on a state transition. One filter here looks the same
+     but is a small fraction of the compositing cost. */
+  filter: drop-shadow(0 0 3px rgba(232,236,239,0.35));
 }
 .jarvis-frame path, .jarvis-frame circle, .jarvis-frame line {
   fill: none; stroke: var(--cyan); stroke-width: 2; opacity: 0.85;
-  filter: drop-shadow(0 0 4px rgba(232,236,239,0.5));
 }
 .jarvis-frame .jf-fill { fill: var(--cyan); stroke: none; opacity: 0.9; }
 .jarvis-frame .jf-dim { opacity: 0.4; }
@@ -910,7 +919,12 @@ button.msc-link-card { cursor: pointer; }
 /* Soft bright specular blooms scattered along the texture, like the
    reference photo's hot-spots -- these are what make the background read
    as "glowing circuit board" rather than a flat grid of thin gray lines. */
-.jarvis-glyph .jf-pcb-bloom { fill: var(--cyan); opacity: 0.7; filter: drop-shadow(0 0 6px var(--cyan)); transition: fill 0.3s, opacity 0.3s; }
+/* No per-dot filter here -- 18 of these each with their own drop-shadow was
+   the same per-element compositing cost problem as the frame SVG above,
+   and at this size the individual glow was barely visible anyway. The
+   parent .jarvis-glyph's one filter already gives the whole emblem ambient
+   glow. */
+.jarvis-glyph .jf-pcb-bloom { fill: var(--cyan); opacity: 0.85; transition: fill 0.3s, opacity 0.3s; }
 
 /* -------- emblem state colors -------- */
 /* idle: calm cyan, static. listening: warm red-orange while capturing
