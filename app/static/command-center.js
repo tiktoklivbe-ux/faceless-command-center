@@ -1406,6 +1406,196 @@ function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
   return { screenX, screenY, pinching };
 }
 
+// ---------------------------------------------------------------- trained gestures
+// "Train Jarvis with my hand gestures and what to open" -- you hold a pose,
+// name what it should do, and from then on holding that same pose again
+// (with a confirmation chime) does that thing. A trained gesture is stored
+// as a compact, scale/position-invariant feature vector: distances from the
+// wrist to each fingertip and between adjacent fingertips, each divided by
+// the palm size (wrist-to-middle-knuckle distance) so it doesn't matter how
+// close to the camera your hand is or where in frame it's held -- only the
+// POSE (which fingers are extended/together) matters, matching how a person
+// actually thinks about "the gesture", not "the exact pixel position".
+const JARVIS_GESTURES_KEY = "jarvisTrainedGestures";
+const GESTURE_MATCH_THRESHOLD = 0.28;  // loose enough that re-performing the same gesture (never pixel-identical) still matches, tight enough to stay well clear of a genuinely different pose
+const GESTURE_MATCH_COOLDOWN_MS = 2500;  // don't re-fire the same action every single frame you hold the pose
+
+function jarvisGestureFeatureVector(landmarks) {
+  const wrist = landmarks[0];
+  const middleKnuckle = landmarks[9];
+  const scale = Math.hypot(middleKnuckle.x - wrist.x, middleKnuckle.y - wrist.y) || 0.001;
+  const tips = [4, 8, 12, 16, 20].map((i) => landmarks[i]);
+  const vec = tips.map((t) => Math.hypot(t.x - wrist.x, t.y - wrist.y) / scale);
+  for (let i = 0; i < tips.length - 1; i++) {
+    vec.push(Math.hypot(tips[i].x - tips[i + 1].x, tips[i].y - tips[i + 1].y) / scale);
+  }
+  return vec;
+}
+
+function jarvisGestureDistance(a, b) {
+  if (a.length !== b.length) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
+  return Math.sqrt(sum / a.length);
+}
+
+function jarvisLoadTrainedGestures() {
+  try {
+    const raw = localStorage.getItem(JARVIS_GESTURES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) { return []; }
+}
+
+function jarvisSaveTrainedGesture(name, action, vector) {
+  const gestures = jarvisLoadTrainedGestures();
+  gestures.push({ name, action, vector, trainedAt: new Date().toISOString() });
+  try { localStorage.setItem(JARVIS_GESTURES_KEY, JSON.stringify(gestures)); } catch (e) { /* storage full/unavailable -- gesture just won't persist */ }
+  return gestures;
+}
+
+function jarvisDeleteTrainedGesture(index) {
+  const gestures = jarvisLoadTrainedGestures();
+  gestures.splice(index, 1);
+  try { localStorage.setItem(JARVIS_GESTURES_KEY, JSON.stringify(gestures)); } catch (e) {}
+  return gestures;
+}
+
+/** Checks the current pose against every trained gesture and returns the
+ *  closest one if it's a confident match, else null. Pure/testable --
+ *  takes landmarks + the gesture list rather than reading global state. */
+function jarvisMatchTrainedGesture(landmarks, gestures) {
+  if (!landmarks || !landmarks.length || !gestures.length) return null;
+  const vec = jarvisGestureFeatureVector(landmarks);
+  let best = null, bestDist = Infinity;
+  for (const g of gestures) {
+    const d = jarvisGestureDistance(vec, g.vector);
+    if (d < bestDist) { bestDist = d; best = g; }
+  }
+  return best && bestDist < GESTURE_MATCH_THRESHOLD ? best : null;
+}
+
+// Trainable actions -- deliberately the same real, already-built actions
+// (panel navigation + camera dock control), not a separate parallel
+// capability. "nav:" opens one of the app's real panels; everything else
+// goes through the same jarvisCameraDockAction used by Jarvis's own tool.
+const JARVIS_GESTURE_ACTIONS = [
+  { value: "nav:orbit", label: "Open Village (home)" },
+  { value: "nav:missioncontrol", label: "Open Mission Control" },
+  { value: "nav:jobs", label: "Open Videos" },
+  { value: "nav:channels", label: "Open Channels" },
+  { value: "nav:settings", label: "Open Settings" },
+  { value: "cam:fullscreen", label: "Camera: fullscreen" },
+  { value: "cam:restore", label: "Camera: restore to normal size" },
+  { value: "cam:center", label: "Camera: move to center" },
+  { value: "cam:top-left", label: "Camera: move to top-left" },
+  { value: "cam:top-right", label: "Camera: move to top-right" },
+  { value: "cam:bottom-left", label: "Camera: move to bottom-left" },
+  { value: "cam:bottom-right", label: "Camera: move to bottom-right" },
+];
+
+function jarvisExecuteGestureAction(action) {
+  if (!action) return;
+  if (action.startsWith("nav:")) {
+    const which = action.slice(4);
+    if (which === "orbit") closeBigPanel();
+    else { openBigPanel(which); setActiveSideItem(which); }
+  } else if (action.startsWith("cam:")) {
+    jarvisCameraDockAction(action.slice(4));
+  }
+}
+
+let jarvisGestureTrainingArmed = false;
+let jarvisLastGestureMatchAt = 0;
+
+/** Kicks off training: a short countdown so you have time to get into
+ *  position, then the next still frame is captured as the new gesture's
+ *  pose. The actual save (name + action binding) happens in the small
+ *  form jarvisCaptureTrainedGesture reveals once it has a vector. */
+function jarvisStartGestureTraining() {
+  const status = document.getElementById("jarvis-gesture-train-status");
+  if (status) status.textContent = "Hold your gesture… capturing in 3";
+  let n = 3;
+  const tick = setInterval(() => {
+    n -= 1;
+    if (status) status.textContent = n > 0 ? `Hold your gesture… capturing in ${n}` : "Capturing…";
+    if (n <= 0) {
+      clearInterval(tick);
+      jarvisGestureTrainingArmed = true;
+    }
+  }, 700);
+}
+
+function jarvisCaptureTrainedGesture(landmarks) {
+  const vector = jarvisGestureFeatureVector(landmarks);
+  const form = document.getElementById("jarvis-gesture-train-form");
+  const status = document.getElementById("jarvis-gesture-train-status");
+  if (status) status.textContent = "Captured. Name it and pick what it should do:";
+  if (!form) return;
+  form.style.display = "flex";
+  form.dataset.pendingVector = JSON.stringify(vector);
+}
+
+function jarvisSaveGestureFromForm() {
+  const form = document.getElementById("jarvis-gesture-train-form");
+  const nameInput = document.getElementById("jarvis-gesture-name");
+  const actionSelect = document.getElementById("jarvis-gesture-action");
+  if (!form || !form.dataset.pendingVector) return;
+  const name = (nameInput.value || "").trim() || "Untitled gesture";
+  const action = actionSelect.value;
+  const vector = JSON.parse(form.dataset.pendingVector);
+  jarvisSaveTrainedGesture(name, action, vector);
+  jarvisPlayGestureChime();
+  toast(`Trained "${name}" -- hold that pose again to trigger it.`);
+  form.style.display = "none";
+  delete form.dataset.pendingVector;
+  nameInput.value = "";
+  const status = document.getElementById("jarvis-gesture-train-status");
+  if (status) status.textContent = "";
+  jarvisRenderTrainedGesturesList();
+}
+
+function jarvisRenderTrainedGesturesList() {
+  const list = document.getElementById("jarvis-gesture-list");
+  if (!list) return;
+  const gestures = jarvisLoadTrainedGestures();
+  list.innerHTML = gestures.length
+    ? gestures.map((g, i) => {
+        const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
+        return `<div class="qa-row"><b>${escapeHtml(g.name)}</b>
+          <span class="qa-status">${escapeHtml(found ? found.label : g.action)}</span>
+          <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete" style="width:20px;height:20px;margin-left:4px">✕</button></div>`;
+      }).join("")
+    : `<div class="hint">No trained gestures yet.</div>`;
+  list.querySelectorAll(".jarvis-gesture-del").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      jarvisDeleteTrainedGesture(Number(btn.dataset.idx));
+      jarvisRenderTrainedGesturesList();
+    });
+  });
+}
+
+/** A clean, distinct confirmation chime -- separate from jarvisPlayTone's
+ *  thinking/alert sounds so a recognized gesture doesn't sound like either
+ *  of those. A short two-note rising ping. */
+function jarvisPlayGestureChime() {
+  const ctx = _jarvisAudioCtx();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  [[720, 0], [960, 0.09]].forEach(([freq, start]) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, now + start);
+    gain.gain.setValueAtTime(0, now + start);
+    gain.gain.linearRampToValueAtTime(0.07, now + start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + start + 0.12);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now + start);
+    osc.stop(now + start + 0.15);
+  });
+}
+
 async function jarvisLoadHandModel() {
   if (jarvisHandLandmarker) return jarvisHandLandmarker;
   const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
@@ -1534,6 +1724,8 @@ function jarvisSetupGestureControl(panelEl) {
     if (toggle) { toggle.textContent = "📷 Gesture Control: Off"; toggle.classList.remove("copied"); }
     jarvisCameraDockAction("restore");
     jarvisHideQuickAccess();
+    const gw = document.getElementById("jarvis-gestures-widget");
+    if (gw) gw.style.display = "none";
   };
 
   const start = async () => {
@@ -1577,6 +1769,9 @@ function jarvisSetupGestureControl(panelEl) {
     // call uses, not a separate path.
     jarvisCameraDockAction("fullscreen");
     jarvisShowQuickAccess();
+    const gw = document.getElementById("jarvis-gestures-widget");
+    if (gw) gw.style.display = "block";
+    jarvisRenderTrainedGesturesList();
 
     let model;
     try {
@@ -1595,6 +1790,25 @@ function jarvisSetupGestureControl(panelEl) {
         const result = model.detectForVideo(videoEl, performance.now());
         const landmarks = result.landmarks && result.landmarks[0];
         jarvisProcessHandLandmarks(panelEl, landmarks, state);
+        // Only look at a still, un-pinched hand -- mid-drag or mid-pinch
+        // isn't a "held pose" and shouldn't be mistaken for a trained one.
+        if (landmarks && !state.pinching) {
+          if (jarvisGestureTrainingArmed) {
+            jarvisGestureTrainingArmed = false;
+            jarvisCaptureTrainedGesture(landmarks);
+          } else {
+            const now = performance.now();
+            if (now - jarvisLastGestureMatchAt > GESTURE_MATCH_COOLDOWN_MS) {
+              const match = jarvisMatchTrainedGesture(landmarks, jarvisLoadTrainedGestures());
+              if (match) {
+                jarvisLastGestureMatchAt = now;
+                jarvisPlayGestureChime();
+                toast(`Gesture recognized: ${match.name}`);
+                jarvisExecuteGestureAction(match.action);
+              }
+            }
+          }
+        }
       } catch (e) { /* a single bad frame isn't worth stopping the whole feature over */ }
       jarvisGestureRAF = requestAnimationFrame(loop);
     };
@@ -1862,6 +2076,20 @@ async function renderJarvisPanel(body) {
         <button class="jarvis-gesture-btn" id="jarvis-gesture-toggle" title="Toggle webcam gesture control">📷 Gesture Control: Off</button>
       </div>
 
+      <div class="jarvis-widget jarvis-gestures" id="jarvis-gestures-widget" style="display:none">
+        <div class="jarvis-widget-handle">⠿ Train Gestures</div>
+        <button class="jarvis-gesture-btn" id="jarvis-gesture-train-btn">✋ Hold a pose to train</button>
+        <div class="jarvis-gesture-train-status" id="jarvis-gesture-train-status"></div>
+        <div class="jarvis-gesture-train-form" id="jarvis-gesture-train-form" style="display:none">
+          <input type="text" id="jarvis-gesture-name" placeholder="Name this gesture…"/>
+          <select id="jarvis-gesture-action">
+            ${JARVIS_GESTURE_ACTIONS.map((a) => `<option value="${a.value}">${a.label}</option>`).join("")}
+          </select>
+          <button class="jarvis-gesture-btn" id="jarvis-gesture-save-btn">Save gesture</button>
+        </div>
+        <div class="jarvis-gesture-list" id="jarvis-gesture-list"></div>
+      </div>
+
       <div class="jarvis-widget jarvis-quickaccess" id="jarvis-quickaccess" style="display:none">
         <div class="jarvis-widget-handle">⠿ Quick Access</div>
         <div class="jarvis-tabs">
@@ -2011,6 +2239,11 @@ async function renderJarvisPanel(body) {
   const cleanupDragQuickAccess = jarvisMakeDraggable(
     document.querySelector(".jarvis-quickaccess"), document.querySelector(".jarvis-quickaccess .jarvis-widget-handle"), "jarvisQuickAccessPos"
   );
+  const cleanupDragGestures = jarvisMakeDraggable(
+    document.querySelector(".jarvis-gestures"), document.querySelector(".jarvis-gestures .jarvis-widget-handle"), "jarvisGesturesPos"
+  );
+  document.getElementById("jarvis-gesture-train-btn").addEventListener("click", jarvisStartGestureTraining);
+  document.getElementById("jarvis-gesture-save-btn").addEventListener("click", jarvisSaveGestureFromForm);
 
   // Typed input
   const input = document.getElementById("jarvis-text-input");
@@ -2059,6 +2292,7 @@ async function renderJarvisPanel(body) {
     cleanupDragRight();
     cleanupDragCam();
     cleanupDragQuickAccess();
+    cleanupDragGestures();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;
     _origStop();
