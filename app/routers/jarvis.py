@@ -276,6 +276,60 @@ def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool
         log.exception("Couldn't write Jarvis activity log (continuing anyway)")
 
 
+# ------------------------------------------------------------ Provider-agnostic history
+# The conversation history handed back to callers (and echoed back to us on
+# the next message) used to be whichever provider's OWN raw message format
+# happened to answer that turn -- Anthropic's {"role","content":[blocks]} or
+# Gemini's {"role":"user"/"model","parts":[...]}. Those two formats are not
+# interchangeable, so switching providers (Settings, or WhatsApp vs. the app
+# using different ones) mid-conversation sent the new provider a history it
+# couldn't parse and broke the very next reply.
+#
+# Fixed by making the history that ever leaves this file/gets persisted a
+# neutral shape -- just {"role": "user"|"assistant", "text": "..."} -- and
+# converting to whichever provider's native format only for the duration of
+# a single call, never storing or returning that native format. Tool-use
+# blocks from a prior turn are deliberately NOT replayed across turns under
+# this scheme; the digested text reply already carries what mattered, and
+# that's a small, worthwhile trade for a conversation that never breaks
+# again just because the provider setting changed.
+def _history_text(entry: dict) -> str:
+    """Reads a history entry's text, tolerating the old raw-provider shapes
+    that may still be sitting in someone's browser localStorage or the
+    WhatsApp in-memory cache from before this change -- so the first message
+    after this deploy self-heals instead of erroring."""
+    if isinstance(entry.get("text"), str):
+        return entry["text"]
+    content = entry.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):  # legacy Anthropic blocks
+        return "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    parts = entry.get("parts")
+    if isinstance(parts, list):  # legacy Gemini parts
+        return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    return ""
+
+
+def _neutral_role(entry: dict) -> str:
+    role = entry.get("role", "user")
+    return "assistant" if role in ("assistant", "model") else "user"
+
+
+def _neutral_to_anthropic(history: list[dict]) -> list[dict]:
+    return [
+        {"role": _neutral_role(h), "content": _history_text(h)}
+        for h in history if _history_text(h)
+    ]
+
+
+def _neutral_to_gemini(history: list[dict]) -> list[dict]:
+    return [
+        {"role": "model" if _neutral_role(h) == "assistant" else "user", "parts": [{"text": _history_text(h)}]}
+        for h in history if _history_text(h)
+    ]
+
+
 def _kill_switch_refusal_results(tool_uses: list[dict]) -> list[dict]:
     return [
         {"type": "tool_result", "tool_use_id": tu["id"],
@@ -303,8 +357,15 @@ def _execute_tool_uses(db: Session, tool_uses: list[dict], source: str, user_mes
 
 
 def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], source: str) -> dict:
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    """`history` in and the returned `history` out are both the neutral
+    {"role","text"} shape (see _neutral_to_anthropic above) -- `messages`
+    here is a local, Anthropic-native working copy used only for this call."""
+    messages = _neutral_to_anthropic(history) + [{"role": "user", "content": user_message}]
     actions = []
+
+    def _done(reply: str) -> dict:
+        new_history = history + [{"role": "user", "text": user_message}, {"role": "assistant", "text": reply}]
+        return {"reply": reply, "history": new_history, "actions": actions}
 
     for _ in range(MAX_TOOL_ROUNDS):
         data = _anthropic_call(db, messages)
@@ -314,7 +375,7 @@ def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], sou
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         if not tool_uses:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            return {"reply": text.strip() or "(no response)", "history": messages, "actions": actions}
+            return _done(text.strip() or "(no response)")
 
         # Re-check the kill switch before EVERY tool round, not just at the
         # start -- someone could flip it off mid-conversation and that has
@@ -330,13 +391,18 @@ def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], sou
         actions.extend(new_actions)
         messages.append({"role": "user", "content": tool_results})
 
-    return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
-            "history": messages, "actions": actions}
+    return _done("That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.")
 
 
 def _run_turn_gemini(db: Session, user_message: str, history: list[dict], source: str) -> dict:
-    contents = list(history) + [{"role": "user", "parts": [{"text": user_message}]}]
+    """Same neutral-history-in/neutral-history-out contract as
+    _run_turn_anthropic -- see _neutral_to_gemini above."""
+    contents = _neutral_to_gemini(history) + [{"role": "user", "parts": [{"text": user_message}]}]
     actions = []
+
+    def _done(reply: str) -> dict:
+        new_history = history + [{"role": "user", "text": user_message}, {"role": "assistant", "text": reply}]
+        return {"reply": reply, "history": new_history, "actions": actions}
 
     for _ in range(MAX_TOOL_ROUNDS):
         data = _gemini_call(db, contents)
@@ -347,7 +413,7 @@ def _run_turn_gemini(db: Session, user_message: str, history: list[dict], source
         calls = [p["functionCall"] for p in parts if "functionCall" in p]
         if not calls:
             text = "".join(p.get("text", "") for p in parts)
-            return {"reply": text.strip() or "(no response)", "history": contents, "actions": actions}
+            return _done(text.strip() or "(no response)")
 
         if not _kill_switch_on(db):
             responses = [
@@ -371,8 +437,7 @@ def _run_turn_gemini(db: Session, user_message: str, history: list[dict], source
             responses.append({"functionResponse": {"name": name, "response": result}})
         contents.append({"role": "user", "parts": responses})
 
-    return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
-            "history": contents, "actions": actions}
+    return _done("That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.")
 
 
 def run_turn(db: Session, user_message: str, history: list[dict], source: str = "app") -> dict:
@@ -426,13 +491,27 @@ def chat_stream(payload: ChatIn, db: Session = Depends(get_db)):
             yield f"data: {json.dumps({'type': 'done', 'history': result['history'], 'actions': result['actions']})}\n\n"
             return
 
-        messages = list(payload.history) + [{"role": "user", "content": payload.message}]
+        # `messages` is a local, Anthropic-native working copy for this call
+        # only -- the history streamed back in the final "done" event is the
+        # neutral {"role","text"} shape (see _neutral_to_anthropic), same
+        # contract as the non-streaming turn functions, so switching
+        # providers between messages can't corrupt this history either.
+        messages = _neutral_to_anthropic(payload.history) + [{"role": "user", "content": payload.message}]
         actions = []
+
+        def _finish(reply: str):
+            new_history = payload.history + [
+                {"role": "user", "text": payload.message}, {"role": "assistant", "text": reply},
+            ]
+            return f"data: {json.dumps({'type': 'done', 'history': new_history, 'actions': actions})}\n\n"
+
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 blocks = []
+                reply_text = ""
                 for kind, data in _anthropic_stream_call(db, messages):
                     if kind == "text_delta":
+                        reply_text += data
                         yield f"data: {json.dumps({'type': 'text', 'text': data})}\n\n"
                     elif kind == "blocks":
                         blocks = data
@@ -440,7 +519,7 @@ def chat_stream(payload: ChatIn, db: Session = Depends(get_db)):
 
                 tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
                 if not tool_uses:
-                    yield f"data: {json.dumps({'type': 'done', 'history': messages, 'actions': actions})}\n\n"
+                    yield _finish(reply_text.strip() or "(no response)")
                     return
 
                 if not _kill_switch_on(db):
@@ -456,7 +535,7 @@ def chat_stream(payload: ChatIn, db: Session = Depends(get_db)):
 
             give_up = "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks."
             yield f"data: {json.dumps({'type': 'text', 'text': give_up})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'history': messages, 'actions': actions})}\n\n"
+            yield _finish(give_up)
         except HTTPException as e:
             yield f"data: {json.dumps({'type': 'error', 'text': str(e.detail)})}\n\n"
         except Exception as e:
