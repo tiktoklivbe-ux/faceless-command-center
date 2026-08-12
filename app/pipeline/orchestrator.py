@@ -360,7 +360,18 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
     set_agent("publish", "running")
     db.commit()
 
+    # Every platform's failure used to just get logged to the stage log and
+    # then the job was marked PUBLISHED regardless -- a job that failed on
+    # EVERY connected platform (e.g. a dead/expired OAuth token) looked
+    # identical to a real success everywhere except the fine print of the
+    # log. That's also why a publish failure never triggered the proactive
+    # WhatsApp alert: that only watches for status=FAILED, which this job
+    # never actually reached. Now tracked properly below.
+    attempted = []
+    failures = []
+
     if channel.youtube_connected:
+        attempted.append("YouTube")
         try:
             _log(db, job, "Publish Agent: uploading to YouTube…")
             from .. import crypto
@@ -374,9 +385,11 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             _log(db, job, f"Publish Agent: YouTube upload complete: video ID {video_id} (uploaded as private -- "
                           f"review and publish it from YouTube Studio).")
         except Exception as e:
+            failures.append(f"YouTube: {e}")
             _log(db, job, f"Publish Agent: YouTube publish failed: {e}")
 
     if channel.tiktok_connected:
+        attempted.append("TikTok")
         try:
             _log(db, job, "Publish Agent: uploading to TikTok…")
             from .. import crypto
@@ -388,8 +401,20 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             _log(db, job, f"Publish Agent: TikTok upload complete: publish ID {publish_id} "
                           f"(posted as private/self-only unless your app has passed TikTok review).")
         except Exception as e:
+            failures.append(f"TikTok: {e}")
             _log(db, job, f"Publish Agent: TikTok publish failed: {e}")
 
-    job.status = models.JobStatus.PUBLISHED
-    set_agent("publish", "done")
+    if attempted and len(failures) == len(attempted):
+        # Attempted at least one platform and every single one failed --
+        # this is a real failure, not a success, and needs to look like one.
+        job.status = models.JobStatus.FAILED
+        job.error_message = "Publish failed on every connected platform: " + "; ".join(failures)
+        set_agent("publish", "error")
+    else:
+        job.status = models.JobStatus.PUBLISHED
+        if failures:
+            # Succeeded somewhere, failed elsewhere -- still worth surfacing,
+            # just not as a hard failure since at least one upload landed.
+            job.error_message = "Published, but failed on: " + "; ".join(failures)
+        set_agent("publish", "done")
     db.commit()
