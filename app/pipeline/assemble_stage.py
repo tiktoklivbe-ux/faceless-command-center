@@ -175,6 +175,16 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
         f"stitching {concat_elapsed:.0f}s, final encode {finalize_elapsed:.0f}s. "
         f"Output {size_mb:.1f}MB across {n} segments."
     )
+    # Video length was showing up as a silent surprise -- a script that came
+    # back much shorter than the prompt's target produced a real, valid,
+    # error-free video that was just way too brief (one job landed at 21s
+    # against a 45-55s target). Flagging it directly in the log means "the
+    # video's too short" is visible here, not just discovered after the fact
+    # by watching it.
+    video_len = sum(s["duration"] for s in timed_segments)
+    if video_len < 30:
+        log(f"NOTE: final video is only {video_len:.0f}s -- well under the ~45-55s target. "
+            f"The script itself came back short (see script_text); this isn't a render error.")
 
     # Clean up intermediates now that final.mp4 exists. Without this every
     # job permanently leaves behind a PNG + MP3 + MP4 per segment plus the

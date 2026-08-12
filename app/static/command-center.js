@@ -1139,6 +1139,16 @@ function jarvisSetupGlobalPushToTalk() {
 
 function jarvisStopListening() {
   jarvisKeyHeld = false;  // lets a since-fired onend finalize instead of restarting
+  // The actual "sometimes waits too long" gap is the browser's own speech
+  // engine finalizing the last chunk before it fires onend -- that latency
+  // is real and out of this app's control (Windows especially can take a
+  // beat here), and varies run to run, which is why it felt inconsistent
+  // rather than a fixed delay. What IS fixable is the dead air: nothing
+  // updated on screen between releasing the key and onend eventually
+  // firing, so it looked like nothing was happening rather than like it
+  // was working. This gives immediate feedback the instant you let go.
+  const caption = document.getElementById("jarvis-caption");
+  if (caption && jarvisTranscriptSoFar.trim()) caption.textContent = "Got it, one sec…";
   if (jarvisRecognition) {
     try { jarvisRecognition.stop(); } catch (e) { /* already stopped/starting -- onend will still fire */ }
   }

@@ -25,18 +25,23 @@ log = logging.getLogger("script_stage")
 SYSTEM_PROMPT = textwrap.dedent("""
     You write short-form narration scripts for a faceless YouTube/TikTok channel.
     Given a channel niche and (optionally) a specific topic, produce a punchy,
-    original script split into narration segments, running NO LONGER THAN 55
-    seconds of spoken narration in total -- the final video must stay under a
-    minute, so brevity matters more than covering everything.
+    original script split into narration segments, targeting 45-55 seconds of
+    spoken narration in total -- both ends matter: under a minute so it stays
+    short-form, but NOT so short it feels like it cuts off early. A finished
+    video under ~30 seconds is a failure here, not just "extra brevity."
 
     Rules:
     - The content must be YOUR/the channel's original narration and framing, not a
       copy of someone else's article or a plain list of facts with zero commentary --
       YouTube's monetization policy demotes low-effort/templated/reused content, so
       always add a clear point of view, a hook, and a wrap-up thought.
-    - 5 to 7 segments. Each segment is exactly ONE short sentence of narration
-      (aim for well under 15 words per segment) -- staying under the 55-second
-      total budget matters more than fitting in extra detail.
+    - 6 to 8 segments. Each segment is exactly ONE sentence of narration, roughly
+      10-18 words long (not "as short as possible" -- a segment averaging
+      under 8 words is why past scripts ended up half the intended length).
+      Vary segment length naturally rather than making every line clipped to
+      the same terse size, and don't over-invest in the opening line at the
+      expense of the rest -- a hook that's disproportionately longer/heavier
+      than everything after it makes the video feel front-loaded.
     - Each segment also gets a short "visual_prompt": a plain description of an image
       that would accompany that line (for an AI image generator) -- concrete, visual,
       no text-in-image requests.
