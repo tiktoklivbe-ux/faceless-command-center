@@ -369,9 +369,11 @@ async function renderChannelsPanel(body) {
       <div class="conn-status"><span class="dot ${c.youtube_connected ? "on" : ""}"></span> YouTube ${c.youtube_connected ? "connected" : "not connected"}</div>
       <div class="conn-status"><span class="dot ${c.tiktok_connected ? "on" : ""}"></span> TikTok ${c.tiktok_connected ? "connected" : "not connected"}</div>
       <div class="pill-row" style="margin-top:12px">
-        ${c.youtube_connected ? "" : `<a class="btn secondary" href="/auth/youtube/start?channel_id=${c.id}">Connect YouTube</a>`}
-        ${c.tiktok_connected ? "" : `<a class="btn secondary" href="/auth/tiktok/start?channel_id=${c.id}">Connect TikTok</a>`}
+        <a class="btn secondary" href="/auth/youtube/start?channel_id=${c.id}">${c.youtube_connected ? "Reconnect" : "Connect"} YouTube</a>
+        <a class="btn secondary" href="/auth/tiktok/start?channel_id=${c.id}">${c.tiktok_connected ? "Reconnect" : "Connect"} TikTok</a>
       </div>
+      ${c.youtube_connected ? `<div class="hint" style="margin-top:6px">"Connected" just means a token was saved at some point -- if publishing
+      keeps failing with an expired/revoked token error, click Reconnect YouTube above to get a fresh one.</div>` : ""}
       <div style="border-top:1px solid var(--border-soft); margin:14px 0 12px; padding-top:12px">
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="checkbox" id="auto-${c.id}" ${c.auto_enabled ? "checked" : ""} style="width:auto;margin:0"/>
