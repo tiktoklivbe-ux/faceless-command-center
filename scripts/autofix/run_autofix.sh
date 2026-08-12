@@ -35,4 +35,11 @@ else
     echo "[$(date -u +%FT%TZ)] WARNING: $SECRETS_FILE not found -- Render polling and APP_BASE_URL will use defaults" >> "$LOG_DIR/run.log"
 fi
 
-exec python3 "$REPO_DIR/scripts/autofix/check_and_fix.py"
+# Deliberately NOT `exec` here: exec replaces the shell process image
+# outright, which means it never returns to run the EXIT trap above -- the
+# lock directory would never be released after a successful run, and every
+# future tick would see it still held and skip itself forever. Plain call +
+# explicit exit keeps the trap intact while still propagating check_and_fix's
+# real exit code.
+python3 "$REPO_DIR/scripts/autofix/check_and_fix.py"
+exit $?
