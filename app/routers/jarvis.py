@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -116,6 +116,107 @@ def _anthropic_call(db: Session, messages: list[dict]) -> dict:
     return resp.json()
 
 
+def _anthropic_stream_call(db: Session, messages: list[dict]):
+    """Same call as _anthropic_call, but streamed -- yields ("text_delta", str)
+    as text arrives so the UI can show/speak the reply as it's written instead
+    of waiting for the whole thing, then a final ("blocks", [...]) with the
+    complete content blocks (text and/or tool_use) once the turn is done.
+
+    This is what actually fixes "make him respond instantly on release" --
+    the earlier fix (an instant caption update the moment the key comes up)
+    covered the dead air before the network call even starts, but the reply
+    itself still only appeared after the ENTIRE multi-second completion came
+    back. Streaming means the first words show (and can start being spoken)
+    well under a second in, not after the full 2-6s round trip.
+    """
+    api_key = get_setting(db, "anthropic_api_key")
+    if not api_key:
+        raise HTTPException(400, "No Anthropic key set -- Jarvis needs one in Settings to think at all.")
+    model = get_setting(db, "anthropic_model", "claude-sonnet-5")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": 1024,
+            "system": SYSTEM_PROMPT,
+            "messages": messages,
+            "tools": jarvis_tools.TOOLS,
+            "stream": True,
+        },
+        timeout=60,
+        stream=True,
+    )
+    if resp.status_code != 200:
+        # Anthropic error bodies aren't SSE -- read the plain response so the
+        # real reason (bad key, rate limit, etc.) surfaces instead of a parse error.
+        raise HTTPException(resp.status_code, f"Anthropic call failed: {resp.text[:300]}")
+
+    blocks = []
+    current = None
+    text_buf = ""
+    json_buf = ""
+    thinking_buf = ""
+    signature_buf = ""
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8", "ignore")
+        if not line.startswith("data: "):
+            continue
+        try:
+            event = json.loads(line[len("data: "):])
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("type")
+        if etype == "content_block_start":
+            current = dict(event.get("content_block") or {})
+            text_buf, json_buf, thinking_buf, signature_buf = "", "", "", ""
+        elif etype == "content_block_delta":
+            delta = event.get("delta") or {}
+            dtype = delta.get("type")
+            if dtype == "text_delta":
+                piece = delta.get("text", "")
+                text_buf += piece
+                if piece:
+                    yield ("text_delta", piece)
+            elif dtype == "input_json_delta":
+                json_buf += delta.get("partial_json", "")
+            elif dtype == "thinking_delta":
+                # Sonnet 5 interleaves extended-thinking blocks alongside
+                # tool calls. Anthropic requires every thinking block sent
+                # back in later turns to actually contain its thinking text
+                # (and signature) -- silently dropping this (as an earlier
+                # version of this parser did, only handling text/tool_use)
+                # produced a malformed block that got rejected on the very
+                # next round: "each thinking block must contain thinking".
+                thinking_buf += delta.get("thinking", "")
+            elif dtype == "signature_delta":
+                signature_buf += delta.get("signature", "")
+        elif etype == "content_block_stop":
+            if current is not None:
+                if current.get("type") == "text":
+                    current["text"] = text_buf
+                elif current.get("type") == "tool_use":
+                    try:
+                        current["input"] = json.loads(json_buf) if json_buf else {}
+                    except json.JSONDecodeError:
+                        current["input"] = {}
+                elif current.get("type") == "thinking":
+                    current["thinking"] = thinking_buf
+                    if signature_buf:
+                        current["signature"] = signature_buf
+                blocks.append(current)
+            current = None
+        elif etype == "message_stop":
+            break
+    yield ("blocks", blocks)
+
+
 # ---------------------------------------------------------------- Gemini
 # Gemini's function-calling format is structurally different from
 # Anthropic's tool-use (different schema shape, different message/turn
@@ -175,6 +276,32 @@ def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool
         log.exception("Couldn't write Jarvis activity log (continuing anyway)")
 
 
+def _kill_switch_refusal_results(tool_uses: list[dict]) -> list[dict]:
+    return [
+        {"type": "tool_result", "tool_use_id": tu["id"],
+         "content": "Jarvis was switched off before this could run."}
+        for tu in tool_uses
+    ]
+
+
+def _execute_tool_uses(db: Session, tool_uses: list[dict], source: str, user_message: str):
+    """Shared by the non-streaming and streaming chat paths so tool execution
+    and audit logging only exist in one place. Returns (tool_results, actions)."""
+    actions = []
+    tool_results = []
+    for tu in tool_uses:
+        name, tool_input = tu["name"], tu.get("input", {})
+        allowed = name in jarvis_tools.TOOL_NAMES
+        result = jarvis_tools.call_tool(db, name, tool_input)
+        _log_call(db, source, name, tool_input, allowed, result, user_message)
+        if allowed and "error" not in result:
+            actions.append({"tool": name, "input": tool_input, "result": result})
+        tool_results.append({
+            "type": "tool_result", "tool_use_id": tu["id"], "content": json.dumps(result),
+        })
+    return tool_results, actions
+
+
 def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], source: str) -> dict:
     messages = list(history) + [{"role": "user", "content": user_message}]
     actions = []
@@ -193,28 +320,14 @@ def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], sou
         # start -- someone could flip it off mid-conversation and that has
         # to stop the next action, not just future conversations.
         if not _kill_switch_on(db):
-            tool_results = [
-                {"type": "tool_result", "tool_use_id": tu["id"],
-                 "content": "Jarvis was switched off before this could run."}
-                for tu in tool_uses
-            ]
-            messages.append({"role": "user", "content": tool_results})
+            messages.append({"role": "user", "content": _kill_switch_refusal_results(tool_uses)})
             for tu in tool_uses:
                 _log_call(db, source, tu["name"], tu.get("input", {}), False,
                           {"error": "kill switch engaged mid-conversation"}, user_message)
             continue
 
-        tool_results = []
-        for tu in tool_uses:
-            name, tool_input = tu["name"], tu.get("input", {})
-            allowed = name in jarvis_tools.TOOL_NAMES
-            result = jarvis_tools.call_tool(db, name, tool_input)
-            _log_call(db, source, name, tool_input, allowed, result, user_message)
-            if allowed and "error" not in result:
-                actions.append({"tool": name, "input": tool_input, "result": result})
-            tool_results.append({
-                "type": "tool_result", "tool_use_id": tu["id"], "content": json.dumps(result),
-            })
+        tool_results, new_actions = _execute_tool_uses(db, tool_uses, source, user_message)
+        actions.extend(new_actions)
         messages.append({"role": "user", "content": tool_results})
 
     return {"reply": "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks.",
@@ -281,6 +394,79 @@ def run_turn(db: Session, user_message: str, history: list[dict], source: str = 
 @router.post("/chat")
 def chat(payload: ChatIn, db: Session = Depends(get_db)):
     return run_turn(db, payload.message, payload.history, source="app")
+
+
+@router.post("/chat/stream")
+def chat_stream(payload: ChatIn, db: Session = Depends(get_db)):
+    """Same conversation turn as /chat, but streamed as Server-Sent Events so
+    the reply appears (and can start being spoken) as it's written instead of
+    only after the full multi-second completion comes back -- this is the
+    actual fix for "make him respond instantly", not just an instant UI
+    acknowledgment of the request (which already existed).
+
+    Each event is one line: `data: {"type": ..., ...}\\n\\n`.
+      - {"type": "text", "text": "..."}   a chunk of the reply as it streams
+      - {"type": "done", "history": [...], "actions": [...]}   turn complete
+      - {"type": "error", "text": "..."}   something went wrong mid-stream
+    """
+    def gen():
+        if not _kill_switch_on(db):
+            msg = "Jarvis is currently switched off. Turn it back on in the Jarvis panel to talk to me."
+            yield f"data: {json.dumps({'type': 'text', 'text': msg})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'history': payload.history, 'actions': []})}\n\n"
+            return
+
+        # Streaming is Anthropic-only for now -- Gemini's stream format is
+        # different enough to be its own follow-up. Falling back to the
+        # existing non-streamed turn means switching providers never breaks
+        # chat, it just temporarily loses the instant-typing effect.
+        if _jarvis_provider(db) != "anthropic":
+            result = _run_turn_gemini(db, payload.message, payload.history, "app")
+            yield f"data: {json.dumps({'type': 'text', 'text': result['reply']})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'history': result['history'], 'actions': result['actions']})}\n\n"
+            return
+
+        messages = list(payload.history) + [{"role": "user", "content": payload.message}]
+        actions = []
+        try:
+            for _ in range(MAX_TOOL_ROUNDS):
+                blocks = []
+                for kind, data in _anthropic_stream_call(db, messages):
+                    if kind == "text_delta":
+                        yield f"data: {json.dumps({'type': 'text', 'text': data})}\n\n"
+                    elif kind == "blocks":
+                        blocks = data
+                messages.append({"role": "assistant", "content": blocks})
+
+                tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+                if not tool_uses:
+                    yield f"data: {json.dumps({'type': 'done', 'history': messages, 'actions': actions})}\n\n"
+                    return
+
+                if not _kill_switch_on(db):
+                    messages.append({"role": "user", "content": _kill_switch_refusal_results(tool_uses)})
+                    for tu in tool_uses:
+                        _log_call(db, "app", tu["name"], tu.get("input", {}), False,
+                                  {"error": "kill switch engaged mid-conversation"}, payload.message)
+                    continue
+
+                tool_results, new_actions = _execute_tool_uses(db, tool_uses, "app", payload.message)
+                actions.extend(new_actions)
+                messages.append({"role": "user", "content": tool_results})
+
+            give_up = "That took more steps than I'm allowed to chain at once -- try breaking it into smaller asks."
+            yield f"data: {json.dumps({'type': 'text', 'text': give_up})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'history': messages, 'actions': actions})}\n\n"
+        except HTTPException as e:
+            yield f"data: {json.dumps({'type': 'error', 'text': str(e.detail)})}\n\n"
+        except Exception as e:
+            log.exception("Jarvis streamed chat failed")
+            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",  # tell any proxy in front of this not to buffer -- chunks need to flush immediately to actually feel instant
+    })
 
 
 @router.get("/notes")

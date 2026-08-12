@@ -1004,27 +1004,72 @@ async function jarvisSend(message) {
   const log = document.getElementById("jarvis-log");
   if (log) { log.appendChild(thinking); log.scrollTop = log.scrollHeight; }
 
+  // Streamed instead of a single await-the-whole-thing call: the reply now
+  // starts appearing (and gets spoken) within well under a second of the
+  // first tokens coming back, rather than only after the full multi-second
+  // completion landed. This is the actual fix for "instant" -- the earlier
+  // "Got it, one sec…" caption on key-release only covered the dead air
+  // before the request even started.
+  let reply = "";
+  let started = false;
   try {
-    const r = await API("/api/jarvis/chat", {
+    const resp = await fetch("/api/jarvis/chat/stream", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, history: jarvisHistory }),
     });
-    thinking.remove();
-    jarvisHistory = r.history || jarvisHistory;
-    jarvisAppendMsg("assistant", r.reply);
+    if (!resp.ok || !resp.body) throw new Error(`${resp.status}: ${await resp.text().catch(() => "")}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let historyOut = null, actionsOut = [];
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();  // last chunk may be incomplete -- keep it for next read
+      for (const raw of events) {
+        const line = raw.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch (e) { continue; }
+
+        if (ev.type === "text") {
+          reply += ev.text;
+          if (!started) {
+            started = true;
+            thinking.classList.remove("jarvis-thinking");
+          }
+          thinking.textContent = reply;
+          if (log) log.scrollTop = log.scrollHeight;
+          if (caption) caption.textContent = reply.slice(0, 90);
+        } else if (ev.type === "error") {
+          throw new Error(ev.text || "stream error");
+        } else if (ev.type === "done") {
+          historyOut = ev.history;
+          actionsOut = ev.actions || [];
+        }
+      }
+    }
+
+    if (!started) thinking.remove();  // no text ever arrived (e.g. kill switch reply came as one shot -- still handled above, this is just the empty-stream edge case)
+    jarvisHistory = historyOut || jarvisHistory;
+    jarvisTranscript.push({ role: "assistant", text: reply });
     jarvisSaveConversation(jarvisTranscript);
-    if (caption) caption.textContent = r.reply.slice(0, 90);
-    else toast(`Jarvis: ${r.reply.slice(0, 120)}`);
+    if (!caption) toast(`Jarvis: ${reply.slice(0, 120)}`);
     // A reply that lands while you're on another tab is easy to miss
     // entirely otherwise -- audio keeps playing regardless, but a desktop
     // notification is what actually gets your attention if you've moved on.
-    if (document.hidden) jarvisNotify("Jarvis", r.reply.slice(0, 180));
-    if (r.actions && r.actions.length) {
-      toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
+    if (document.hidden) jarvisNotify("Jarvis", reply.slice(0, 180));
+    if (actionsOut.length) {
+      toast(`Jarvis: ${actionsOut.map((a) => a.tool).join(", ")}`);
       // Some tool calls have a real effect on THIS page, not just the
       // backend -- the model decided to call them from the conversation,
       // this is just carrying that decision out client-side.
-      r.actions.forEach((a) => {
+      actionsOut.forEach((a) => {
         if (a.tool === "control_camera_dock" && a.result && a.result.ok) {
           jarvisCameraDockAction(a.result.action);
         }
@@ -1043,7 +1088,7 @@ async function jarvisSend(message) {
       });
     }
     jarvisSetOrbState("speaking");
-    jarvisSpeak(r.reply, () => {
+    jarvisSpeak(reply, () => {
       jarvisSetOrbState("idle");
       jarvisBusy = false;
     });
