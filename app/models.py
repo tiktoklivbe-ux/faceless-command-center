@@ -45,7 +45,7 @@ class Channel(Base):
     auto_enabled = Column(Boolean, default=False)
     auto_per_day = Column(Integer, default=3)
     auto_longform_per_day = Column(Integer, default=0)
-    auto_publish_scheduled = Column(Boolean, default=False)
+    auto_publish_scheduled = Column(Boolean, default=True)
 
     youtube_connected = Column(Boolean, default=False)
     youtube_channel_title = Column(String, default="")
