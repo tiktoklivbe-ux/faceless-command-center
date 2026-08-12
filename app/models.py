@@ -36,9 +36,15 @@ class Channel(Base):
     visual_style = Column(Text, default="")     # image-gen style prompt suffix
 
     # Chronos automation: when enabled, the scheduler creates ~auto_per_day
-    # videos for this channel, spaced evenly across each 24h day.
+    # SHORT videos for this channel, spaced evenly across each 24h day, plus
+    # up to auto_longform_per_day long-form (5-7 min, horizontal) videos --
+    # a separate quota/cadence because they're a genuinely different kind of
+    # video (see VideoJob.kind), not just a longer short. TikTok never gets
+    # long-form uploads (see orchestrator._publish) -- a 5-7 minute video
+    # doesn't fit that platform.
     auto_enabled = Column(Boolean, default=False)
     auto_per_day = Column(Integer, default=3)
+    auto_longform_per_day = Column(Integer, default=0)
     auto_publish_scheduled = Column(Boolean, default=False)
 
     youtube_connected = Column(Boolean, default=False)
@@ -60,6 +66,7 @@ class VideoJob(Base):
     id = Column(String, primary_key=True, default=gen_id)
     channel_id = Column(String, ForeignKey("channels.id"), nullable=False)
     topic = Column(Text, default="")            # blank = let the model pick a topic for the niche
+    kind = Column(String, default="short")      # "short" (vertical, <60s) | "longform" (horizontal, 5-7min)
     status = Column(Enum(JobStatus), default=JobStatus.QUEUED)
     stage_log = Column(Text, default="")        # newline-separated human-readable progress log
     agent_status = Column(Text, default="{}")   # JSON dict: {"script": "running", "voice": "done", ...}

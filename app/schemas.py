@@ -11,6 +11,7 @@ class ChannelIn(BaseModel):
     visual_style: str = ""
     auto_enabled: bool = False
     auto_per_day: int = 3
+    auto_longform_per_day: int = 0
     auto_publish_scheduled: bool = False
 
 
@@ -28,6 +29,7 @@ class ChannelOut(ChannelIn):
 class JobCreate(BaseModel):
     channel_id: str
     topic: str = ""
+    kind: str = "short"  # "short" | "longform"
     auto_publish: bool = False
 
 

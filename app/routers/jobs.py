@@ -32,6 +32,7 @@ def create_job(payload: schemas.JobCreate, background_tasks: BackgroundTasks,
     job = models.VideoJob(
         channel_id=channel.id,
         topic=payload.topic,
+        kind=payload.kind if payload.kind in ("short", "longform") else "short",
         auto_publish=payload.auto_publish,
     )
     db.add(job)

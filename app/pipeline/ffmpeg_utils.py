@@ -343,9 +343,15 @@ def concat_clips(clip_paths: list[Path], out_path: Path):
     ])
 
 
-def burn_subtitles(video_path: Path, srt_path: Path, out_path: Path):
-    # force_style keeps captions readable on any background: bold white text, black outline.
-    style = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=120"
+def burn_subtitles(video_path: Path, srt_path: Path, out_path: Path, width: int = 1080, height: int = 1920):
+    # force_style keeps captions readable on any background: bold white text,
+    # black outline. Font size and bottom margin were fixed constants tuned
+    # for a 1080-wide vertical short -- on a 1920-wide horizontal long-form
+    # video that reads noticeably small and sits oddly close to the edge, so
+    # both now scale with the actual frame width instead of assuming one.
+    font_size = round(16 * (width / 1080))
+    margin_v = round(120 * (height / 1920))
+    style = f"FontName=Arial,FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV={margin_v}"
 
     # ffmpeg's filtergraph syntax uses ':' to separate a filter's own
     # arguments -- which collides with a Windows path's drive-letter colon.

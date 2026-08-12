@@ -53,6 +53,57 @@ SYSTEM_PROMPT = textwrap.dedent("""
     }
 """).strip()
 
+# A genuinely different kind of video, not just a longer short: 5-7 minutes
+# of narration (~750-1050 words at this app's WORDS_PER_MINUTE), which means
+# real structure -- an intro hook, several distinct beats each with their
+# own point, and an actual close -- not one short idea stretched thin.
+LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
+    You write narration scripts for a faceless YouTube channel's long-form
+    videos -- horizontal, 5-7 minutes of spoken narration, NOT a short.
+    Given a channel niche and (optionally) a specific topic, produce a
+    genuinely well-structured video, not a short script stretched out with
+    filler. Good example territory for a curiosity/finance-adjacent niche:
+    "how much is [some public figure]'s house/net worth/lifestyle actually
+    worth", "the real cost of [something surprisingly expensive]", "how
+    [someone] actually makes their money" -- concrete, numbers-driven,
+    genuinely interesting, and NOT the same one person/subject every time --
+    vary who or what each video is actually about.
+
+    TARGET LENGTH IS THE MOST IMPORTANT RULE HERE: the total narration across
+    every segment combined must be 850-1050 WORDS. Count as you draft --
+    a script that adds up to under 700 words total is a FAILURE at this
+    task, the same as a short running over a minute would be, even if
+    every individual segment "looks" like a reasonable length. If you
+    reach the end of your outline and you're under 850 words, that means
+    developing your existing beats further with more specific detail (not
+    padding with filler), not stopping early.
+
+    Rules:
+    - The content must be YOUR/the channel's original narration and framing,
+      not a copy of someone else's article or a plain recitation of facts
+      with zero commentary -- YouTube's monetization policy demotes low-
+      effort/templated/reused content, so always add a clear point of view,
+      a hook, and a real wrap-up, the same as the channel's shorts do.
+    - 28-38 segments to reach the word target above. Each segment is exactly
+      ONE sentence of narration, roughly 22-32 words -- long-form narration
+      reads more like a documentary voiceover than a punchy short's clipped
+      lines. Structure it with a real arc: a hook in the first few segments,
+      several distinct beats each making a genuinely new point with real
+      specific detail (not restating the last one), and a real closing
+      thought at the end -- not just stopping.
+    - Each segment also gets a short "visual_prompt": a plain description of
+      an image that would accompany that line (for an AI image generator)
+      -- concrete, visual, no text-in-image requests, and no real person's
+      likeness (describe the SUBJECT MATTER -- a mansion, a stack of cash,
+      a stadium -- not "a photo of [named person]").
+    - Return ONLY valid JSON, no markdown fences, matching this shape:
+    {
+      "title": "...",
+      "description": "...",
+      "segments": [ {"narration": "...", "visual_prompt": "..."}, ... ]
+    }
+""").strip()
+
 
 def _user_prompt(niche: str, topic: str, style_notes: str) -> str:
     parts = [f"Channel niche: {niche or 'general faceless shorts channel'}"]
@@ -117,7 +168,7 @@ def _unescape(s: str) -> str:
     return s.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
 
 
-def _call_anthropic(db: Session, prompt: str) -> dict:
+def _call_anthropic(db: Session, prompt: str, system_prompt: str = SYSTEM_PROMPT, max_tokens: int = 4000) -> dict:
     api_key = get_setting(db, "anthropic_api_key")
     model = get_setting(db, "anthropic_model", "claude-sonnet-5")
     resp = requests.post(
@@ -133,12 +184,15 @@ def _call_anthropic(db: Session, prompt: str) -> dict:
             # every segment plus a title and description. At 1500 the response
             # ran out of room mid-string, and the only symptom was a cryptic
             # "Unterminated string at line 34" from the JSON parser -- the
-            # script was fine, it just got cut off. 4000 leaves real headroom.
-            "max_tokens": 4000,
-            "system": SYSTEM_PROMPT,
+            # script was fine, it just got cut off. 4000 leaves real headroom
+            # for a short; long-form (20-32 segments) needs a much bigger
+            # ceiling, hence max_tokens being a real parameter now, not a
+            # constant -- generate_script picks it based on kind.
+            "max_tokens": max_tokens,
+            "system": system_prompt,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=90,
+        timeout=120,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -155,18 +209,18 @@ def _call_anthropic(db: Session, prompt: str) -> dict:
     return _extract_json(text)
 
 
-def _call_gemini(db: Session, prompt: str) -> dict:
+def _call_gemini(db: Session, prompt: str, system_prompt: str = SYSTEM_PROMPT, max_tokens: int = 4000) -> dict:
     api_key = get_setting(db, "gemini_api_key")
     model = get_setting(db, "gemini_model", "gemini-3.5-flash")
     resp = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": api_key, "content-type": "application/json"},
         json={
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": max_tokens},
         },
-        timeout=60,
+        timeout=90,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -177,7 +231,7 @@ def _call_gemini(db: Session, prompt: str) -> dict:
     return _extract_json(text)
 
 
-def _call_openai(db: Session, prompt: str) -> dict:
+def _call_openai(db: Session, prompt: str, system_prompt: str = SYSTEM_PROMPT, max_tokens: int = 4000) -> dict:
     api_key = get_setting(db, "openai_api_key")
     model = get_setting(db, "openai_model", "gpt-4o-mini")
     resp = requests.post(
@@ -186,12 +240,13 @@ def _call_openai(db: Session, prompt: str) -> dict:
         json={
             "model": model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
         },
-        timeout=60,
+        timeout=90,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -222,9 +277,16 @@ def _template_fallback(niche: str, topic: str) -> dict:
     }
 
 
-def generate_script(db: Session, niche: str, topic: str, style_notes: str) -> dict:
+def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind: str = "short") -> dict:
     provider = get_setting(db, "llm_provider", "anthropic")
     prompt = _user_prompt(niche, topic, style_notes)
+    system_prompt = LONGFORM_SYSTEM_PROMPT if kind == "longform" else SYSTEM_PROMPT
+    # A long-form script (20-32 segments, each with narration + a visual
+    # prompt, plus title/description) is a much bigger JSON payload than a
+    # short's -- reusing the short's 4000-token ceiling would just recreate
+    # the exact "cut off mid-string" bug that ceiling was raised to fix in
+    # the first place, just for the long-form case instead.
+    max_tokens = 12000 if kind == "longform" else 4000
 
     has_anthropic = bool(get_setting(db, "anthropic_api_key"))
     has_openai = bool(get_setting(db, "openai_api_key"))
@@ -252,7 +314,7 @@ def generate_script(db: Session, niche: str, topic: str, style_notes: str) -> di
     last_error = None
     for attempt in range(3):
         try:
-            return fn(db, prompt)
+            return fn(db, prompt, system_prompt=system_prompt, max_tokens=max_tokens)
         except ValueError as e:
             # Raised by _extract_json / the max_tokens check -- specifically
             # the recoverable "response came back unusable" class.

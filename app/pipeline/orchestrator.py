@@ -294,7 +294,7 @@ def _run_job_inner(job_id: str):
             set_agent("script", "running")
             _log(db, job, f"Script Agent ({agent_name('athena')}): writing the script — one call to Claude, usually 10-20s.")
             _t = time.time()
-            script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes)
+            script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes, kind=job.kind)
             job.title = script.get("title", "")[:200]
             job.description = script.get("description", "")
             segments = script.get("segments", [])
@@ -315,7 +315,7 @@ def _run_job_inner(job_id: str):
             job.status = models.JobStatus.ASSEMBLING
             db.commit()
             final_path, srt_path = assemble_stage.assemble_video(
-                db, channel, segments, job_dir, lambda msg: _log(db, job, msg), set_agent
+                db, channel, segments, job_dir, lambda msg: _log(db, job, msg), set_agent, kind=job.kind
             )
             job.video_path = str(final_path)
             job.captions_path = str(srt_path)
@@ -388,7 +388,11 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             failures.append(f"YouTube: {e}")
             _log(db, job, f"Publish Agent: YouTube publish failed: {e}")
 
-    if channel.tiktok_connected:
+    # TikTok never gets long-form uploads -- a 5-7 minute horizontal video
+    # doesn't fit that platform's format, so there's nothing to attempt
+    # (this deliberately isn't counted as a "failure": there was no real
+    # attempt to fail).
+    if channel.tiktok_connected and job.kind != "longform":
         attempted.append("TikTok")
         try:
             _log(db, job, "Publish Agent: uploading to TikTok…")

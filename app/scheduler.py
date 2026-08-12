@@ -289,8 +289,13 @@ def _today_start() -> datetime:
     return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
-def _channel_due(db: Session, channel: models.Channel) -> bool:
-    if not channel.auto_enabled or not channel.auto_per_day or channel.auto_per_day <= 0:
+def _quota_due(db: Session, channel: models.Channel, kind: str, per_day: int) -> bool:
+    """Same due-or-not logic for either video kind, just scoped to that
+    kind's own quota/spacing/last-job-of-that-kind -- shorts and long-form
+    are genuinely separate schedules on the same channel, not one shared
+    counter, so a channel can be "done with today's shorts" while still
+    due for its one long-form video."""
+    if not per_day or per_day <= 0:
         return False
 
     today_start = _today_start()
@@ -302,26 +307,42 @@ def _channel_due(db: Session, channel: models.Channel) -> bool:
     todays_jobs = (
         db.query(models.VideoJob)
         .filter(models.VideoJob.channel_id == channel.id)
+        .filter(models.VideoJob.kind == kind)
         .filter(models.VideoJob.created_at >= today_start)
         .filter(models.VideoJob.status != models.JobStatus.FAILED)
         .count()
     )
-    if todays_jobs >= channel.auto_per_day:
+    if todays_jobs >= per_day:
         return False
 
     last_job = (
         db.query(models.VideoJob)
         .filter(models.VideoJob.channel_id == channel.id)
+        .filter(models.VideoJob.kind == kind)
         .filter(models.VideoJob.status != models.JobStatus.FAILED)
         .order_by(models.VideoJob.created_at.desc())
         .first()
     )
     if not last_job or not last_job.created_at:
-        return True  # never made one yet -- due immediately
+        return True  # never made one of this kind yet -- due immediately
 
-    interval = 86400 / channel.auto_per_day
+    interval = 86400 / per_day
     elapsed = (datetime.utcnow() - last_job.created_at).total_seconds()
     return elapsed >= interval
+
+
+def _channel_due_kind(db: Session, channel: models.Channel) -> str | None:
+    """Which kind of video (if any) this channel is due for right now --
+    checks shorts first, then long-form, so a channel due for both only
+    gets one job created per tick (same "one render at a time" pacing the
+    rest of Chronos already relies on)."""
+    if not channel.auto_enabled:
+        return None
+    if _quota_due(db, channel, "short", channel.auto_per_day):
+        return "short"
+    if _quota_due(db, channel, "longform", channel.auto_longform_per_day):
+        return "longform"
+    return None
 
 
 def _tick():
@@ -367,16 +388,18 @@ def _tick():
         channels = db.query(models.Channel).filter(models.Channel.auto_enabled == True).all()  # noqa: E712
         for channel in channels:
             try:
-                if _channel_due(db, channel):
+                due_kind = _channel_due_kind(db, channel)
+                if due_kind:
                     job = models.VideoJob(
                         channel_id=channel.id,
                         topic="",  # let Apollo/Athena choose
+                        kind=due_kind,
                         auto_publish=channel.auto_publish_scheduled,
                     )
                     db.add(job)
                     db.commit()
                     db.refresh(job)
-                    log.info("Chronos: auto-created job %s for channel %s", job.id, channel.name)
+                    log.info("Chronos: auto-created %s job %s for channel %s", due_kind, job.id, channel.name)
                     # Dispatched on a thread -- calling run_job directly here
                     # blocked the entire scheduler loop for the whole render,
                     # so the watchdog couldn't run and nothing else ticked.

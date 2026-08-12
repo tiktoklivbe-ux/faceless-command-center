@@ -18,12 +18,19 @@ from ..settings_store import get_setting
 from . import voice_stage, visuals_stage, captions_stage, ffmpeg_utils
 
 
-def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_agent) -> tuple[Path, Path]:
+def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_agent, kind: str = "short") -> tuple[Path, Path]:
     """
     segments: [{"narration": str, "visual_prompt": str}, ...]
     set_agent(name, status): reports "voice" | "visuals" | "assembly" -> "running" | "done" | "error"
+    kind: "short" (vertical 1080x1920) | "longform" (horizontal 1920x1080) --
+    threaded through to both image generation and the ken_burns render so
+    the two stay in the same orientation as each other.
     Returns (final_video_path, srt_path).
     """
+    render_w, render_h = (
+        (visuals_stage.LONGFORM_WIDTH, visuals_stage.LONGFORM_HEIGHT) if kind == "longform"
+        else (visuals_stage.WIDTH, visuals_stage.HEIGHT)
+    )
     clips_dir = job_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +106,7 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             def _visual_task():
                 s = SessionLocal()
                 try:
-                    return visuals_stage.generate_image(s, seg["visual_prompt"], visual_style, image_path)
+                    return visuals_stage.generate_image(s, seg["visual_prompt"], visual_style, image_path, kind=kind)
                 finally:
                     s.close()
 
@@ -131,6 +138,7 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             log(f"Segment {i+1}/{n}: Assembly Agent rendering the {duration:.1f}s clip…")
             clip_path = clips_dir / f"seg_{i:02d}.mp4"
             ffmpeg_utils.ken_burns_clip(image_path, audio_path, duration, clip_path,
+                                         width=render_w, height=render_h,
                                          zoom_in=(i % 2 == 0), fast_mode=fast_render)
             render_elapsed = time.time() - render_start
             total_render += render_elapsed
@@ -161,7 +169,7 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
 
     log("Assembly Agent: burning captions into the video (final encode — the slowest single step)…")
     final_path = job_dir / "final.mp4"
-    ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path)
+    ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path, width=render_w, height=render_h)
     finalize_elapsed = time.time() - t
 
     # A breakdown of where the time actually went. This is what makes "it's

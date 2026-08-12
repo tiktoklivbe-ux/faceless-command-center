@@ -81,13 +81,17 @@ TOOLS = [
     },
     {
         "name": "make_video",
-        "description": "Start generating a new video right now for a channel.",
+        "description": "Start generating a new video right now for a channel -- a short "
+                        "(vertical, under a minute, default) or a long-form video (horizontal, "
+                        "5-7 minutes, YouTube only).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "channel_id": {"type": "string"},
                 "topic": {"type": "string", "description": "Optional specific topic; "
                           "leave blank to let the script agent pick one for the niche"},
+                "kind": {"type": "string", "enum": ["short", "longform"],
+                         "description": "Defaults to short if not specified."},
             },
             "required": ["channel_id"],
         },
@@ -532,16 +536,17 @@ def cancel_job(db, job_id):
     return {"ok": True, "job_id": job_id, "worker_killed": killed}
 
 
-def make_video(db, channel_id, topic=""):
+def make_video(db, channel_id, topic="", kind="short"):
     channel = db.get(models.Channel, channel_id)
     if not channel:
         return {"error": "No channel with that ID."}
-    job = models.VideoJob(channel_id=channel.id, topic=topic or "", auto_publish=False)
+    kind = kind if kind in ("short", "longform") else "short"
+    job = models.VideoJob(channel_id=channel.id, topic=topic or "", kind=kind, auto_publish=False)
     db.add(job)
     db.commit()
     db.refresh(job)
     orchestrator.dispatch_job(job.id)
-    return {"ok": True, "job_id": job.id, "channel": channel.name}
+    return {"ok": True, "job_id": job.id, "channel": channel.name, "kind": kind}
 
 
 def list_channels(db):

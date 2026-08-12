@@ -380,14 +380,17 @@ async function renderChannelsPanel(body) {
           <span style="color:var(--ink);text-transform:none;font-size:13px;letter-spacing:0">⏳ Chronos automation — auto-generate videos</span>
         </label>
         <div class="form-row">
-          <div><label>Videos per day</label><input type="number" min="1" max="24" id="perday-${c.id}" value="${c.auto_per_day || 3}"/></div>
-          <div><label style="display:flex;align-items:center;gap:6px;margin-top:8px">
-            <input type="checkbox" id="autopub-${c.id}" ${c.auto_publish_scheduled ? "checked" : ""} style="width:auto;margin:0"/>
-            <span style="text-transform:none;font-size:12px;color:var(--muted)">Auto-publish when ready</span>
-          </label></div>
+          <div><label>Shorts per day</label><input type="number" min="0" max="24" id="perday-${c.id}" value="${c.auto_per_day || 3}"/></div>
+          <div><label>Long-form (5-7 min) per day</label><input type="number" min="0" max="5" id="perdaylong-${c.id}" value="${c.auto_longform_per_day || 0}"/></div>
         </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:4px">
+          <input type="checkbox" id="autopub-${c.id}" ${c.auto_publish_scheduled ? "checked" : ""} style="width:auto;margin:0"/>
+          <span style="text-transform:none;font-size:12px;color:var(--muted)">Auto-publish when ready</span>
+        </label>
+        <div class="hint" style="margin-top:6px">Shorts (vertical, under a minute) and long-form (horizontal, 5-7 min) run on
+        separate schedules — set either to 0 to skip that kind entirely. Long-form only ever goes to YouTube, never TikTok.</div>
         <button class="btn secondary" data-autosave="${c.id}">Save Automation</button>
-        ${c.auto_enabled ? `<div class="hint" style="margin-top:10px">🤖 Auto-generating ~${c.auto_per_day}/day. Needs the app running continuously to fire on schedule — see the README hosting note if it's on a host that sleeps when idle.</div>` : ""}
+        ${c.auto_enabled ? `<div class="hint" style="margin-top:10px">🤖 Auto-generating ~${c.auto_per_day} short${c.auto_per_day === 1 ? "" : "s"}/day${c.auto_longform_per_day ? ` + ${c.auto_longform_per_day} long-form/day` : ""}. Needs the app running continuously to fire on schedule — see the README hosting note if it's on a host that sleeps when idle.</div>` : ""}
       </div>
       <div class="pill-row" style="margin-top:4px"><button class="btn danger" data-del="${c.id}">Delete Channel</button></div>
       </div>`);
@@ -402,7 +405,8 @@ async function renderChannelsPanel(body) {
         name: c.name, niche: c.niche, style_notes: c.style_notes,
         voice_id: c.voice_id, visual_style: c.visual_style,
         auto_enabled: $(`#auto-${c.id}`).checked,
-        auto_per_day: parseInt($(`#perday-${c.id}`).value, 10) || 1,
+        auto_per_day: parseInt($(`#perday-${c.id}`).value, 10) || 0,
+        auto_longform_per_day: parseInt($(`#perdaylong-${c.id}`).value, 10) || 0,
         auto_publish_scheduled: $(`#autopub-${c.id}`).checked,
       };
       await API(`/api/channels/${c.id}`, { method: "PUT", body: JSON.stringify(payload) });
