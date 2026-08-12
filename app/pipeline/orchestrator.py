@@ -295,7 +295,23 @@ def _run_job_inner(job_id: str):
             set_agent("script", "running")
             _log(db, job, f"Script Agent ({agent_name('athena')}): writing the script — one call to Claude, usually 10-20s.")
             _t = time.time()
-            script = script_stage.generate_script(db, channel.niche, job.topic, channel.style_notes, kind=job.kind)
+            # Auto-created jobs run with topic="" every time, so without this
+            # the model has no idea what the channel already covered and can
+            # (and did -- three near-duplicate "owning a private island"
+            # videos in one day) land on the same subject repeatedly.
+            recent_titles = [
+                t for (t,) in db.query(models.VideoJob.title)
+                .filter(models.VideoJob.channel_id == channel.id)
+                .filter(models.VideoJob.id != job.id)
+                .filter(models.VideoJob.title.isnot(None))
+                .filter(models.VideoJob.title != "")
+                .order_by(models.VideoJob.created_at.desc())
+                .limit(10)
+                .all()
+            ]
+            script = script_stage.generate_script(
+                db, channel.niche, job.topic, channel.style_notes, kind=job.kind, avoid_topics=recent_titles
+            )
             job.title = script.get("title", "")[:200]
             description = script.get("description", "")
             # Hashtags stay tied to THIS channel's own niche (the prompt in

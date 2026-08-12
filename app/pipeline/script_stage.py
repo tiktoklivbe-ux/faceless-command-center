@@ -120,12 +120,24 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
 """).strip()
 
 
-def _user_prompt(niche: str, topic: str, style_notes: str) -> str:
+def _user_prompt(niche: str, topic: str, style_notes: str, avoid_topics: list[str] | None = None) -> str:
     parts = [f"Channel niche: {niche or 'general faceless shorts channel'}"]
     if topic:
         parts.append(f"Topic for this specific video: {topic}")
     else:
         parts.append("No specific topic given -- pick a fresh, engaging one that fits the niche.")
+    if avoid_topics:
+        # Auto-created jobs leave topic blank every time, so with no memory
+        # of what's already been made the model has repeatedly landed on the
+        # same subject back-to-back (three separate videos about "owning a
+        # private island" in one day) -- spelling out recent titles here is
+        # what actually breaks that, not just the "vary who/what" instruction
+        # already in the system prompt, which has no visibility into history.
+        recent = "; ".join(avoid_topics[:10])
+        parts.append(
+            f"Recent videos already made for this channel -- pick something genuinely "
+            f"different, not a variation on any of these: {recent}"
+        )
     if style_notes:
         parts.append(f"Extra style notes: {style_notes}")
     return "\n".join(parts)
@@ -298,9 +310,10 @@ def _template_fallback(niche: str, topic: str) -> dict:
     }
 
 
-def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind: str = "short") -> dict:
+def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind: str = "short",
+                     avoid_topics: list[str] | None = None) -> dict:
     provider = get_setting(db, "llm_provider", "anthropic")
-    prompt = _user_prompt(niche, topic, style_notes)
+    prompt = _user_prompt(niche, topic, style_notes, avoid_topics)
     system_prompt = LONGFORM_SYSTEM_PROMPT if kind == "longform" else SYSTEM_PROMPT
     # A long-form script (20-32 segments, each with narration + a visual
     # prompt, plus title/description) is a much bigger JSON payload than a

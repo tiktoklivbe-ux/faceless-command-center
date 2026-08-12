@@ -38,6 +38,7 @@ class JobOut(BaseModel):
     id: str
     channel_id: str
     topic: str
+    kind: str = "short"
     status: str
     stage_log: str
     agent_status: str = "{}"
