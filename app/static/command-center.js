@@ -998,7 +998,6 @@ let jarvisRecognitionGen = 0;
 function _jarvisStartRecognition() {
   const myGen = ++jarvisRecognitionGen;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const caption = document.getElementById("jarvis-caption");
   jarvisRecognition = new SR();
   jarvisRecognition.continuous = true;
   jarvisRecognition.interimResults = true;
@@ -1010,6 +1009,13 @@ function _jarvisStartRecognition() {
       if (ev.results[i].isFinal) jarvisTranscriptSoFar += t + " ";
       else interim += t;
     }
+    // Looked up fresh on every result rather than captured once -- if the
+    // panel gets torn down and rebuilt mid-recording (which the general
+    // button-focus fix below should now prevent, but this is what made it
+    // silently look like "no response" when it still happened: the old
+    // caption element was detached, so updates were landing nowhere
+    // visible even though recognition itself was still running fine).
+    const caption = document.getElementById("jarvis-caption");
     if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
   jarvisRecognition.onerror = () => {};
@@ -1024,7 +1030,10 @@ function _jarvisStartRecognition() {
     jarvisSetOrbState("idle");
     const said = jarvisTranscriptSoFar.trim();
     if (said) jarvisSend(said);
-    else if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
+    else {
+      const caption = document.getElementById("jarvis-caption");
+      if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
+    }
   };
   jarvisRecognition.start();
 }
@@ -1871,6 +1880,14 @@ async function renderJarvisPanel(body) {
     if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
+    // jarvisDragPanel is one shared variable across every draggable widget.
+    // If a drag is interrupted mid-motion by the panel tearing down (e.g.
+    // the button-focus bug above forcing a re-mount mid-drag), the mouseup
+    // that would normally clear it never fires on a live target, and it's
+    // left pointing at a now-detached element forever -- which is exactly
+    // what made dragging stop working entirely afterward, on ANY widget,
+    // not just the one being dragged. A teardown now always clears it.
+    jarvisDragPanel = null;
     cleanupDragRight();
     cleanupDragCam();
     cleanupGestures();
@@ -2195,6 +2212,18 @@ async function init() {
   $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
   setActiveSideItem(null);
   jarvisSetupGlobalPushToTalk();
+  // General fix for the whole "focused button reacts to Enter" bug class --
+  // the sidebar Jarvis icon was the first one found, but the HUD has its
+  // OWN buttons too (nav-items, tabs, the gesture toggle, send, the kill
+  // dial), any of which could be the one left focused before you next hold
+  // Enter for push-to-talk, silently re-clicking itself and re-mounting
+  // the whole panel mid-recording. Blurring every button immediately after
+  // its own click fires closes this for good, for any button anywhere in
+  // the app, present or future -- not just the one instance already found.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (btn) btn.blur();
+  });
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   // Deliberately NOT awaited. The boot animation used to wait for this
