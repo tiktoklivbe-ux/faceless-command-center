@@ -101,7 +101,29 @@ def _gemini_image(db, prompt: str, out_path: Path):
     )
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini image generation failed ({resp.status_code}): {resp.text[:500]}")
-    parts = resp.json()["candidates"][0]["content"]["parts"]
+    body = resp.json()
+    # A 200 response doesn't guarantee an image: Gemini can accept the
+    # request and still decline to generate, most commonly its safety
+    # filter rejecting the prompt/output (finishReason like "IMAGE_SAFETY"
+    # or "SAFETY", or no candidates at all with a promptFeedback.blockReason).
+    # In that case there IS no "content" key on the candidate, so blindly
+    # indexing into it raised a bare KeyError('content') here -- str(e) is
+    # just "'content'", which is exactly what surfaced in prior job failures
+    # and gave no clue what actually went wrong. Detect it explicitly and
+    # say why, so the stage log actually points at the safety filter instead
+    # of a mystery KeyError.
+    candidates = body.get("candidates") or []
+    if not candidates:
+        block_reason = body.get("promptFeedback", {}).get("blockReason")
+        raise RuntimeError(f"Gemini returned no candidates (prompt blocked, reason: {block_reason})")
+    candidate = candidates[0]
+    if "content" not in candidate:
+        finish_reason = candidate.get("finishReason", "unknown")
+        raise RuntimeError(
+            f"Gemini declined to generate an image (finishReason: {finish_reason}) -- "
+            "likely its safety filter rejected this segment's visual prompt"
+        )
+    parts = candidate["content"]["parts"]
     for part in parts:
         if "inlineData" in part:
             out_path.write_bytes(base64.b64decode(part["inlineData"]["data"]))
