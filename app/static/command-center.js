@@ -1060,11 +1060,20 @@ function jarvisSetupGlobalPushToTalk() {
     // Don't hijack Enter while it means something else -- typing into any
     // text field, textarea, or contenteditable area anywhere in the app.
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+    // Belt and suspenders against the real bug this was chasing: a focused
+    // <button> (e.g. the sidebar icon you just clicked to open Jarvis)
+    // reacts to Enter on its own -- the browser re-clicks it, which
+    // re-opened the whole panel mid-recording. e.preventDefault() below
+    // should already stop that, but explicitly dropping focus removes any
+    // button from being a target at all, regardless of exact per-browser
+    // timing of when that native activation fires.
+    if (ae && typeof ae.blur === "function") ae.blur();
     e.preventDefault();
     jarvisStartListening();
   });
   document.addEventListener("keyup", (e) => {
     if (e.key !== "Enter") return;
+    e.preventDefault();
     jarvisStopListening();
   });
 }
@@ -2170,7 +2179,18 @@ async function init() {
   // starfield/constellation view rather than opening a panel.
   Object.entries(SIDE_MAP).forEach(([id, panel]) => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener("click", () => { openBigPanel(panel); setActiveSideItem(panel); });
+    if (el) el.addEventListener("click", () => {
+      openBigPanel(panel); setActiveSideItem(panel);
+      // A clicked <button> keeps keyboard focus by default. Left as-is,
+      // pressing Enter for push-to-talk right after opening Jarvis ALSO
+      // fires the browser's native "Enter activates the focused button"
+      // behavior -- re-clicking this same nav button, which re-opens
+      // (fully re-mounts) the panel mid-recording. That's the actual
+      // cause of "the second I say hey jarvis it cuts off and restarts" --
+      // synthetic test events never caught it because only a real,
+      // physical keypress triggers that native default action.
+      el.blur();
+    });
   });
   $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
   setActiveSideItem(null);
