@@ -155,6 +155,25 @@ TOOLS = [
         },
     },
     {
+        "name": "add_note",
+        "description": "Save a note for later -- a reminder, something to follow up on, "
+                        "a thought worth keeping. Appends to a running notes log; doesn't "
+                        "overwrite anything.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "list_notes",
+        "description": "Read back recent notes, most recent first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "Max notes to return, default 10"}},
+        },
+    },
+    {
         "name": "list_project_files",
         "description": "List files and folders at a path inside this app's own project "
                         "folder (e.g. '', 'app', 'storage/jobs'). Cannot see or list "
@@ -365,6 +384,36 @@ def write_project_file(db, path, content):
     return {"ok": True, "path": str(target.relative_to(config.BASE_DIR.resolve())), "bytes_written": len(content.encode("utf-8"))}
 
 
+# ---------------------------------------------------------------- notes
+# "A plain notes folder Jarvis manages itself" -- not an OS app, just simple
+# text files under the project's own notes/ folder, using the same
+# sandboxed-write path as write_project_file above (notes/ isn't in
+# _WRITE_BLOCKED_PARTS, so this is just that same guarantee applied to one
+# specific, append-only file).
+NOTES_PATH = config.BASE_DIR / "notes" / "jarvis-notes.md"
+
+
+def add_note(db, text):
+    text = (text or "").strip()
+    if not text:
+        return {"error": "Nothing to note -- text was empty."}
+    NOTES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    existing = NOTES_PATH.read_text(encoding="utf-8") if NOTES_PATH.exists() else ""
+    NOTES_PATH.write_text(existing + f"\n## {timestamp}\n{text}\n", encoding="utf-8")
+    return {"ok": True, "saved": text}
+
+
+def list_notes(db, limit=10):
+    if not NOTES_PATH.exists():
+        return {"notes": []}
+    content = NOTES_PATH.read_text(encoding="utf-8")
+    entries = [f"## {e}".strip() for e in content.split("## ") if e.strip()]
+    entries = entries[-max(1, min(int(limit or 10), 50)):]
+    entries.reverse()  # most recent first
+    return {"notes": entries}
+
+
 def _job_summary(j: models.VideoJob) -> dict:
     return {
         "id": j.id, "status": j.status.value, "title": j.title or "(untitled)",
@@ -479,6 +528,8 @@ DISPATCH = {
     "run_whitelisted_command": run_whitelisted_command,
     "fetch_url": fetch_url,
     "control_camera_dock": control_camera_dock,
+    "add_note": add_note,
+    "list_notes": list_notes,
     "list_project_files": list_project_files,
     "read_project_file": read_project_file,
     "write_project_file": write_project_file,

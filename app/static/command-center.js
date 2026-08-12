@@ -936,6 +936,10 @@ async function jarvisSend(message) {
   jarvisAppendMsg("user", message);
   const caption = document.getElementById("jarvis-caption");
   if (caption) caption.textContent = "…";
+  // Push-to-talk works from any panel now, not just while the Jarvis HUD is
+  // open -- when it's not (no caption element to update in place), a toast
+  // is the only way to confirm he actually heard you.
+  if (!caption) toast(`You: ${message}`);
   jarvisSetOrbState("thinking");
   const thinking = el(`<div class="jarvis-msg jarvis-assistant jarvis-thinking">thinking…</div>`);
   const log = document.getElementById("jarvis-log");
@@ -950,6 +954,7 @@ async function jarvisSend(message) {
     jarvisHistory = r.history || jarvisHistory;
     jarvisAppendMsg("assistant", r.reply);
     if (caption) caption.textContent = r.reply.slice(0, 90);
+    else toast(`Jarvis: ${r.reply.slice(0, 120)}`);
     if (r.actions && r.actions.length) {
       toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
       // Some tool calls have a real effect on THIS page, not just the
@@ -971,6 +976,7 @@ async function jarvisSend(message) {
     const msg = "Couldn't reach Jarvis: " + e.message;
     jarvisAppendMsg("assistant", msg);
     if (caption) caption.textContent = msg;
+    else toast(msg);
     jarvisSetOrbState("idle");
     jarvisBusy = false;
   }
@@ -1037,6 +1043,30 @@ function jarvisStartListening() {
   jarvisSetOrbState("listening");
   if (caption) caption.textContent = "Listening…";
   _jarvisStartRecognition();
+}
+
+/** Wired once at app boot, not per-panel-open -- push-to-talk used to only
+ *  work while the Jarvis HUD screen itself was mounted (the keydown/keyup
+ *  listeners were added in renderJarvisPanel and torn down the moment you
+ *  navigated away), so Jarvis could only hear you from his own screen. Every
+ *  function this calls already degrades gracefully with no Jarvis DOM
+ *  present (checks `if (caption)` etc. throughout), so the only piece
+ *  actually missing was wiring the listener up globally instead of
+ *  scoping it to one panel's lifecycle. */
+function jarvisSetupGlobalPushToTalk() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.repeat) return;
+    const ae = document.activeElement;
+    // Don't hijack Enter while it means something else -- typing into any
+    // text field, textarea, or contenteditable area anywhere in the app.
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+    e.preventDefault();
+    jarvisStartListening();
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.key !== "Enter") return;
+    jarvisStopListening();
+  });
 }
 
 function jarvisStopListening() {
@@ -1744,18 +1774,41 @@ async function renderJarvisPanel(body) {
     return enabled;
   };
   await refreshKillState();
-  document.getElementById("jarvis-kill-toggle").addEventListener("click", async () => {
-    const { enabled } = await API("/api/jarvis/enabled");
-    await API("/api/jarvis/enabled", { method: "POST", body: JSON.stringify({ enabled: !enabled }) });
-    await refreshKillState();
-    toast(enabled ? "Jarvis switched off." : "Jarvis switched back on.");
+  // No re-entrancy guard here used to mean every impatient extra click (no
+  // visible change for two full network round trips) fired its own
+  // independent GET-then-POST chain -- twenty clicks really did mean twenty
+  // overlapping toggles racing each other, landing on whatever state the
+  // last one happened to finish in. The dial now visibly dims and ignores
+  // clicks the instant the first one starts, so there's nothing left to
+  // double-fire and the "toggling" state matches what's actually happening.
+  let killToggleBusy = false;
+  const killDial = document.getElementById("jarvis-kill-toggle");
+  killDial.addEventListener("click", async () => {
+    if (killToggleBusy) return;
+    killToggleBusy = true;
+    killDial.style.opacity = "0.5";
+    killDial.style.pointerEvents = "none";
+    try {
+      const { enabled } = await API("/api/jarvis/enabled");
+      await API("/api/jarvis/enabled", { method: "POST", body: JSON.stringify({ enabled: !enabled }) });
+      await refreshKillState();
+      toast(enabled ? "Jarvis switched off." : "Jarvis switched back on.");
+    } finally {
+      killToggleBusy = false;
+      killDial.style.opacity = "";
+      killDial.style.pointerEvents = "";
+    }
   });
 
   jarvisSetOrbState("idle");
-  jarvisRefreshReadout();
-  jarvisCheckSecurity();
-  const readoutInterval = setInterval(jarvisRefreshReadout, 8000);
-  const securityInterval = setInterval(jarvisCheckSecurity, 8000);
+  // Both used to be their own independent setInterval(..., 8000), started
+  // back to back -- which meant every 8s landed two separate API round
+  // trips and two separate batches of DOM writes (gauge, schedule, stat
+  // bars, agent row) within the same moment instead of one. One shared
+  // interval halves that churn.
+  const jarvisPollTick = () => { jarvisRefreshReadout(); jarvisCheckSecurity(); };
+  jarvisPollTick();
+  const readoutInterval = setInterval(jarvisPollTick, 8000);
 
   // Tabs
   document.querySelectorAll(".jarvis-tab").forEach((tab) => {
@@ -1787,20 +1840,9 @@ async function renderJarvisPanel(body) {
     }
   });
 
-  // Push-to-talk: hold Enter anywhere in the panel EXCEPT while typing in the
-  // text box (where Enter already means "send what I typed").
-  const onKeyDown = (e) => {
-    if (e.key !== "Enter" || e.repeat) return;
-    if (document.activeElement === input) return;
-    e.preventDefault();
-    jarvisStartListening();
-  };
-  const onKeyUp = (e) => {
-    if (e.key !== "Enter") return;
-    jarvisStopListening();
-  };
-  document.addEventListener("keydown", onKeyDown);
-  document.addEventListener("keyup", onKeyUp);
+  // Push-to-talk itself is wired globally now (see jarvisSetupGlobalPushToTalk,
+  // called once at app boot) so holding Enter works from any panel, not just
+  // while this HUD happens to be open -- nothing panel-specific to wire here.
 
   const cleanupDragRight = jarvisMakeDraggable(
     document.querySelector(".jarvis-right"), document.querySelector(".jarvis-right .jarvis-widget-handle"), "jarvisRightPos"
@@ -1816,15 +1858,10 @@ async function renderJarvisPanel(body) {
   // time Jarvis reopens.
   const _origStop = stopAllPanelPolls;
   window.stopAllPanelPolls = function () {
-    document.removeEventListener("keydown", onKeyDown);
-    document.removeEventListener("keyup", onKeyUp);
-    jarvisKeyHeld = false;
-    if (jarvisRecognition) { try { jarvisRecognition.stop(); } catch (e) {} }
     window.speechSynthesis && window.speechSynthesis.cancel();
     if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
-    clearInterval(securityInterval);
     cleanupDragRight();
     cleanupDragCam();
     cleanupGestures();
@@ -2137,6 +2174,7 @@ async function init() {
   });
   $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
   setActiveSideItem(null);
+  jarvisSetupGlobalPushToTalk();
   $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
 
   // Deliberately NOT awaited. The boot animation used to wait for this
