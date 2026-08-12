@@ -121,8 +121,30 @@ def fetch_channel_stats(access_token: str) -> dict:
         return {"subscribers": 0, "views": 0, "video_count": 0, "hidden_subs": False}
 
 
+def update_video_privacy(access_token: str, video_id: str, privacy_status: str = "public") -> str:
+    """Flip an already-uploaded video's privacy (e.g. a batch of shorts that
+    went up private). Same Google caveat as upload: while the OAuth app is
+    unverified for the youtube.upload scope, Google may reject making a video
+    public via the API -- in that case the only path is the YouTube Studio UI
+    or passing app verification. Returns the resulting privacyStatus so the
+    caller can tell whether it actually took."""
+    resp = requests.put(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params={"part": "status"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=UTF-8",
+        },
+        json={"id": video_id, "status": {"privacyStatus": privacy_status}},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"YouTube privacy update failed ({resp.status_code}): {resp.text[:400]}")
+    return resp.json().get("status", {}).get("privacyStatus", privacy_status)
+
+
 def upload_video(access_token: str, video_path: Path, title: str, description: str,
-                  privacy_status: str = "private") -> str:
+                  privacy_status: str = "public") -> str:
     """Resumable upload: reserve an upload URL, then PUT the file bytes."""
     metadata = {
         "snippet": {

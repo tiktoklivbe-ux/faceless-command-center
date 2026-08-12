@@ -50,6 +50,14 @@ class Channel(Base):
     youtube_connected = Column(Boolean, default=False)
     youtube_channel_title = Column(String, default="")
     youtube_refresh_token_enc = Column(Text, nullable=True)
+    # "public" | "unlisted" | "private" -- what privacyStatus new uploads get.
+    # Default public because that's what auto-posting a finished video is for.
+    # NOTE (real limitation, not a code bug): while the Google OAuth app is in
+    # "Testing"/unverified state for the youtube.upload restricted scope,
+    # Google FORCES every upload to private regardless of what we request
+    # here. Getting genuinely-public auto-uploads requires passing Google's
+    # app verification. This setting is still honored the moment that's done.
+    youtube_privacy = Column(String, default="public")
 
     tiktok_connected = Column(Boolean, default=False)
     tiktok_display_name = Column(String, default="")

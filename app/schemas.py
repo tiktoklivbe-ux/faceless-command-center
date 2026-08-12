@@ -13,6 +13,7 @@ class ChannelIn(BaseModel):
     auto_per_day: int = 3
     auto_longform_per_day: int = 0
     auto_publish_scheduled: bool = False
+    youtube_privacy: str = "public"
 
 
 class ChannelOut(ChannelIn):

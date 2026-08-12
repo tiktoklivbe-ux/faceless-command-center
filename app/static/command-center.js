@@ -387,8 +387,15 @@ async function renderChannelsPanel(body) {
           <input type="checkbox" id="autopub-${c.id}" ${c.auto_publish_scheduled ? "checked" : ""} style="width:auto;margin:0"/>
           <span style="text-transform:none;font-size:12px;color:var(--muted)">Auto-publish when ready</span>
         </label>
+        <div style="margin-top:10px"><label>YouTube upload privacy</label>
+          <select id="ytprivacy-${c.id}">
+            <option value="public" ${(c.youtube_privacy || "public") === "public" ? "selected" : ""}>Public</option>
+            <option value="unlisted" ${c.youtube_privacy === "unlisted" ? "selected" : ""}>Unlisted</option>
+            <option value="private" ${c.youtube_privacy === "private" ? "selected" : ""}>Private</option>
+          </select></div>
         <div class="hint" style="margin-top:6px">Shorts (vertical, under a minute) and long-form (horizontal, 5-7 min) run on
-        separate schedules — set either to 0 to skip that kind entirely. Long-form only ever goes to YouTube, never TikTok.</div>
+        separate schedules — set either to 0 to skip that kind entirely. Long-form only ever goes to YouTube, never TikTok.
+        <br><b>Note:</b> until your Google app passes verification, YouTube forces every upload to private no matter what you pick here.</div>
         <button class="btn secondary" data-autosave="${c.id}">Save Automation</button>
         ${c.auto_enabled ? `<div class="hint" style="margin-top:10px">🤖 Auto-generating ~${c.auto_per_day} short${c.auto_per_day === 1 ? "" : "s"}/day${c.auto_longform_per_day ? ` + ${c.auto_longform_per_day} long-form/day` : ""}. Needs the app running continuously to fire on schedule — see the README hosting note if it's on a host that sleeps when idle.</div>` : ""}
       </div>
@@ -408,6 +415,7 @@ async function renderChannelsPanel(body) {
         auto_per_day: parseInt($(`#perday-${c.id}`).value, 10) || 0,
         auto_longform_per_day: parseInt($(`#perdaylong-${c.id}`).value, 10) || 0,
         auto_publish_scheduled: $(`#autopub-${c.id}`).checked,
+        youtube_privacy: $(`#ytprivacy-${c.id}`).value,
       };
       await API(`/api/channels/${c.id}`, { method: "PUT", body: JSON.stringify(payload) });
       toast(`Automation saved for ${c.name}.`);
@@ -1027,6 +1035,11 @@ async function jarvisSend(message) {
         if (a.tool === "send_notification" && a.result && a.result.ok) {
           jarvisNotify("Jarvis", a.result.message);
         }
+        // Jarvis chose to pull up a dataset -- render the animated chart
+        // overlay from the same numbers he's about to narrate.
+        if (a.tool === "show_dataset" && a.result && a.result.ok) {
+          jarvisShowDataset(a.result);
+        }
       });
     }
     jarvisSetOrbState("speaking");
@@ -1561,18 +1574,32 @@ function jarvisSaveGestureFromForm() {
   jarvisRenderTrainedGesturesList();
 }
 
+// Built-in gestures that always work (no training needed) -- shown at the
+// top of the list so the user always knows what the camera understands.
+const JARVIS_BUILTIN_GESTURES = [
+  { icon: "🤏", name: "Pinch", desc: "Grab & drag a widget" },
+];
+
 function jarvisRenderTrainedGesturesList() {
   const list = document.getElementById("jarvis-gesture-list");
   if (!list) return;
   const gestures = jarvisLoadTrainedGestures();
-  list.innerHTML = gestures.length
-    ? gestures.map((g, i) => {
-        const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
-        return `<div class="qa-row"><b>${escapeHtml(g.name)}</b>
-          <span class="qa-status">${escapeHtml(found ? found.label : g.action)}</span>
-          <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete" style="width:20px;height:20px;margin-left:4px">✕</button></div>`;
-      }).join("")
-    : `<div class="hint">No trained gestures yet.</div>`;
+  const builtin = JARVIS_BUILTIN_GESTURES.map((g) =>
+    `<div class="jf-gest-row jf-gest-builtin">
+       <span class="jf-gest-icon">${g.icon}</span>
+       <span class="jf-gest-name">${escapeHtml(g.name)}</span>
+       <span class="jf-gest-desc">${escapeHtml(g.desc)}</span>
+     </div>`).join("");
+  const trained = gestures.map((g, i) => {
+    const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
+    return `<div class="jf-gest-row">
+       <span class="jf-gest-icon">✋</span>
+       <span class="jf-gest-name">${escapeHtml(g.name)}</span>
+       <span class="jf-gest-desc">${escapeHtml(found ? found.label : g.action)}</span>
+       <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete">✕</button>
+     </div>`;
+  }).join("");
+  list.innerHTML = builtin + trained + (gestures.length ? "" : `<div class="hint" style="padding:8px 4px">Train your own below.</div>`);
   list.querySelectorAll(".jarvis-gesture-del").forEach((btn) => {
     btn.addEventListener("click", () => {
       jarvisDeleteTrainedGesture(Number(btn.dataset.idx));
@@ -1622,6 +1649,99 @@ async function jarvisLoadHandModel() {
  *  WHETHER and WHEN to do this from the conversation (a real tool call,
  *  not a keyword match on my end); this is just the DOM action once it
  *  has, since the backend tool itself can't touch the page. */
+// ---------------------------------------------------------------- data sets
+// An animated, glass data-viz overlay Jarvis (or the Data button) can pull
+// up. Renders from the same numbers Jarvis narrates (see show_dataset /
+// /api/jarvis/dataset). Appended to <body> with a high z-index so it works
+// regardless of which panel is open.
+const JARVIS_DATASETS = [
+  { key: "output", label: "Output" },
+  { key: "status", label: "Status" },
+  { key: "channels", label: "Channels" },
+  { key: "publishing", label: "Publishing" },
+];
+
+function jarvisDatasetChartSVG(series) {
+  const max = Math.max(1, ...series.map((s) => s.value));
+  const n = series.length || 1;
+  const W = 640, H = 300, padB = 46, padT = 20, gap = 22;
+  const bw = (W - gap * (n + 1)) / n;
+  let bars = "";
+  series.forEach((s, i) => {
+    const x = gap + i * (bw + gap);
+    const fullH = (H - padB - padT) * (s.value / max);
+    const y = H - padB - fullH;
+    // Bars start flat (scaleY via a 0-height rect) and grow in -- animated
+    // by transitioning the CSS custom prop below after mount.
+    bars += `<g class="jf-ds-bar" style="--i:${i}">
+      <rect class="jf-ds-bar-rect" x="${x.toFixed(1)}" y="${(H - padB).toFixed(1)}" width="${bw.toFixed(1)}" height="0" rx="5"
+            data-fy="${y.toFixed(1)}" data-fh="${fullH.toFixed(1)}"/>
+      <text class="jf-ds-bar-val" x="${(x + bw / 2).toFixed(1)}" y="${(y - 8).toFixed(1)}" text-anchor="middle">${s.value}</text>
+      <text class="jf-ds-bar-lbl" x="${(x + bw / 2).toFixed(1)}" y="${(H - padB + 20).toFixed(1)}" text-anchor="middle">${escapeHtml(String(s.label))}</text>
+    </g>`;
+  });
+  return `<svg class="jf-ds-chart" viewBox="0 0 ${W} ${H}" width="100%">
+    <line x1="0" y1="${H - padB}" x2="${W}" y2="${H - padB}" class="jf-ds-axis"/>
+    ${bars}
+  </svg>`;
+}
+
+function jarvisShowDataset(data) {
+  if (!data || !data.series) return;
+  let overlay = document.getElementById("jarvis-dataset-overlay");
+  if (overlay) overlay.remove();
+  overlay = el(`<div id="jarvis-dataset-overlay" class="jarvis-dataset-overlay">
+    <div class="jarvis-dataset-card">
+      <button class="jarvis-dataset-close" title="Close">✕</button>
+      <div class="jarvis-dataset-title">${escapeHtml(data.title || "Data")}</div>
+      <div class="jarvis-dataset-chart-wrap">${jarvisDatasetChartSVG(data.series)}</div>
+      <div class="jarvis-dataset-summary">${escapeHtml(data.summary || "")}</div>
+      <div class="jarvis-dataset-chips">
+        ${JARVIS_DATASETS.map((d) => `<button class="jarvis-dataset-chip ${d.key === data.dataset ? "on" : ""}" data-ds="${d.key}">${d.label}</button>`).join("")}
+      </div>
+    </div>
+  </div>`);
+  document.body.appendChild(overlay);
+  // Fade/scale the card in, then grow the bars -- two-stage so the card is
+  // settled before the data animates (reads as deliberate, not chaotic).
+  // setTimeout rather than requestAnimationFrame: rAF only fires while the
+  // tab is actively being painted, so it can silently never fire at all if
+  // the window is backgrounded/unfocused right when Jarvis pulls this up
+  // (confirmed in testing) -- a real risk here since this can be triggered
+  // from a conversation, not just a deliberate click on a visible button.
+  // A short timeout still gives the browser a paint tick to register the
+  // initial (0-height) state first, so the CSS transition still animates,
+  // but it actually fires regardless of tab focus.
+  setTimeout(() => {
+    overlay.classList.add("shown");
+    setTimeout(() => {
+      overlay.querySelectorAll(".jf-ds-bar-rect").forEach((r) => {
+        r.setAttribute("y", r.dataset.fy);
+        r.setAttribute("height", r.dataset.fh);
+      });
+    }, 60);
+  }, 20);
+  const close = () => { overlay.classList.remove("shown"); setTimeout(() => overlay.remove(), 320); };
+  overlay.querySelector(".jarvis-dataset-close").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelectorAll(".jarvis-dataset-chip").forEach((chip) => {
+    chip.addEventListener("click", async () => {
+      try {
+        const next = await API(`/api/jarvis/dataset?which=${chip.dataset.ds}`);
+        if (next && next.series) jarvisShowDataset(next);
+      } catch (e) { /* ignore */ }
+    });
+  });
+}
+
+/** Manual open (the HUD's Data button) -- fetches then shows. */
+async function jarvisOpenDataset(which) {
+  try {
+    const data = await API(`/api/jarvis/dataset?which=${which || "status"}`);
+    if (data && data.series) jarvisShowDataset(data);
+  } catch (e) { toast("Couldn't load that dataset."); }
+}
+
 // "center" used to be the only place the camera dock could be moved to on
 // request -- these are the actual named spots Jarvis can now move it to.
 const JARVIS_DOCK_SPOTS = {
@@ -1992,9 +2112,12 @@ function jarvisGlyphSVG() {
     // organic, uneven reach -- not every trace makes it to the frame edge
     const r2 = 150 + ((i * 17) % 66);
     const t = _circuitTrace(cx, cy, angle, chipR, r2, i);
-    const dash = 50 + (i % 5) * 12;
     const width = 1.3 + (i % 3) * 0.5;
-    traces += `<path d="${t.d}" class="jf-trace" style="stroke-dasharray:${dash};stroke-width:${width}" />`;
+    // Stagger each trace's pulse so energy doesn't leave the chip in one
+    // synchronized ring -- animation-delay is set inline per-trace, the
+    // dash pattern + motion themselves live in CSS (state-driven).
+    const delay = ((i * 137) % 100) / 100;
+    traces += `<path d="${t.d}" class="jf-trace" style="stroke-width:${width};animation-delay:-${delay.toFixed(2)}s" />`;
     traces += `<circle cx="${t.x2}" cy="${t.y2}" r="${2.6 + (i % 3) * 0.6}" class="jf-trace-node" />`;
     if (t.branch) {
       traces += `<line x1="${t.branch.x1.toFixed(1)}" y1="${t.branch.y1.toFixed(1)}" x2="${t.branch.x2.toFixed(1)}" y2="${t.branch.y2.toFixed(1)}" class="jf-trace" stroke-width="1"/>`;
@@ -2107,11 +2230,11 @@ async function renderJarvisPanel(body) {
       </div>
 
       <div class="jarvis-nav-stack" id="jarvis-nav-stack">
-        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
+        <button class="jarvis-nav-item" data-nav="data">📊 Data</button>
         <button class="jarvis-nav-item" data-nav="missioncontrol">🛰️ Mission Control</button>
         <button class="jarvis-nav-item" data-nav="jobs">🎬 Videos</button>
         <button class="jarvis-nav-item" data-nav="channels">📺 Channels</button>
-        <button class="jarvis-nav-item" data-nav="settings">⚙️ Settings</button>
+        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
       </div>
 
       <div class="jarvis-dial" id="jarvis-kill-toggle" title="Click to switch Jarvis on/off">
@@ -2165,6 +2288,7 @@ async function renderJarvisPanel(body) {
     btn.addEventListener("click", () => {
       const which = btn.dataset.nav;
       if (which === "orbit") closeBigPanel();
+      else if (which === "data") jarvisOpenDataset("status");
       else { openBigPanel(which); setActiveSideItem(which); }
     });
   });
@@ -2277,14 +2401,27 @@ async function renderJarvisPanel(body) {
   );
   const cleanupGestures = jarvisSetupGestureControl(document.getElementById("bigpanel-inner"));
 
+  // Warm the hand-tracking model in the background the moment the panel
+  // opens, so "open the camera" doesn't then stall for a couple seconds
+  // fetching it from the CDN first -- by the time you ask, it's cached and
+  // the camera comes up effectively instantly. Fire-and-forget; failure is
+  // fine (it'll just load on demand as before).
+  setTimeout(() => { jarvisLoadHandModel().catch(() => {}); }, 400);
+
   // Cleaned up whenever the panel closes/changes -- stopAllPanelPolls runs on
   // every panel switch, so hooking removal there keeps this from piling up
   // as a second, third, fourth global listener (or camera stream!) every
   // time Jarvis reopens.
   const _origStop = stopAllPanelPolls;
   window.stopAllPanelPolls = function () {
-    window.speechSynthesis && window.speechSynthesis.cancel();
-    if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
+    // Deliberately NOT cancelling speech/audio here anymore -- that was the
+    // "Jarvis gets cut off when I switch to the village tab" bug. His reply
+    // audio is a detached <audio> element (and speechSynthesis is global),
+    // neither tied to this panel's DOM, and every state callback that fires
+    // when it finishes already guards for a missing emblem/caption. So we
+    // let the current reply finish speaking across a tab switch instead of
+    // guillotining it mid-sentence. A brand-new send still stops the prior
+    // clip first (see jarvisSpeak), so this can't stack.
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
     // jarvisDragPanel is one shared variable across every draggable widget.

@@ -378,12 +378,15 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             access_token = publish_youtube.refresh_access_token(
                 db, crypto.decrypt(channel.youtube_refresh_token_enc)
             )
+            privacy = getattr(channel, "youtube_privacy", None) or "public"
             video_id = publish_youtube.upload_video(
-                access_token, video_path, job.title, job.description
+                access_token, video_path, job.title, job.description, privacy_status=privacy
             )
             job.youtube_video_id = video_id
-            _log(db, job, f"Publish Agent: YouTube upload complete: video ID {video_id} (uploaded as private -- "
-                          f"review and publish it from YouTube Studio).")
+            _log(db, job, f"Publish Agent: YouTube upload complete: video ID {video_id} "
+                          f"(requested privacy: {privacy}). NOTE: if your Google OAuth app is still "
+                          f"in 'Testing'/unverified state, Google forces the video to PRIVATE regardless "
+                          f"-- pass Google's app verification to get genuinely-public auto-uploads.")
         except Exception as e:
             failures.append(f"YouTube: {e}")
             _log(db, job, f"Publish Agent: YouTube publish failed: {e}")

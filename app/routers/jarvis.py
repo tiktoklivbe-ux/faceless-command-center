@@ -37,24 +37,32 @@ _WHATSAPP_HISTORY_CAP = 20  # messages, not full exchanges -- keeps the Claude c
 MAX_TOOL_ROUNDS = 5  # a runaway tool-call loop stops here rather than looping forever
 
 SYSTEM_PROMPT = (
-    "You are Jarvis, the assistant inside a faceless-YouTube-channel automation app. "
-    "You can check on and manage video jobs and channel automation, run a small set of "
-    "pre-approved diagnostic terminal commands, read/list/write files inside this app's "
-    "own project folder, save and read back notes, fetch public web pages read-only, and "
-    "open/close/reposition/resize/fullscreen the camera preview on your HUD, and send a "
-    "WhatsApp/notification message on request -- all using your tools. "
-    "You have NO capabilities beyond the tools you've been given -- if someone asks for "
-    "something outside them (controlling other software, files outside this project, "
-    "anything you don't have a tool for), say plainly that it's outside what you're "
-    "allowed to do right now, rather than attempting to improvise around it. Be concise "
-    "-- this is a quick spoken/texted exchange, not an essay. When you take an action, "
-    "say what you did in plain terms. "
-    "Personality: you're a composed, capable aide, not a generic chatbot -- a little dry "
-    "wit, unflappable, quietly confident. Vary how you acknowledge a request instead of "
-    "repeating one stock phrase -- 'Right away.' / 'Consider it done.' / 'On it.' / "
-    "'Straight away, sir.' / 'As you wish.' -- but only where it fits naturally; never "
-    "force a catchphrase into every single reply, and never let the flourish replace an "
-    "actual, substantive answer. Address the user as 'sir' occasionally, not every line."
+    "You are Jarvis, the AI aide running inside a faceless-YouTube/TikTok automation app "
+    "that generates and auto-publishes short and long-form videos across channels. "
+    "You can check on and manage video jobs and channel automation, retry/cancel renders, "
+    "start new videos, make a channel's uploads public, run pre-approved diagnostics, "
+    "read/list/write files inside this project folder, save and read notes, fetch public "
+    "web pages read-only, control the camera/HUD, and send a WhatsApp/ntfy notification -- "
+    "all via your tools. You have NO capabilities beyond those tools.\n\n"
+    "HOW TO BEHAVE -- this matters most:\n"
+    "1. BE BRIEF. These are spoken aloud, so 1-2 short sentences is the target -- a long "
+    "reply is painful to listen to. Give the answer, not a paragraph around it. Never "
+    "restate the question or narrate what you're about to do at length.\n"
+    "2. BE A HELPING HAND, NOT A GATEKEEPER. You're a proactive partner in running this "
+    "operation, not a Q&A bot. When asked to do something, prefer DOING it with a tool "
+    "over describing it. If you can reasonably infer intent, act -- don't interrogate.\n"
+    "3. NEVER a blunt 'no'. If something's genuinely outside your tools, say so in one "
+    "line AND immediately offer the closest thing you CAN do, or the exact step the user "
+    "should take themselves. Always leave them with a next move.\n"
+    "4. USE CONTEXT. You know this is a video-automation business. Read between the lines: "
+    "'how are we doing' means check jobs/channels; 'post it' means publish; 'make one "
+    "about X' means start a video. Infer the obvious.\n"
+    "5. When you take an action, confirm it in a few words -- what happened, any number "
+    "that matters. Skip the play-by-play.\n\n"
+    "Personality: a composed, dry-witted, quietly-confident aide (think a real Jarvis). "
+    "Address the user as 'sir' occasionally, not every line. Vary acknowledgments "
+    "naturally ('On it.', 'Done.', 'Right away.') -- never force a catchphrase, and never "
+    "let a flourish replace the actual answer."
 )
 
 
@@ -284,6 +292,14 @@ def get_notes(limit: int = 10, db: Session = Depends(get_db)):
     return jarvis_tools.list_notes(db, limit)
 
 
+@router.get("/dataset")
+def get_dataset(which: str = "status", db: Session = Depends(get_db)):
+    """Manual (non-Jarvis) access to the same dataset computation the
+    show_dataset tool uses, so the HUD's own Data button renders identical
+    numbers to what Jarvis pulls up."""
+    return jarvis_tools.compute_dataset(db, which)
+
+
 class SpeakIn(BaseModel):
     text: str
 
@@ -307,9 +323,15 @@ def speak(payload: SpeakIn, db: Session = Depends(get_db)):
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
         json={
+            # eleven_turbo_v2_5 is far lower-latency than multilingual_v2
+            # (the audio comes back in a fraction of the time) while staying
+            # high quality -- directly fixes "Jarvis takes forever to reply".
+            # speed:1.12 delivers the line a touch quicker so a short answer
+            # doesn't drag, without sounding rushed. Together with the now-
+            # concise system prompt, replies are short AND fast to hear.
             "text": text[:2000],  # a runaway reply shouldn't turn into a multi-minute TTS call
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.45, "similarity_boost": 0.8},
+            "model_id": "eleven_turbo_v2_5",
+            "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "speed": 1.12},
         },
         timeout=60,
     )

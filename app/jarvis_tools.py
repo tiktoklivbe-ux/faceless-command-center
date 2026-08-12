@@ -103,6 +103,34 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "show_dataset",
+        "description": "Pull up an animated on-screen data visualization for the user and "
+                        "walk them through it out loud. Use whenever they ask to see stats, "
+                        "data, a breakdown, a chart, how things are going, or performance. "
+                        "Datasets: 'output' (videos finished per day, last 7 days), 'status' "
+                        "(all jobs broken down by status), 'channels' (video counts per "
+                        "channel), 'publishing' (published vs failed + success rate). After "
+                        "calling it, give a SHORT spoken walkthrough of the key numbers it "
+                        "returns -- don't read every value, just the story they tell.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"dataset": {"type": "string", "enum": ["output", "status", "channels", "publishing"]}},
+            "required": ["dataset"],
+        },
+    },
+    {
+        "name": "make_channel_videos_public",
+        "description": "Flip all of a channel's already-uploaded YouTube videos to public "
+                        "(e.g. a batch that went up private). Reports how many succeeded; if "
+                        "Google's app verification is still pending, some may be refused and "
+                        "need to be flipped manually in YouTube Studio.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"channel_id": {"type": "string"}},
+            "required": ["channel_id"],
+        },
+    },
+    {
         "name": "set_channel_automation",
         "description": "Turn Chronos auto-generation on/off for a channel, change how "
                         "many videos per day, or toggle auto-publish.",
@@ -549,6 +577,114 @@ def make_video(db, channel_id, topic="", kind="short"):
     return {"ok": True, "job_id": job.id, "channel": channel.name, "kind": kind}
 
 
+def compute_dataset(db, which: str) -> dict:
+    """Pure computation of a named dataset from real job/channel data --
+    shared by Jarvis's show_dataset tool and the manual /api/jarvis/dataset
+    endpoint, so the on-screen chart and Jarvis's spoken walkthrough are
+    always reading the exact same numbers."""
+    jobs = db.query(models.VideoJob).all()
+    channels = {c.id: c.name for c in db.query(models.Channel).all()}
+
+    def _created(j):
+        return j.created_at or datetime.utcnow()
+
+    if which == "output":
+        # Videos finished (published or ready) per day, last 7 days.
+        today = datetime.utcnow().date()
+        buckets = {}
+        for i in range(6, -1, -1):
+            d = today - timedelta(days=i)
+            buckets[d.isoformat()] = 0
+        for j in jobs:
+            if j.status in (models.JobStatus.PUBLISHED, models.JobStatus.READY):
+                key = _created(j).date().isoformat()
+                if key in buckets:
+                    buckets[key] += 1
+        series = [{"label": k[5:], "value": v} for k, v in buckets.items()]  # MM-DD
+        total = sum(b["value"] for b in series)
+        return {"ok": True, "dataset": "output", "title": "Videos finished — last 7 days",
+                "series": series, "summary": f"{total} videos finished in the last week."}
+
+    if which == "status":
+        labels = [("Rendering", [models.JobStatus.QUEUED, models.JobStatus.SCRIPT, models.JobStatus.VOICE,
+                                  models.JobStatus.VISUALS, models.JobStatus.CAPTIONS, models.JobStatus.ASSEMBLING,
+                                  models.JobStatus.PUBLISHING]),
+                  ("Ready", [models.JobStatus.READY]),
+                  ("Published", [models.JobStatus.PUBLISHED]),
+                  ("Failed", [models.JobStatus.FAILED])]
+        series = [{"label": name, "value": sum(1 for j in jobs if j.status in sts)} for name, sts in labels]
+        return {"ok": True, "dataset": "status", "title": "All jobs by status",
+                "series": series, "summary": ", ".join(f"{s['value']} {s['label'].lower()}" for s in series) + "."}
+
+    if which == "channels":
+        counts = {}
+        for j in jobs:
+            name = channels.get(j.channel_id, "Unknown")
+            counts[name] = counts.get(name, 0) + 1
+        series = [{"label": k, "value": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])][:8]
+        return {"ok": True, "dataset": "channels", "title": "Videos per channel",
+                "series": series, "summary": f"{len(counts)} channels, {sum(c for c in counts.values())} videos total."}
+
+    if which == "publishing":
+        published = sum(1 for j in jobs if j.status == models.JobStatus.PUBLISHED)
+        failed = sum(1 for j in jobs if j.status == models.JobStatus.FAILED)
+        on_yt = sum(1 for j in jobs if j.youtube_video_id)
+        series = [{"label": "Published", "value": published},
+                  {"label": "On YouTube", "value": on_yt},
+                  {"label": "Failed", "value": failed}]
+        rate = round(published / (published + failed) * 100) if (published + failed) else 0
+        return {"ok": True, "dataset": "publishing", "title": "Publishing results",
+                "series": series, "summary": f"{published} published, {failed} failed ({rate}% success)."}
+
+    return {"error": f"Unknown dataset '{which}'. Use output, status, channels, or publishing."}
+
+
+def show_dataset(db, dataset):
+    result = compute_dataset(db, dataset)
+    if "error" in result:
+        return result
+    # The ok result already carries series + summary; the frontend renders
+    # the animated chart from the action, Jarvis narrates from the summary.
+    return result
+
+
+def make_channel_videos_public(db, channel_id):
+    from . import crypto
+    from .pipeline import publish_youtube
+    channel = db.get(models.Channel, channel_id)
+    if not channel:
+        return {"error": "No channel with that ID."}
+    if not channel.youtube_connected or not channel.youtube_refresh_token_enc:
+        return {"error": "That channel isn't connected to YouTube."}
+    jobs = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.channel_id == channel_id)
+        .filter(models.VideoJob.youtube_video_id.isnot(None))
+        .all()
+    )
+    if not jobs:
+        return {"ok": True, "updated": 0, "note": "No uploaded YouTube videos found for this channel."}
+    try:
+        token = publish_youtube.refresh_access_token(db, crypto.decrypt(channel.youtube_refresh_token_enc))
+    except Exception as e:
+        return {"error": f"Couldn't refresh the YouTube token (may need reconnecting): {e}"}
+    updated, refused = 0, 0
+    for j in jobs:
+        try:
+            result = publish_youtube.update_video_privacy(token, j.youtube_video_id, "public")
+            if result == "public":
+                updated += 1
+            else:
+                refused += 1
+        except Exception:
+            refused += 1
+    note = None
+    if refused:
+        note = (f"{refused} couldn't be made public via the API -- this usually means the Google app "
+                f"isn't verified yet, so those need flipping manually in YouTube Studio.")
+    return {"ok": True, "updated": updated, "refused": refused, "note": note}
+
+
 def list_channels(db):
     channels = db.query(models.Channel).all()
     return {"channels": [{
@@ -584,6 +720,8 @@ DISPATCH = {
     "cancel_job": cancel_job,
     "make_video": make_video,
     "list_channels": list_channels,
+    "show_dataset": show_dataset,
+    "make_channel_videos_public": make_channel_videos_public,
     "set_channel_automation": set_channel_automation,
     "list_available_commands": list_available_commands,
     "run_whitelisted_command": run_whitelisted_command,
