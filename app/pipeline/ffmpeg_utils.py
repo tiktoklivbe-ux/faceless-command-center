@@ -17,6 +17,19 @@ log = logging.getLogger("ffmpeg_utils")
 # failure that the retry logic can act on.
 FFMPEG_TIMEOUT_SECONDS = 600
 
+# libx264 picks its default thread count from the number of CPUs it can see
+# -- and inside a cgroup-limited container that's typically the HOST's full
+# core count, not the slice actually allocated to the container. A real
+# failing render on this app's Render "starter" plan (0.5 CPU, 512MB RAM)
+# logged "threads=24" for a single-segment clip: 24 encoder threads fighting
+# over half a CPU core and a 512MB memory ceiling, which is consistent with
+# ffmpeg being silently OOM-killed (0 frames encoded, no ffmpeg-printed
+# error, process just stops) rather than reporting a normal encoding error.
+# Capping threads explicitly keeps the encoder's own resource use bounded to
+# something that plan can actually support. Overridable via env var for a
+# host with more headroom.
+FFMPEG_THREADS = int(os.environ.get("FFMPEG_THREADS", "2"))
+
 
 def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS, cwd: str | None = None):
     """Run an ffmpeg/ffprobe command, raising with full stderr on failure.
@@ -104,7 +117,22 @@ def run(cmd: list[str], timeout: int = FFMPEG_TIMEOUT_SECONDS, cwd: str | None =
         out_f.close(); err_f.close()
 
     if proc.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n--- stderr ---\n{(stderr or '')[-4000:]}")
+        # A negative returncode means the process died to a signal (POSIX),
+        # not a normal ffmpeg-detected error -- e.g. -9 is SIGKILL, the
+        # signature of the OOM killer. That distinction was previously
+        # invisible: the message only ever showed ffmpeg's own stderr, which
+        # is often empty or cut off mid-encode when something ELSE kills the
+        # process out from under it, making "ffmpeg failed" and "ffmpeg got
+        # OOM-killed" look identical. Surfacing it directly turns a guessing
+        # game into an immediate diagnosis.
+        signal_note = ""
+        if proc.returncode < 0:
+            signal_note = (f" (killed by signal {-proc.returncode}"
+                            f"{' -- SIGKILL, consistent with an out-of-memory kill' if -proc.returncode == 9 else ''})")
+        raise RuntimeError(
+            f"Command failed (exit code {proc.returncode}{signal_note}): {' '.join(cmd)}\n"
+            f"--- stderr ---\n{(stderr or '')[-4000:]}"
+        )
 
     class _Result:
         pass
@@ -299,7 +327,7 @@ def ken_burns_clip(image_path: Path, audio_path: Path, duration: float, out_path
         "-vf", vf,
         "-r", str(fps),
         "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "ultrafast", "-threads", str(FFMPEG_THREADS), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k",
         "-shortest",
         str(out_path),
@@ -343,7 +371,7 @@ def burn_subtitles(video_path: Path, srt_path: Path, out_path: Path):
         # larger file (89MB vs 35MB on a 64s test video) which just moves the
         # cost to upload time instead. The per-segment clips above stay on
         # ultrafast since they're intermediates that get re-encoded here anyway.
-        "-c:v", "libx264", "-preset", "superfast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "superfast", "-threads", str(FFMPEG_THREADS), "-crf", "23",
         "-c:a", "copy",
         str(out_path),
     ], cwd=srt_path.parent)
