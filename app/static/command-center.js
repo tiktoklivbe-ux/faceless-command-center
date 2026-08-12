@@ -111,10 +111,19 @@ function renderJobStatusCard(j) {
   const elapsed = started ? Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000)) : 0;
   const mmss = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
 
-  // How many segments are done, and how many there are in total.
-  const totalMatch = /Segment \d+\/(\d+)/.exec(j.stage_log || "");
-  const total = totalMatch ? parseInt(totalMatch[1], 10) : null;
-  const doneCount = ((j.stage_log || "").match(/clip rendered in/g) || []).length;
+  // A retried job's stage_log carries every attempt's full history
+  // concatenated (deliberate -- see scheduler.py's clear_stuck_jobs), but
+  // progress must only reflect the CURRENT attempt. A retry regenerates the
+  // script from scratch and often lands on a different segment count, so
+  // reading the segment total from the FIRST "Segment N/M" in the whole log
+  // while counting "clip rendered in" across ALL of it double-counted the
+  // abandoned attempt's clips on top of the new one -- exactly how a real
+  // job's progress bar hit 133% (56 clips rendered across two attempts,
+  // divided by the first attempt's total of 35).
+  const currentLog = (j.stage_log || "").split(/\[watchdog\] retrying[^\n]*\n?/).pop();
+  const totalMatches = [...currentLog.matchAll(/Segment \d+\/(\d+)/g)];
+  const total = totalMatches.length ? parseInt(totalMatches[totalMatches.length - 1][1], 10) : null;
+  const doneCount = (currentLog.match(/clip rendered in/g) || []).length;
 
   let headline, detail, pct = 0;
   const status = String(j.status || "");
@@ -125,7 +134,7 @@ function renderJobStatusCard(j) {
   else if (status === "queued")          { headline = "⏳ Waiting in line";  detail = "Another video is rendering. Videos run one at a time on purpose."; }
   else if (/Script Agent/.test(last))    { headline = "✍️ Writing the script"; detail = "Usually 10-20 seconds."; pct = 5; }
   else if (/Voice Agent|Visual Agent/.test(last) || /clip rendered|Assembly Agent rendering/.test(last)) {
-    pct = total ? Math.round(5 + (doneCount / total) * 80) : 30;
+    pct = total ? Math.min(100, Math.round(5 + (doneCount / total) * 80)) : 30;
     headline = total ? `🎬 Building clip ${Math.min(doneCount + 1, total)} of ${total}` : "🎬 Building clips";
     detail = "Making narration, generating an image, and rendering each clip.";
   }
@@ -2743,8 +2752,15 @@ function renderJobBanner(job) {
   let last = log[log.length - 1] || "";
   if (last.startsWith("[")) last = last.slice(last.indexOf("]") + 1).trim();
 
-  const m = /Segment (\d+)\/(\d+)/.exec(job.stage_log || "");
-  const pct = m ? Math.round((parseInt(m[1], 10) / parseInt(m[2], 10)) * 100) : 6;
+  // Same fix as renderJobStatusCard: only look at the current attempt's
+  // slice of the log (a retry restarts the segment count from scratch), and
+  // take the LATEST "Segment N/M" line, not the first -- .exec() without
+  // the /g flag only ever finds the first match in the whole string, which
+  // froze this banner at the opening segment instead of tracking real progress.
+  const currentLog = (job.stage_log || "").split(/\[watchdog\] retrying[^\n]*\n?/).pop();
+  const segMatches = [...currentLog.matchAll(/Segment (\d+)\/(\d+)/g)];
+  const lastSeg = segMatches[segMatches.length - 1];
+  const pct = lastSeg ? Math.min(100, Math.round((parseInt(lastSeg[1], 10) / parseInt(lastSeg[2], 10)) * 100)) : 6;
 
   el.innerHTML = `
     <div class="jb-pulse"></div>
