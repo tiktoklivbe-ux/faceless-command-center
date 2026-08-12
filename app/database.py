@@ -66,8 +66,29 @@ def _migrate_add_missing_columns():
         for table in Base.metadata.sorted_tables:
             existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info('{table.name}')")}
             for col in table.columns:
-                if col.name in existing:
-                    continue
-                col_type = col.type.compile(engine.dialect)
-                conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}')
+                if col.name not in existing:
+                    col_type = col.type.compile(engine.dialect)
+                    conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}')
+                # ALTER TABLE ADD COLUMN has no DEFAULT clause here, so every
+                # EXISTING row gets NULL for the new column even when the
+                # model itself declares a default (e.g. Channel.auto_longform_
+                # per_day = 0) -- a real bug that took /api/channels down in
+                # production the moment a column added this way actually
+                # shipped: Pydantic's response schema types that field as a
+                # plain int (not Optional), so it rejected the NULL and
+                # 500'd on every pre-existing channel. This backfill runs
+                # unconditionally, not only inside the "just added" branch
+                # above -- a column that was added by an EARLIER deploy,
+                # before this backfill step existed (exactly the state
+                # production was actually left in), still has real NULLs
+                # sitting in it that a "only touch brand new columns" version
+                # of this fix would never reach. Only a genuinely scalar
+                # default (0, False, ""), never a callable one (gen_id,
+                # datetime.utcnow) -- applying the SAME generated value to
+                # every affected row would be actively wrong for those.
+                if col.default is not None and getattr(col.default, "is_scalar", False):
+                    conn.exec_driver_sql(
+                        f'UPDATE "{table.name}" SET "{col.name}" = ? WHERE "{col.name}" IS NULL',
+                        (col.default.arg,),
+                    )
         conn.commit()
