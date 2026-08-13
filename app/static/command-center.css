@@ -1494,3 +1494,22 @@ button.msc-link-card { cursor: pointer; }
   .jf-stats-overlay::before, .jf-stats-scan::after { animation: none; }
   .jf-tile-fill { transition: none; }
 }
+
+/* ---- easy gesture delete ---- */
+.jarvis-gest-item { align-items: center; gap: 6px; }
+.jarvis-gest-item .jarvis-gest-name { flex: 0 0 auto; }
+.jarvis-gest-item .jarvis-gest-action { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jarvis-gesture-del {
+  flex: 0 0 auto; cursor: pointer; font-size: 11px; font-family: var(--font-body);
+  padding: 3px 9px; border-radius: 6px;
+  background: rgba(209,106,106,0.14); border: 1px solid rgba(209,106,106,0.45); color: #e79a9a;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.jarvis-gesture-del:hover { background: rgba(209,106,106,0.9); border-color: #d16a6a; color: #fff; }
+.jarvis-gesture-clear {
+  margin-top: 8px; width: 100%; cursor: pointer; font-size: 11px; font-family: var(--font-body);
+  padding: 6px; border-radius: 6px; letter-spacing: 0.5px;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.jarvis-gesture-clear:hover { color: #e79a9a; border-color: rgba(209,106,106,0.5); background: rgba(209,106,106,0.08); }

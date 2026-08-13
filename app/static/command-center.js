@@ -2123,19 +2123,36 @@ function jarvisRenderTrainedGesturesList() {
   const list = document.getElementById("jarvis-gesture-list");
   if (!list) return;
   const gestures = jarvisLoadTrainedGestures();
-  list.innerHTML = gestures.length
-    ? gestures.map((g, i) => {
-        const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
-        return `<div class="qa-row"><b>${escapeHtml(g.name)}</b>
-          <span class="qa-status">${escapeHtml(found ? found.label : g.action)}</span>
-          <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete" style="width:20px;height:20px;margin-left:4px">✕</button></div>`;
-      }).join("")
-    : `<div class="hint">No gestures yet — train one: hold a pose, name it, pick an action, save.</div>`;
+  if (!gestures.length) {
+    list.innerHTML = `<div class="hint">No gestures yet — train one: hold a pose, name it, pick an action, save.</div>`;
+    return;
+  }
+  list.innerHTML = gestures.map((g, i) => {
+    const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
+    return `<div class="qa-row jarvis-gest-item">
+      <b class="jarvis-gest-name">${escapeHtml(g.name)}</b>
+      <span class="qa-status jarvis-gest-action">${escapeHtml(found ? found.label : g.action)}</span>
+      <button class="jarvis-gesture-del" data-idx="${i}" title="Delete this gesture">🗑 Delete</button>
+    </div>`;
+  }).join("") +
+  `<button id="jarvis-gesture-clear-all" class="jarvis-gesture-clear">Clear ALL gestures</button>`;
+
   list.querySelectorAll(".jarvis-gesture-del").forEach((btn) => {
     btn.addEventListener("click", () => {
-      jarvisDeleteTrainedGesture(Number(btn.dataset.idx));
+      const i = Number(btn.dataset.idx);
+      const name = (jarvisLoadTrainedGestures()[i] || {}).name || "gesture";
+      jarvisDeleteTrainedGesture(i);
       jarvisRenderTrainedGesturesList();
+      toast(`Deleted "${name}".`);
     });
+  });
+  const clearAll = document.getElementById("jarvis-gesture-clear-all");
+  if (clearAll) clearAll.addEventListener("click", () => {
+    if (window.confirm("Delete ALL trained gestures? This can't be undone.")) {
+      try { localStorage.removeItem(JARVIS_GESTURES_KEY); } catch (e) { /* fine */ }
+      jarvisRenderTrainedGesturesList();
+      toast("All gestures cleared.");
+    }
   });
 }
 
