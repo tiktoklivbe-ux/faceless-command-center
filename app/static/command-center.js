@@ -1856,6 +1856,8 @@ const JARVIS_GESTURE_ACTIONS = [
   { value: "refresh:data", label: "Refresh live data" },
   { value: "cam:toggle", label: "Turn the camera on/off" },
   { value: "help:guide", label: "Show the app guide (what everything does)" },
+  { value: "data:cards", label: "Pop up draggable data panels" },
+  { value: "data:hide", label: "Hide the data panels" },
 ];
 
 function jarvisExecuteGestureAction(action) {
@@ -1890,8 +1892,77 @@ function jarvisExecuteGestureAction(action) {
     case "scroll:up": jarvisScrollActiveView(-1); break;
     case "refresh:data": jarvisRefreshReadout(); if (typeof pollActiveJob === "function") pollActiveJob(); toast("Refreshed."); break;
     case "help:guide": jarvisShowHelpGuide(); break;
+    case "data:cards": jarvisShowDataCards(); break;
+    case "data:hide": jarvisHideDataCards(); break;
     default: break;
   }
+}
+
+/** Floating, pinch-draggable data panels that pop up around the camera view --
+ *  live metrics, job status, the schedule, and what's rendering right now.
+ *  Each is a .jarvis-widget with a handle, so the SAME pinch-drag that moves
+ *  the other widgets moves these too (grab a title bar with a pinch), and
+ *  jarvisMakeDraggable adds mouse dragging + position memory. */
+async function jarvisShowDataCards() {
+  const root = document.querySelector(".jarvis-hud") || document.getElementById("bigpanel-inner");
+  if (!root) { toast("Open Jarvis to summon the panels."); return; }
+  jarvisHideDataCards();  // re-summon repositions cleanly
+
+  let stats = [], jobs = [], settings = {};
+  try {
+    [stats, jobs, settings] = await Promise.all([
+      API("/api/jarvis/stats").then((d) => d.stats || []).catch(() => []),
+      API("/api/jobs?limit=30").catch(() => []),
+      API("/api/settings").catch(() => ({})),
+    ]);
+  } catch (e) { /* show whatever we got */ }
+
+  const sval = (k) => { const v = settings[k]; return v && typeof v === "object" ? (v.value || "") : (v || ""); };
+  const running = jobs.filter((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status))).length;
+  const ready = jobs.filter((j) => j.status === "ready_for_review").length;
+  const published = jobs.filter((j) => j.status === "published").length;
+  const failed = jobs.filter((j) => j.status === "failed").length;
+  const active = jobs.find((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status)));
+  const conn = stats.find((s) => s.connected && !s.error) || null;
+  const row = (label, val) => `<div class="jf-dc-stat"><span>${label}</span><b>${val}</b></div>`;
+
+  const cards = [];
+  if (conn) {
+    cards.push({ key: "jfCardMetrics", title: "LIVE METRICS", top: "88px", right: "22px",
+      body: row("Subscribers", (conn.subscribers || 0).toLocaleString())
+          + row("Views", (conn.views || 0).toLocaleString())
+          + row("Videos", (conn.video_count || 0).toLocaleString()) });
+  }
+  cards.push({ key: "jfCardStatus", title: "STATUS", top: conn ? "290px" : "88px", right: "22px",
+    body: row("Rendering", running) + row("Ready", ready) + row("Published", published) + row("Failed", failed) });
+  if (sval("schedule_mode") === "slots") {
+    cards.push({ key: "jfCardSchedule", title: "SCHEDULE", top: "88px", left: "22px",
+      body: `<div style="font-family:var(--font-mono);font-size:11px;color:var(--ink)">${escapeHtml(sval("post_schedule_times"))}</div>
+             <div style="font-size:11px;color:var(--muted);margin-top:5px">${escapeHtml(sval("post_timezone").replace("America/", ""))} · 4 shorts + 1 long/day</div>` });
+  }
+  cards.push({ key: "jfCardNow", title: "NOW RENDERING", top: "290px", left: "22px",
+    body: active
+      ? `<div style="font-size:12px;color:var(--ink)">${escapeHtml((active.title || active.topic || "Untitled").slice(0, 60))}</div>
+         <div style="font-size:11px;color:var(--muted);margin-top:4px">${escapeHtml(String(active.status))}</div>`
+      : `<div style="font-size:12px;color:var(--muted)">Nothing rendering right now.</div>` });
+
+  cards.forEach((c) => {
+    const el = document.createElement("div");
+    el.className = "jarvis-widget jf-datacard"; el.dataset.card = "1";
+    el.style.top = c.top;
+    if (c.left) el.style.left = c.left;
+    if (c.right) el.style.right = c.right;
+    el.innerHTML = `<div class="jarvis-widget-handle">⠿ ${c.title}<button class="jf-datacard-close" title="Close">✕</button></div>
+      <div class="jf-datacard-body">${c.body}</div>`;
+    root.appendChild(el);
+    jarvisMakeDraggable(el, el.querySelector(".jarvis-widget-handle"), c.key);
+    el.querySelector(".jf-datacard-close").addEventListener("click", () => el.remove());
+  });
+  if (cards.length) toast("Data panels up — pinch a title bar (or drag with the mouse) to move them.");
+}
+
+function jarvisHideDataCards() {
+  document.querySelectorAll(".jf-datacard[data-card]").forEach((el) => el.remove());
 }
 
 // --- gesture action helpers ---
