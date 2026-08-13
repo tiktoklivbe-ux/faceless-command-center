@@ -310,7 +310,8 @@ def _run_job_inner(job_id: str):
                 .all()
             ]
             script = script_stage.generate_script(
-                db, channel.niche, job.topic, channel.style_notes, kind=job.kind, avoid_topics=recent_titles
+                db, channel.niche, job.topic, channel.style_notes, kind=job.kind,
+                avoid_topics=recent_titles, extended=bool(getattr(job, "extended", False)),
             )
             job.title = script.get("title", "")[:200]
             description = script.get("description", "")

@@ -311,16 +311,31 @@ def _template_fallback(niche: str, topic: str) -> dict:
 
 
 def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind: str = "short",
-                     avoid_topics: list[str] | None = None) -> dict:
+                     avoid_topics: list[str] | None = None, extended: bool = False) -> dict:
     provider = get_setting(db, "llm_provider", "anthropic")
     prompt = _user_prompt(niche, topic, style_notes, avoid_topics)
-    system_prompt = LONGFORM_SYSTEM_PROMPT if kind == "longform" else SYSTEM_PROMPT
-    # A long-form script (20-32 segments, each with narration + a visual
+    if kind == "longform":
+        # The extended variant is the same long-form format, just a longer
+        # target -- an 8-10 minute video instead of 5-7. Built by swapping the
+        # word/segment targets in the long-form prompt so everything else
+        # (structure, on-niche hashtags, no-repeat guidance) stays identical.
+        if extended:
+            system_prompt = (LONGFORM_SYSTEM_PROMPT
+                             .replace("5-7 minutes", "8-10 minutes")
+                             .replace("must be 850-1050 WORDS", "must be 1300-1700 WORDS")
+                             .replace("under 700 words total is a FAILURE", "under 1200 words total is a FAILURE")
+                             .replace("under 850 words", "under 1300 words")
+                             .replace("28-38 segments", "45-58 segments"))
+        else:
+            system_prompt = LONGFORM_SYSTEM_PROMPT
+    else:
+        system_prompt = SYSTEM_PROMPT
+    # A long-form script (many segments, each with narration + a visual
     # prompt, plus title/description) is a much bigger JSON payload than a
     # short's -- reusing the short's 4000-token ceiling would just recreate
     # the exact "cut off mid-string" bug that ceiling was raised to fix in
-    # the first place, just for the long-form case instead.
-    max_tokens = 12000 if kind == "longform" else 4000
+    # the first place. The extended variant needs even more headroom.
+    max_tokens = (16000 if extended else 12000) if kind == "longform" else 4000
 
     has_anthropic = bool(get_setting(db, "anthropic_api_key"))
     has_openai = bool(get_setting(db, "openai_api_key"))

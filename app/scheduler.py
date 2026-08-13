@@ -354,6 +354,87 @@ def _channel_due_kind(db: Session, channel: models.Channel) -> str | None:
     return None
 
 
+def _slot_schedule_due(db: Session):
+    """Fixed wall-clock posting schedule (schedule_mode='slots').
+
+    Returns (channel, kind, extended) for a slot whose local time has passed
+    today and hasn't been fulfilled yet, else (None, None, False). Slots come
+    from `post_schedule_times` interpreted in `post_timezone`. One slot per day
+    -- rotating by day-of-year so it isn't always the same clock time -- is the
+    long-form on the long-form channel; the other slots are shorts on the
+    shorts channel. Every other day that long-form is the extended 6-10 min
+    variant. Independent of a channel's auto_enabled flag: the schedule itself
+    is the switch."""
+    if get_setting(db, "schedule_mode", "") != "slots":
+        return None, None, False
+
+    from zoneinfo import ZoneInfo
+    tz_name = get_setting(db, "post_timezone", "") or "America/Denver"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("America/Denver")
+
+    slots = []
+    for part in (get_setting(db, "post_schedule_times", "03:00,08:00,12:00,17:00,22:00") or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            hh, mm = part.split(":")
+            slots.append((int(hh), int(mm)))
+        except (ValueError, AttributeError):
+            continue
+    if not slots:
+        return None, None, False
+    slots.sort()
+    n = len(slots)
+
+    shorts_id = get_setting(db, "schedule_shorts_channel_id", "")
+    longform_id = get_setting(db, "schedule_longform_channel_id", "")
+    shorts_ch = db.get(models.Channel, shorts_id) if shorts_id else None
+    longform_ch = db.get(models.Channel, longform_id) if longform_id else None
+
+    now_local = datetime.now(tz)
+    doy = now_local.timetuple().tm_yday
+    longform_slot_index = doy % n       # which slot is the long-form today (rotates daily)
+    extended_today = (doy % 2 == 0)     # every other day the long-form is the extended variant
+
+    # If the process was asleep for hours, skip stale slots rather than dumping
+    # a pile of catch-up videos the moment it wakes.
+    GRACE_SECONDS = 3 * 3600
+
+    for idx, (hh, mm) in enumerate(slots):
+        slot_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if now_local < slot_local:
+            continue  # this slot's time hasn't arrived yet today
+        if (now_local - slot_local).total_seconds() > GRACE_SECONDS:
+            continue  # missed it by too long -- skip
+
+        is_longform = (idx == longform_slot_index)
+        channel = longform_ch if is_longform else shorts_ch
+        kind = "longform" if is_longform else "short"
+        if not channel:
+            continue
+        # Don't burn a render on a long-form the target channel can't even post
+        # yet (e.g. finance channel not connected) -- it'll start once connected.
+        if is_longform and not channel.youtube_connected:
+            continue
+
+        slot_utc = slot_local.astimezone(timezone.utc).replace(tzinfo=None)
+        already = (
+            db.query(models.VideoJob)
+            .filter(models.VideoJob.channel_id == channel.id)
+            .filter(models.VideoJob.kind == kind)
+            .filter(models.VideoJob.status != models.JobStatus.FAILED)
+            .filter(models.VideoJob.created_at >= slot_utc)
+            .count()
+        )
+        if already == 0:
+            return channel, kind, (is_longform and extended_today)
+    return None, None, False
+
+
 def _tick():
     db = SessionLocal()
     try:
@@ -392,6 +473,30 @@ def _tick():
                 return
             log.info("Chronos: picking up queued job %s", queued.id)
             orchestrator.dispatch_job(queued.id)
+            return
+
+        # Fixed wall-clock schedule takes priority when enabled. Runs
+        # independently of channels' auto_enabled flags -- the schedule is the
+        # switch. One job per tick, same one-render-at-a-time pacing as below.
+        try:
+            sched_ch, sched_kind, sched_extended = _slot_schedule_due(db)
+        except Exception:
+            log.exception("Chronos: slot-schedule check failed")
+            sched_ch = None
+        if sched_ch:
+            job = models.VideoJob(
+                channel_id=sched_ch.id,
+                topic="",
+                kind=sched_kind,
+                extended=sched_extended,
+                auto_publish=True,  # a posting schedule is meant to post
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            log.info("Chronos: schedule created %s%s job %s for %s",
+                     sched_kind, " (extended)" if sched_extended else "", job.id, sched_ch.name)
+            orchestrator.dispatch_job(job.id)
             return
 
         channels = db.query(models.Channel).filter(models.Channel.auto_enabled == True).all()  # noqa: E712

@@ -75,6 +75,7 @@ class VideoJob(Base):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=False)
     topic = Column(Text, default="")            # blank = let the model pick a topic for the niche
     kind = Column(String, default="short")      # "short" (vertical, <60s) | "longform" (horizontal, 5-7min)
+    extended = Column(Boolean, default=False)   # longform only: True = the extended 6-10 min variant
     status = Column(Enum(JobStatus), default=JobStatus.QUEUED)
     stage_log = Column(Text, default="")        # newline-separated human-readable progress log
     agent_status = Column(Text, default="{}")   # JSON dict: {"script": "running", "voice": "done", ...}

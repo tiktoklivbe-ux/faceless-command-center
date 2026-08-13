@@ -72,6 +72,15 @@ KNOWN_KEYS = {
     "jarvis_alerted_job_ids": False,   # internal: comma-separated job ids already alerted on, so failures aren't re-sent every tick
     "jarvis_alerted_log_ids": False,   # internal: same, for blocked/unauthorized JarvisLog rows
     "jarvis_alerted_published_ids": False,  # internal: same, for successfully-published video jobs
+
+    # Posting schedule (fixed wall-clock slots) -- all non-secret so they're
+    # readable/verifiable in the settings view.
+    "schedule_mode": False,                 # "slots" enables the fixed-time schedule; "" = old per-channel spacing
+    "post_timezone": False,                 # IANA tz for the slot times, e.g. "America/Denver"
+    "post_schedule_times": False,           # comma-separated HH:MM local times
+    "schedule_shorts_channel_id": False,    # channel that gets the shorts slots
+    "schedule_longform_channel_id": False,  # channel that gets the one daily long-form slot
+    "min_hours_between_videos": False,       # floor on spacing for the old per-channel mode
 }
 
 

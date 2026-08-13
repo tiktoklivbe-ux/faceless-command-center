@@ -85,3 +85,10 @@ class SettingsIn(BaseModel):
     jarvis_voice_id: Optional[str] = None
     jarvis_proactive_alerts: Optional[str] = None
     ntfy_topic: Optional[str] = None
+    # Posting schedule (fixed wall-clock slots). See scheduler._slot_schedule_due.
+    schedule_mode: Optional[str] = None                 # "slots" to enable, "" for the old per-channel spacing
+    post_timezone: Optional[str] = None                 # IANA tz, e.g. "America/Denver"
+    post_schedule_times: Optional[str] = None           # comma-separated HH:MM, e.g. "03:00,08:00,12:00,17:00,22:00"
+    schedule_shorts_channel_id: Optional[str] = None
+    schedule_longform_channel_id: Optional[str] = None
+    min_hours_between_videos: Optional[str] = None

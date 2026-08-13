@@ -6,3 +6,4 @@ cryptography>=42.0
 requests>=2.31
 python-dotenv>=1.0
 pillow>=10.3
+tzdata
