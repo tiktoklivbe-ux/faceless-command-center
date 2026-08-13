@@ -168,8 +168,41 @@ def _log_call(db: Session, source: str, action: str, params: dict, allowed: bool
         log.exception("Couldn't write Jarvis activity log (continuing anyway)")
 
 
+def _flatten_history(history: list[dict]) -> list[dict]:
+    """Reduce ANY saved conversation history to plain {role, content:<text>}
+    turns before it goes to the LLM.
+
+    Real Jarvis turns contain thinking blocks and tool_use/tool_result blocks.
+    When a conversation restored from the browser's localStorage is re-sent,
+    those blocks fail provider validation and 500 the whole request (a thinking
+    block without a valid signature, a dangling tool_use with no matching
+    tool_result, etc.) -- which is exactly the "Couldn't reach Jarvis: 500" on
+    every message after 'Welcome back'. Flattening to text turns makes any
+    stored shape valid: old raw content-blocks, neutral {role,text}, or gemini
+    {parts}. Tool context is dropped across turns, but the assistant's text
+    reply (kept) already carries the gist."""
+    out = []
+    for m in history or []:
+        if not isinstance(m, dict):
+            continue
+        role = "assistant" if m.get("role") in ("assistant", "model") else "user"
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            text = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            text = m.get("text", "") or ""
+            if not text and isinstance(m.get("parts"), list):
+                text = " ".join(p.get("text", "") for p in m["parts"] if isinstance(p, dict))
+        text = (text or "").strip()
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
 def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], source: str) -> dict:
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    messages = _flatten_history(history) + [{"role": "user", "content": user_message}]
     actions = []
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -215,7 +248,10 @@ def _run_turn_anthropic(db: Session, user_message: str, history: list[dict], sou
 
 
 def _run_turn_gemini(db: Session, user_message: str, history: list[dict], source: str) -> dict:
-    contents = list(history) + [{"role": "user", "parts": [{"text": user_message}]}]
+    contents = [
+        {"role": ("model" if h["role"] == "assistant" else "user"), "parts": [{"text": h["content"]}]}
+        for h in _flatten_history(history)
+    ] + [{"role": "user", "parts": [{"text": user_message}]}]
     actions = []
 
     for _ in range(MAX_TOOL_ROUNDS):
