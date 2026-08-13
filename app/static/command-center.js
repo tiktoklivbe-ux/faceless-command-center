@@ -771,8 +771,18 @@ let jarvisRecognition = null;
 // to a fresh greeting every time -- jarvisHistory alone isn't enough since
 // it's just an in-memory variable that a page reload wipes. Capped so this
 // can't grow into a real localStorage problem over weeks of use.
-const JARVIS_CONVO_KEY = "jarvisConversation";
+// Bumped to _v2 on purpose. Builds shipped earlier today stored Jarvis
+// conversation history in shapes the restored (yesterday's) backend can't
+// parse -- raw Anthropic content-blocks (incl. thinking/tool_use) from the
+// streaming build, AND {role,text} from the neutral-format build. Feeding
+// EITHER back to the LLM 500s every single request (confirmed against
+// production), which is the real "worked yesterday, not now" cause. Changing
+// the key makes every one of those old saved conversations get ignored no
+// matter its shape, and we delete the old key outright below so nothing can
+// ever read that stale, format-incompatible data again.
+const JARVIS_CONVO_KEY = "jarvisConversation_v2";
 const JARVIS_CONVO_CAP = 40;
+try { localStorage.removeItem("jarvisConversation"); } catch (e) { /* storage unavailable -- nothing to clean */ }
 
 function jarvisSaveConversation(transcript) {
   try {
