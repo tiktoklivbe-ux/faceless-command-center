@@ -1891,14 +1891,97 @@ function jarvisExecuteGestureAction(action) {
 }
 
 // --- gesture action helpers ---
+function _jfNextMilestone(n) {
+  if (n <= 0) return 10;
+  if (n < 10) return 10;
+  const pow = Math.pow(10, Math.floor(Math.log10(n)));
+  for (const m of [pow, 2 * pow, 5 * pow, 10 * pow]) if (m > n) return m;
+  return 10 * pow;
+}
+function _jfCountUp(el, target, dur) {
+  target = Number(target) || 0;
+  const start = performance.now();
+  const ease = (t) => 1 - Math.pow(2, -10 * t);  // easeOutExpo
+  const frame = (now) => {
+    const t = Math.min(1, (now - start) / dur);
+    el.textContent = Math.round(target * ease(t)).toLocaleString();
+    if (t < 1) requestAnimationFrame(frame);
+    else el.textContent = target.toLocaleString();
+  };
+  // set the final value immediately as a fallback (rAF won't tick in a
+  // backgrounded tab), then animate when the tab is actually visible.
+  el.textContent = target.toLocaleString();
+  requestAnimationFrame(frame);
+}
+
+/** Futuristic, animated live-metrics overlay. Subs / views / videos are
+ *  different units, so each is its OWN animated stat tile with a meter toward
+ *  its next milestone -- never one bogus shared-axis chart. */
 async function jarvisShowLiveStats() {
+  if (document.getElementById("jf-stats-overlay")) return;
+  let stats = [];
   try {
     const d = await API("/api/jarvis/stats");
-    const lines = (d.stats || []).map((s) => s.connected
-      ? `${s.channel}: ${s.subscribers} subs · ${s.views} views · ${s.video_count} videos`
-      : `${s.channel}: not connected`);
-    toast(lines.join("   |   ") || "No channel stats available.");
-  } catch (e) { toast("Couldn't load live stats."); }
+    stats = d.stats || [];
+  } catch (e) { toast("Couldn't load live stats."); return; }
+
+  const tile = (label, value, showMeter) => {
+    if (!showMeter) {
+      return `<div class="jf-tile jf-tile-off"><div class="jf-tile-label">${label}</div>
+        <div class="jf-tile-value">—</div><div class="jf-tile-milestone">not connected</div></div>`;
+    }
+    const ms = _jfNextMilestone(value);
+    const pct = Math.max(2, Math.min(100, Math.round((value / ms) * 100)));
+    return `<div class="jf-tile" data-count="${value}">
+      <div class="jf-tile-label">${label}</div>
+      <div class="jf-tile-value jf-count">0</div>
+      <div class="jf-tile-meter"><div class="jf-tile-fill" data-pct="${pct}"></div></div>
+      <div class="jf-tile-milestone">→ ${ms.toLocaleString()}</div></div>`;
+  };
+
+  const channelsHTML = stats.map((s) => {
+    const connected = s.connected && !s.error;
+    const nameLine = connected
+      ? `<div class="jf-stats-channel-name">${escapeHtml(s.channel)}${s.youtube_title ? ` · <b>@${escapeHtml(s.youtube_title)}</b>` : ""}</div>`
+      : `<div class="jf-stats-channel-name">${escapeHtml(s.channel)} · <span style="opacity:.7">${escapeHtml(s.error ? "stats unavailable" : "not connected")}</span></div>`;
+    return `<div class="jf-stats-channel">${nameLine}
+      <div class="jf-stats-tiles">
+        ${tile("SUBSCRIBERS", s.subscribers, connected)}
+        ${tile("TOTAL VIEWS", s.views, connected)}
+        ${tile("VIDEOS", s.video_count, connected)}
+      </div></div>`;
+  }).join("") || `<div class="jf-stats-channel-name">No channels yet.</div>`;
+
+  const el = document.createElement("div");
+  el.className = "jf-stats-overlay"; el.id = "jf-stats-overlay";
+  el.innerHTML = `<div class="jf-stats-card">
+    <div class="jf-stats-head">
+      <div class="jf-stats-title">LIVE METRICS</div>
+      <button class="jf-stats-close" id="jf-stats-close">CLOSE ✕</button>
+    </div>
+    <div class="jf-stats-scan"></div>
+    ${channelsHTML}</div>`;
+  document.body.appendChild(el);
+
+  // Stagger tile entrance + trigger count-up and meter fills.
+  const tiles = el.querySelectorAll(".jf-tile");
+  tiles.forEach((t, i) => {
+    t.style.animationDelay = `${0.08 * i + 0.15}s`;
+    const count = t.querySelector(".jf-count");
+    const fill = t.querySelector(".jf-tile-fill");
+    const target = Number(t.dataset.count || 0);
+    setTimeout(() => {
+      if (count) _jfCountUp(count, target, 1200);
+      if (fill) fill.style.width = (fill.dataset.pct || 0) + "%";
+    }, 80 * i + 260);
+  });
+
+  const close = () => el.remove();
+  el.addEventListener("click", (e) => { if (e.target === el) close(); });
+  document.getElementById("jf-stats-close").addEventListener("click", close);
+  document.addEventListener("keydown", function esc(ev) {
+    if (ev.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+  });
 }
 
 async function jarvisShowScheduleToast() {

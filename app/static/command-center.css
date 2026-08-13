@@ -1405,3 +1405,92 @@ button.msc-link-card { cursor: pointer; }
   #job-banner { transition: none; }
   .jb-pulse { animation: none; }
 }
+
+/* ============================================================ LIVE STATS OVERLAY (futuristic, animated) */
+.jf-stats-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: radial-gradient(circle at 50% 40%, rgba(20,30,50,0.75), rgba(3,6,12,0.92));
+  backdrop-filter: blur(7px);
+  animation: jfStatsBg 0.35s ease both;
+}
+@keyframes jfStatsBg { from { opacity: 0; } to { opacity: 1; } }
+/* drifting grid, purely atmospheric */
+.jf-stats-overlay::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.35;
+  background-image: linear-gradient(rgba(232,236,239,0.06) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(232,236,239,0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(circle at 50% 45%, #000 30%, transparent 78%);
+          mask-image: radial-gradient(circle at 50% 45%, #000 30%, transparent 78%);
+  animation: jfGridDrift 18s linear infinite;
+}
+@keyframes jfGridDrift { to { background-position: 44px 44px, 44px 44px; } }
+
+.jf-stats-card {
+  position: relative; width: min(680px, 94vw); max-height: 88vh; overflow: auto;
+  background: linear-gradient(160deg, rgba(14,20,32,0.97), rgba(8,12,20,0.97));
+  border: 1px solid var(--border); border-radius: 14px; padding: 22px 26px 26px;
+  box-shadow: 0 0 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(232,236,239,0.04) inset;
+  animation: jfStatsIn 0.5s cubic-bezier(0.16,1,0.3,1) both;
+}
+@keyframes jfStatsIn { from { opacity: 0; transform: translateY(22px) scale(0.965); } to { opacity: 1; transform: none; } }
+/* corner brackets -- HUD framing */
+.jf-stats-card::before, .jf-stats-card::after {
+  content: ""; position: absolute; width: 22px; height: 22px; pointer-events: none;
+  border: 2px solid rgba(232,236,239,0.4);
+}
+.jf-stats-card::before { top: 8px; left: 8px; border-right: none; border-bottom: none; }
+.jf-stats-card::after  { bottom: 8px; right: 8px; border-left: none; border-top: none; }
+
+.jf-stats-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.jf-stats-title {
+  font-family: var(--font-head); font-size: 16px; letter-spacing: 3px; color: var(--ink);
+  text-shadow: 0 0 14px rgba(232,236,239,0.35);
+}
+.jf-stats-close {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: var(--font-mono); font-size: 12px;
+  transition: color 0.2s, border-color 0.2s;
+}
+.jf-stats-close:hover { color: var(--ink); border-color: rgba(232,236,239,0.5); }
+/* scanning underline under the title row */
+.jf-stats-scan { height: 2px; margin: 8px 0 16px; position: relative; overflow: hidden; background: rgba(232,236,239,0.1); border-radius: 2px; }
+.jf-stats-scan::after {
+  content: ""; position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+  background: linear-gradient(90deg, transparent, var(--ink), transparent);
+  filter: drop-shadow(0 0 6px var(--ink));
+  animation: jfScan 2.4s ease-in-out infinite;
+}
+@keyframes jfScan { 0% { left: -40%; } 100% { left: 100%; } }
+
+.jf-stats-channel { margin-bottom: 18px; }
+.jf-stats-channel-name { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 1px; margin-bottom: 8px; }
+.jf-stats-channel-name b { color: var(--ink); }
+.jf-stats-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 520px) { .jf-stats-tiles { grid-template-columns: 1fr; } }
+
+.jf-tile {
+  position: relative; padding: 14px 14px 12px; border-radius: 10px; overflow: hidden;
+  background: rgba(232,236,239,0.035); border: 1px solid var(--border-soft);
+  animation: jfTileIn 0.55s cubic-bezier(0.16,1,0.3,1) both;
+}
+@keyframes jfTileIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.jf-tile-label { font-family: var(--font-head); font-size: 10px; letter-spacing: 2px; color: var(--muted); margin-bottom: 6px; }
+.jf-tile-value { font-family: var(--font-mono); font-size: 30px; line-height: 1; color: var(--ink); text-shadow: 0 0 16px rgba(232,236,239,0.3); }
+.jf-tile-meter { height: 4px; margin-top: 10px; border-radius: 3px; background: rgba(232,236,239,0.1); overflow: hidden; }
+.jf-tile-fill {
+  height: 100%; width: 0; border-radius: 3px;
+  background: linear-gradient(90deg, rgba(232,236,239,0.5), var(--ink));
+  box-shadow: 0 0 10px rgba(232,236,239,0.5);
+  transition: width 1.3s cubic-bezier(0.16,1,0.3,1);
+}
+.jf-tile-milestone { margin-top: 5px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.jf-tile.jf-tile-off { opacity: 0.55; }
+.jf-tile.jf-tile-off .jf-tile-value { font-size: 15px; color: var(--muted); text-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jf-stats-overlay, .jf-stats-card, .jf-tile { animation-duration: 0.01s; }
+  .jf-stats-overlay::before, .jf-stats-scan::after { animation: none; }
+  .jf-tile-fill { transition: none; }
+}
