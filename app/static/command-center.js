@@ -1104,15 +1104,25 @@ function _jarvisStartRecognition() {
     if (myGen !== jarvisRecognitionGen) return;
     jarvisMicError = ev.error;
     const caption = document.getElementById("jarvis-caption");
-    const FATAL = {
-      "not-allowed": "Microphone is blocked. Click the 🔒/mic icon in your browser's address bar, allow the mic for this site, reload, and try again.",
-      "service-not-allowed": "Microphone is blocked. Allow mic access for this site in your browser settings, reload, and try again.",
+    const say = (m) => { if (caption) caption.textContent = m; else toast("Jarvis: " + m); };
+    const MSG = {
+      "not-allowed": "Microphone is blocked. Click the mic/lock icon in the address bar, allow it for this site, reload, and try again.",
+      "service-not-allowed": "Microphone is blocked. Allow mic access for this site, reload, and try again.",
       "audio-capture": "No microphone detected -- check it's plugged in and not in use by another app.",
+      // Edge's #1 voice failure: the browser's speech service couldn't be
+      // reached. On Windows that needs "Online speech recognition" turned ON
+      // (Settings > Privacy & security > Speech). This was silent before.
+      "network": "Voice service unreachable. On Edge: open Windows Settings > Privacy & security > Speech and turn ON 'Online speech recognition', then reload and try again.",
     };
-    if (FATAL[ev.error]) {
-      jarvisKeyHeld = false;  // stop the restart loop below -- retrying a blocked mic forever is the silent hang
-      if (caption) caption.textContent = FATAL[ev.error];
-      else toast("Jarvis: " + FATAL[ev.error]);
+    if (MSG[ev.error]) {
+      jarvisKeyHeld = false;  // stop the restart loop -- these won't fix themselves by retrying
+      say(MSG[ev.error]);
+      jarvisSetOrbState("idle");
+    } else if (ev.error !== "no-speech" && ev.error !== "aborted") {
+      // ANY other real error is now shown rather than swallowed, so voice
+      // failures are finally diagnosable instead of "nothing happens".
+      jarvisKeyHeld = false;
+      say(`Voice error: "${ev.error}". Reload and retry, or just type your message instead.`);
       jarvisSetOrbState("idle");
     }
   };
