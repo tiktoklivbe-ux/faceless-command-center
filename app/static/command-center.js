@@ -979,11 +979,23 @@ function jarvisAppendMsg(role, text, opts) {
 // send) while the first is still in flight, which is what produced "two
 // of him" talking over each other and rapid state-flashing.
 let jarvisBusy = false;
+// Failsafe timer for jarvisBusy. If a reply ever gets stuck busy (e.g. its
+// audio never fires "ended", so the onDone that clears the flag never runs),
+// jarvisBusy would stay true forever and silently kill ALL future
+// push-to-talk -- jarvisStartListening bails immediately while busy. This
+// guarantees the flag always releases, so the mic can never get permanently
+// wedged by one bad reply.
+let jarvisBusyTimer = null;
+function jarvisSetBusy(v) {
+  jarvisBusy = v;
+  clearTimeout(jarvisBusyTimer);
+  if (v) jarvisBusyTimer = setTimeout(() => { jarvisBusy = false; }, 45000);
+}
 
 async function jarvisSend(message) {
   if (!message || !message.trim()) return;
   if (jarvisBusy) { toast("Jarvis is still answering -- one at a time."); return; }
-  jarvisBusy = true;
+  jarvisSetBusy(true);
   jarvisAppendMsg("user", message);
   const caption = document.getElementById("jarvis-caption");
   if (caption) caption.textContent = "…";
@@ -1032,7 +1044,7 @@ async function jarvisSend(message) {
     jarvisSetOrbState("speaking");
     jarvisSpeak(r.reply, () => {
       jarvisSetOrbState("idle");
-      jarvisBusy = false;
+      jarvisSetBusy(false);
     });
   } catch (e) {
     thinking.remove();
@@ -1041,7 +1053,7 @@ async function jarvisSend(message) {
     if (caption) caption.textContent = msg;
     else toast(msg);
     jarvisSetOrbState("idle");
-    jarvisBusy = false;
+    jarvisSetBusy(false);
   }
 }
 
@@ -1081,19 +1093,41 @@ function _jarvisStartRecognition() {
     const caption = document.getElementById("jarvis-caption");
     if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
-  jarvisRecognition.onerror = () => {};
+  // Surface mic errors instead of swallowing them. A blocked/denied
+  // microphone fails EVERY recognition start with "not-allowed" -- with the
+  // old no-op handler that produced total silence: hold Enter, speak,
+  // release, nothing happens and no reason why. This tells you the real
+  // cause and stops the pointless auto-restart loop on errors that can't
+  // self-recover (a blocked mic won't un-block by retrying).
+  let jarvisMicError = null;
+  jarvisRecognition.onerror = (ev) => {
+    if (myGen !== jarvisRecognitionGen) return;
+    jarvisMicError = ev.error;
+    const caption = document.getElementById("jarvis-caption");
+    const FATAL = {
+      "not-allowed": "Microphone is blocked. Click the 🔒/mic icon in your browser's address bar, allow the mic for this site, reload, and try again.",
+      "service-not-allowed": "Microphone is blocked. Allow mic access for this site in your browser settings, reload, and try again.",
+      "audio-capture": "No microphone detected -- check it's plugged in and not in use by another app.",
+    };
+    if (FATAL[ev.error]) {
+      jarvisKeyHeld = false;  // stop the restart loop below -- retrying a blocked mic forever is the silent hang
+      if (caption) caption.textContent = FATAL[ev.error];
+      else toast("Jarvis: " + FATAL[ev.error]);
+      jarvisSetOrbState("idle");
+    }
+  };
   jarvisRecognition.onend = () => {
     if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
-    if (jarvisKeyHeld) {
+    if (jarvisKeyHeld && !jarvisMicError) {
       // Ended on its own while the key's still down -- not the user
       // stopping, just the browser's silence timeout. Keep listening.
-      try { _jarvisStartRecognition(); } catch (e) { /* fall through to finalize below */ }
-      return;
+      try { _jarvisStartRecognition(); return; } catch (e) { jarvisKeyHeld = false; }
     }
     jarvisSetOrbState("idle");
     const said = jarvisTranscriptSoFar.trim();
     if (said) jarvisSend(said);
-    else {
+    else if (!jarvisMicError) {
+      // Don't stomp a mic-error message already shown by onerror above.
       const caption = document.getElementById("jarvis-caption");
       if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
     }
