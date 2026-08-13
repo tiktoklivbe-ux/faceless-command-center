@@ -1844,6 +1844,19 @@ const JARVIS_GESTURE_ACTIONS = [
   { value: "cam:top-right", label: "Camera: move to top-right" },
   { value: "cam:bottom-left", label: "Camera: move to bottom-left" },
   { value: "cam:bottom-right", label: "Camera: move to bottom-right" },
+  // --- 12 more, added on request (bind any of these to a trained pose) ---
+  { value: "stats:live", label: "Show live stats (subs/views)" },
+  { value: "schedule:show", label: "Show today's posting schedule" },
+  { value: "status:brief", label: "Show a quick status (jobs summary)" },
+  { value: "link:youtube", label: "Open my YouTube channel" },
+  { value: "link:studio", label: "Open YouTube Studio" },
+  { value: "voice:talk", label: "Talk to Jarvis (start/stop mic)" },
+  { value: "voice:stop", label: "Stop Jarvis talking" },
+  { value: "scroll:down", label: "Scroll the current view down" },
+  { value: "scroll:up", label: "Scroll the current view up" },
+  { value: "refresh:data", label: "Refresh live data" },
+  { value: "cam:toggle", label: "Turn the camera on/off" },
+  { value: "help:guide", label: "Show the app guide (what everything does)" },
 ];
 
 function jarvisExecuteGestureAction(action) {
@@ -1852,9 +1865,121 @@ function jarvisExecuteGestureAction(action) {
     const which = action.slice(4);
     if (which === "orbit") closeBigPanel();
     else { openBigPanel(which); setActiveSideItem(which); }
-  } else if (action.startsWith("cam:")) {
-    jarvisCameraDockAction(action.slice(4));
+    return;
   }
+  if (action === "cam:toggle") {
+    const btn = document.getElementById("jarvis-gesture-toggle");
+    if (btn) btn.click();
+    return;
+  }
+  if (action.startsWith("cam:")) { jarvisCameraDockAction(action.slice(4)); return; }
+
+  switch (action) {
+    case "stats:live": jarvisShowLiveStats(); break;
+    case "schedule:show": jarvisShowScheduleToast(); break;
+    case "status:brief": jarvisShowStatusToast(); break;
+    case "link:youtube": jarvisOpenYouTubeChannel(); break;
+    case "link:studio": window.open("https://studio.youtube.com", "_blank", "noopener"); break;
+    case "voice:talk": (jarvisRecording ? jarvisStopRecording() : jarvisStartRecording()); break;
+    case "voice:stop": jarvisStopSpeaking(); break;
+    case "scroll:down": jarvisScrollActiveView(1); break;
+    case "scroll:up": jarvisScrollActiveView(-1); break;
+    case "refresh:data": jarvisRefreshReadout(); if (typeof pollActiveJob === "function") pollActiveJob(); toast("Refreshed."); break;
+    case "help:guide": jarvisShowHelpGuide(); break;
+    default: break;
+  }
+}
+
+// --- gesture action helpers ---
+async function jarvisShowLiveStats() {
+  try {
+    const d = await API("/api/jarvis/stats");
+    const lines = (d.stats || []).map((s) => s.connected
+      ? `${s.channel}: ${s.subscribers} subs · ${s.views} views · ${s.video_count} videos`
+      : `${s.channel}: not connected`);
+    toast(lines.join("   |   ") || "No channel stats available.");
+  } catch (e) { toast("Couldn't load live stats."); }
+}
+
+async function jarvisShowScheduleToast() {
+  try {
+    const s = await API("/api/settings").catch(() => ({}));
+    const sval = (k) => { const v = s[k]; return v && typeof v === "object" ? (v.value || "") : (v || ""); };
+    if (sval("schedule_mode") === "slots") {
+      toast(`Schedule (${sval("post_timezone").replace("America/", "")}): ${sval("post_schedule_times")} — 4 shorts + 1 long/day`);
+    } else {
+      toast("No fixed schedule set.");
+    }
+  } catch (e) { toast("Couldn't load the schedule."); }
+}
+
+async function jarvisShowStatusToast() {
+  try {
+    const jobs = await API("/api/jobs?limit=30");
+    const running = jobs.filter((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status))).length;
+    const ready = jobs.filter((j) => j.status === "ready_for_review").length;
+    const published = jobs.filter((j) => j.status === "published").length;
+    const failed = jobs.filter((j) => j.status === "failed").length;
+    toast(`${running} rendering · ${ready} ready · ${published} published · ${failed} failed`);
+  } catch (e) { toast("Couldn't load status."); }
+}
+
+async function jarvisOpenYouTubeChannel() {
+  try {
+    const chans = await API("/api/channels");
+    const c = chans.find((x) => x.youtube_connected && x.youtube_channel_title);
+    const handle = c ? c.youtube_channel_title.replace(/\s+/g, "") : "";
+    window.open(handle ? `https://www.youtube.com/@${encodeURIComponent(handle)}` : "https://www.youtube.com", "_blank", "noopener");
+  } catch (e) { window.open("https://www.youtube.com", "_blank", "noopener"); }
+}
+
+function jarvisScrollActiveView(dir) {
+  const el = document.getElementById("bigpanel-inner")
+    || document.getElementById("jarvis-log")
+    || document.scrollingElement || document.body;
+  const amount = Math.round((el.clientHeight || 400) * 0.7) * dir;
+  try { el.scrollBy({ top: amount, behavior: "smooth" }); } catch (e) { el.scrollTop += amount; }
+}
+
+function jarvisStopSpeaking() {
+  try { if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; } } catch (e) { /* nothing playing */ }
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
+  jarvisSetOrbState("idle");
+  if (typeof jarvisSetBusy === "function") jarvisSetBusy(false); else jarvisBusy = false;
+}
+
+function jarvisShowHelpGuide() {
+  if (document.getElementById("jarvis-help-overlay")) return;
+  const gestureRows = JARVIS_BUILTIN_GESTURES.map((g) =>
+    `<tr><td style="padding:3px 10px 3px 0">${g.emoji} ${escapeHtml(g.name)}</td><td style="opacity:.85">${escapeHtml(g.does)}</td></tr>`
+  ).join("");
+  const el = document.createElement("div");
+  el.id = "jarvis-help-overlay";
+  el.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(4,8,16,0.82);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:24px";
+  el.innerHTML = `
+    <div style="max-width:640px;max-height:86vh;overflow:auto;background:rgba(10,16,28,0.96);border:1px solid rgba(120,170,255,0.35);border-radius:12px;padding:22px 26px;color:var(--ink,#e8ecef);font-family:var(--font-body,sans-serif);line-height:1.55">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0;font-size:18px">How this app works</h2>
+        <button id="jarvis-help-close" style="background:transparent;border:1px solid rgba(255,255,255,.3);color:inherit;border-radius:6px;padding:3px 10px;cursor:pointer">Close ✕</button>
+      </div>
+      <p style="margin:6px 0"><b>What it does:</b> it automatically writes, voices, illustrates, and publishes videos to your channels on a schedule — you don't touch each one.</p>
+      <p style="margin:6px 0"><b>The panels</b> (left sidebar, or say them to Jarvis):</p>
+      <ul style="margin:4px 0 10px 18px;padding:0">
+        <li><b>Mission Control</b> — live stats and a feed of what every agent is doing right now.</li>
+        <li><b>Videos</b> — every video, its status (rendering / ready / published / failed), and its log.</li>
+        <li><b>Channels</b> — your channels, their niche, connections, and automation.</li>
+        <li><b>Settings</b> — API keys, voice, and the posting schedule.</li>
+        <li><b>Jarvis</b> — talk or type to run any of it hands-free.</li>
+      </ul>
+      <p style="margin:6px 0"><b>Jarvis</b> can check jobs, pull live subs/views, retry or start videos, and more — hold 🎤 (or Enter) and speak, or type.</p>
+      <p style="margin:10px 0 4px"><b>Camera gestures</b> — turn on the camera, hold a pose ~½ second:</p>
+      <table style="border-collapse:collapse;font-size:13px">${gestureRows}</table>
+      <p style="margin:10px 0 0;opacity:.75;font-size:12px">You can also train your own gestures and bind them to actions in the Train Gestures panel.</p>
+    </div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  el.addEventListener("click", (e) => { if (e.target === el) close(); });
+  document.getElementById("jarvis-help-close").addEventListener("click", close);
 }
 
 // ============================================================ BUILT-IN GESTURES

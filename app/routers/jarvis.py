@@ -386,6 +386,14 @@ async def transcribe(audio: UploadFile = File(...), db: Session = Depends(get_db
                         else "No speech-to-text provider is configured (needs an ElevenLabs or Gemini key).")
 
 
+@router.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    """Live YouTube stats (subs/views/video-count), same data the get_channel_stats
+    tool returns -- exposed as a plain GET so the HUD (and the 'show stats'
+    gesture) can pull it directly without a full chat round-trip."""
+    return jarvis_tools.get_channel_stats(db)
+
+
 @router.get("/log")
 def get_log(limit: int = 50, db: Session = Depends(get_db)):
     rows = (
