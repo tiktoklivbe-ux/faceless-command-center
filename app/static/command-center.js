@@ -1094,6 +1094,30 @@ async function jarvisSend(message) {
 let jarvisKeyHeld = false;
 let jarvisTranscriptSoFar = "";
 let jarvisRecognitionGen = 0;
+// True only between a recognition session's real onstart and onend. Needed
+// because jarvisKeyHeld alone was a one-way trap: if a keyup never arrived
+// (you release Enter while the window isn't focused -- alt-tab, a permission
+// prompt, clicking another app), jarvisKeyHeld stayed true forever, and
+// jarvisStartListening's `if (jarvisKeyHeld) return` then silently refused
+// EVERY later attempt. Voice would be dead until a page reload, showing
+// nothing at all -- exactly the reported symptom. Comparing the two flags
+// lets us detect that stale state and recover instead of wedging.
+let jarvisRecognitionLive = false;
+
+/** Hard-reset the voice pipeline from any state. Safe to call at any time. */
+function jarvisForceResetVoice() {
+  jarvisRecognitionGen++;            // invalidate callbacks from the old session
+  jarvisRecognitionLive = false;
+  jarvisKeyHeld = false;
+  try {
+    if (jarvisRecognition) {
+      if (jarvisRecognition.abort) jarvisRecognition.abort();
+      else jarvisRecognition.stop();
+    }
+  } catch (e) { /* already dead -- that's the point */ }
+  jarvisRecognition = null;
+  jarvisSetOrbState("idle");
+}
 
 function _jarvisStartRecognition() {
   const myGen = ++jarvisRecognitionGen;
@@ -1144,8 +1168,13 @@ function _jarvisStartRecognition() {
     say(MSG[ev.error] || `Voice error: "${ev.error}". Reload and retry, or just type your message instead.`);
     jarvisSetOrbState("idle");
   };
+  jarvisRecognition.onstart = () => {
+    if (myGen !== jarvisRecognitionGen) return;
+    jarvisRecognitionLive = true;  // proves the mic session really opened
+  };
   jarvisRecognition.onend = () => {
     if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
+    jarvisRecognitionLive = false;
     if (jarvisKeyHeld && !jarvisMicError) {
       // Ended on its own while the key's still down -- just the browser's
       // silence timeout (or our restart). Keep listening.
@@ -1170,13 +1199,34 @@ function jarvisStartListening() {
     if (caption) caption.textContent = "Voice input isn't supported in this browser -- type instead.";
     return;
   }
-  if (jarvisKeyHeld || jarvisBusy) return;
+  // Recover from a wedged state instead of silently refusing forever. If we
+  // still think a key is held but no recognition session is actually alive,
+  // that's leftover garbage from a lost keyup -- clear it and carry on.
+  if (jarvisKeyHeld && !jarvisRecognitionLive) jarvisForceResetVoice();
+  if (jarvisKeyHeld && jarvisRecognitionLive) return;  // genuinely listening already
+  // Jarvis talking shouldn't lock you out either -- interrupt him and listen.
+  // (jarvisBusy could also be stale, which used to kill voice permanently.)
+  if (jarvisBusy) {
+    try { if (jarvisSpeakAudio) jarvisSpeakAudio.pause(); } catch (e) { /* nothing playing */ }
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
+    jarvisSetBusy(false);
+  }
   jarvisUnlockAudio();
   jarvisKeyHeld = true;
   jarvisTranscriptSoFar = "";
   jarvisSetOrbState("listening");
   if (caption) caption.textContent = "Listening…";
-  _jarvisStartRecognition();
+  try {
+    _jarvisStartRecognition();
+  } catch (err) {
+    // recognition.start() throws (e.g. InvalidStateError) if a previous
+    // session hasn't fully released. Uncaught, that escaped the key handler
+    // and left the UI pinned on "Listening…" with jarvisKeyHeld stuck true --
+    // voice dead until reload, with no error surfaced anywhere.
+    jarvisForceResetVoice();
+    const msg = `Couldn't start the mic (${err && err.name ? err.name : err}). Press Enter again.`;
+    if (caption) caption.textContent = msg; else toast("Jarvis: " + msg);
+  }
 }
 
 /** Wired once at app boot, not per-panel-open -- push-to-talk used to only
@@ -1215,6 +1265,13 @@ function jarvisSetupGlobalPushToTalk() {
     e.preventDefault();
     jarvisStopListening();
   });
+  // THE wedge: a keyup that never arrives. Release Enter while the window
+  // isn't focused (alt-tab, a permission prompt stealing focus, clicking
+  // another app) and the browser delivers that keyup somewhere else -- so
+  // jarvisKeyHeld stayed true and every later attempt was silently refused,
+  // permanently, until a page reload. Finalizing here means losing focus
+  // ends the recording cleanly instead of poisoning the state.
+  window.addEventListener("blur", () => { if (jarvisKeyHeld) jarvisStopListening(); });
 }
 
 function jarvisStopListening() {
@@ -2195,6 +2252,7 @@ async function renderJarvisPanel(body) {
 
       <div class="jarvis-searchbox">
         <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
+        <button class="icon-btn" id="jarvis-mic" title="Hold to talk (or hold Enter)" style="width:28px;height:28px">🎤</button>
         <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
       </div>
       <div class="jarvis-caption-float" id="jarvis-caption">Hold Enter to talk, or type above.</div>
@@ -2344,6 +2402,28 @@ async function renderJarvisPanel(body) {
     // handler knows the box was empty BEFORE a send cleared it.
     jarvisStartListening();
   });
+
+  // A real hold-to-talk button. The Enter key path has too many ways to fail
+  // silently (focus in a text field, a keyup lost to a focus change, the OS
+  // swallowing the key) -- this depends on none of them: press and hold the
+  // mic, speak, let go. Pointer events cover mouse, pen and touch alike, and
+  // releasing anywhere on the page still finalizes.
+  const mic = document.getElementById("jarvis-mic");
+  if (mic) {
+    const micDown = (e) => {
+      e.preventDefault();
+      const ae = document.activeElement;
+      if (ae && typeof ae.blur === "function") ae.blur();
+      jarvisStartListening();
+    };
+    const micUp = () => { if (jarvisKeyHeld) jarvisStopListening(); };
+    mic.addEventListener("pointerdown", micDown);
+    // Listen on window, not the button: if the pointer drifts off the button
+    // before release, the button would never see pointerup and recording
+    // would hang -- the same class of stuck state as the lost keyup.
+    window.addEventListener("pointerup", micUp);
+    window.addEventListener("pointercancel", micUp);
+  }
 
   // Push-to-talk itself is wired globally now (see jarvisSetupGlobalPushToTalk,
   // called once at app boot) so holding Enter works from any panel, not just
