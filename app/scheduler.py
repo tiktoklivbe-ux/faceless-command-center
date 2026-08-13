@@ -326,7 +326,16 @@ def _quota_due(db: Session, channel: models.Channel, kind: str, per_day: int) ->
     if not last_job or not last_job.created_at:
         return True  # never made one of this kind yet -- due immediately
 
-    interval = 86400 / per_day
+    # Minimum spacing between videos so they don't burst out back-to-back.
+    # Enforced as a FLOOR on the per-day interval: even a high per_day won't
+    # produce videos closer together than this. Defaults to 5 hours per the
+    # "spread each video out ~5 hours" request; settable via the
+    # min_hours_between_videos setting if you ever want it tighter/looser.
+    try:
+        min_gap_hours = float(get_setting(db, "min_hours_between_videos", "5") or 5)
+    except (TypeError, ValueError):
+        min_gap_hours = 5.0
+    interval = max(86400 / per_day, min_gap_hours * 3600)
     elapsed = (datetime.utcnow() - last_job.created_at).total_seconds()
     return elapsed >= interval
 
