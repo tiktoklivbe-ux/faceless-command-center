@@ -1205,17 +1205,18 @@ let jarvisMediaRecorder = null;
 let jarvisAudioChunks = [];
 let jarvisRecording = false;
 let jarvisLiveRecognition = null;
-let jarvisLiveTranscript = "";
+let jarvisLiveFinal = "";     // words the browser marked FINAL
+let jarvisLiveShown = "";     // final + current interim = exactly what's on screen
+let jarvisLiveHandled = false; // true once we've already sent the live transcript
 
-// LIVE words on screen AS YOU SPEAK, shown alongside the reliable recording.
-// Purely visual and best-effort: the actual text sent to Jarvis comes from the
-// SERVER transcription of the recorded audio (which works even when this
-// doesn't). If the browser's speech engine is flaky or busy, this just stays
-// quiet -- it can never block or break the recording path.
+// LIVE words on screen AS YOU SPEAK. When the browser's own recognition works
+// (which is instant), we send exactly what's on screen the moment you release
+// -- no waiting on a server round-trip. The server transcription is only the
+// fallback for when the browser engine gives nothing.
 function _jarvisStartLiveCaption() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
-  jarvisLiveTranscript = "";
+  jarvisLiveFinal = ""; jarvisLiveShown = "";
   try {
     jarvisLiveRecognition = new SR();
     jarvisLiveRecognition.continuous = true;
@@ -1225,17 +1226,18 @@ function _jarvisStartLiveCaption() {
       let interim = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const t = ev.results[i][0].transcript;
-        if (ev.results[i].isFinal) jarvisLiveTranscript += t + " ";
+        if (ev.results[i].isFinal) jarvisLiveFinal += t + " ";
         else interim += t;
       }
+      // Track final + interim so a QUICK release still captures words the
+      // engine hasn't finalized yet -- that un-finalized text was being lost
+      // before, which is exactly why letting go fast "cut you off".
+      jarvisLiveShown = (jarvisLiveFinal + interim).trim();
       const caption = document.getElementById("jarvis-caption");
-      const shown = (jarvisLiveTranscript + interim).trim();
-      if (caption && shown && jarvisRecording) caption.textContent = shown;
+      if (caption && jarvisLiveShown && jarvisRecording) caption.textContent = jarvisLiveShown;
     };
     jarvisLiveRecognition.onerror = () => {};  // display-only -- never surface
     jarvisLiveRecognition.onend = () => {
-      // Keep the live words flowing across the browser's silence timeouts,
-      // but only while we're still actually recording.
       if (jarvisRecording && jarvisLiveRecognition) {
         try { jarvisLiveRecognition.start(); } catch (e) { /* fine */ }
       }
@@ -1274,6 +1276,10 @@ async function jarvisPopulateMicDevices(requestPermission) {
 async function jarvisStartRecording() {
   const caption = document.getElementById("jarvis-caption");
   if (jarvisRecording) return;
+  // Reset transcript state up front, unconditionally -- _jarvisStartLiveCaption
+  // only clears it when speech recognition exists, so without this a recording
+  // with no live recognition could reuse a PREVIOUS turn's words.
+  jarvisLiveFinal = ""; jarvisLiveShown = ""; jarvisLiveHandled = false;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
     // Fall back to the browser speech path if recording isn't available.
     jarvisStartListening();
@@ -1318,22 +1324,43 @@ async function jarvisStartRecording() {
   _jarvisStartLiveCaption();  // show words on screen as they're spoken
 }
 
+function _jarvisReleaseMic() {
+  try { if (jarvisMediaStream) jarvisMediaStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* fine */ }
+  jarvisMediaStream = null;
+}
+
 function jarvisStopRecording() {
   if (!jarvisRecording) return;
   jarvisRecording = false;
   _jarvisStopLiveCaption();
   const caption = document.getElementById("jarvis-caption");
-  // Keep the words just spoken on screen while the reliable transcript comes
-  // back, rather than blanking them to "Transcribing…".
-  if (caption) caption.textContent = jarvisLiveTranscript.trim() || "Transcribing…";
+  const live = jarvisLiveShown.trim();
+
+  // INSTANT PATH: if the browser already showed your words on screen, send
+  // them the moment you let go -- no server round-trip. THIS is the delay you
+  // felt: your words were already captured but we were waiting on a server
+  // transcription that wasn't needed. We still stop the recorder to free the
+  // mic, but ignore its (slower) result.
+  if (live) {
+    jarvisLiveHandled = true;   // tells onstop -> jarvisTranscribeRecording not to send again
+    if (caption) caption.textContent = live;
+    if (jarvisMediaRecorder) jarvisMediaRecorder.onstop = () => { _jarvisReleaseMic(); jarvisAudioChunks = []; };
+    try { if (jarvisMediaRecorder && jarvisMediaRecorder.state !== "inactive") jarvisMediaRecorder.stop(); } catch (e) { /* fine */ }
+    jarvisSend(live);
+    return;
+  }
+
+  // FALLBACK PATH: the browser engine gave nothing -> transcribe the recording
+  // server-side (reliable even when the browser speech engine doesn't work).
+  jarvisLiveHandled = false;
+  if (caption) caption.textContent = "Transcribing…";
   try { if (jarvisMediaRecorder && jarvisMediaRecorder.state !== "inactive") jarvisMediaRecorder.stop(); } catch (e) { /* onstop handles it */ }
 }
 
 async function jarvisTranscribeRecording() {
   const caption = document.getElementById("jarvis-caption");
-  // Release the mic hardware (and the Bluetooth link) as soon as we're done.
-  try { if (jarvisMediaStream) jarvisMediaStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* fine */ }
-  jarvisMediaStream = null;
+  _jarvisReleaseMic();  // free the mic / Bluetooth link
+  if (jarvisLiveHandled) { jarvisAudioChunks = []; return; }  // live transcript already sent instantly
   const chunks = jarvisAudioChunks; jarvisAudioChunks = [];
   if (!chunks.length) {
     if (caption) caption.textContent = "Didn't catch any audio -- hold the mic a moment longer and speak.";
@@ -1350,9 +1377,8 @@ async function jarvisTranscribeRecording() {
       throw new Error(`${r.status} ${detail.slice(0, 140)}`);
     }
     const data = await r.json();
-    // Server transcription is authoritative; fall back to the live-caption
-    // transcript if the server somehow returns nothing.
-    const text = (data.text || "").trim() || jarvisLiveTranscript.trim();
+    // Fall back to the live-caption transcript if the server returns nothing.
+    const text = (data.text || "").trim() || jarvisLiveShown.trim();
     if (text) {
       if (caption) caption.textContent = text;
       jarvisSend(text);
@@ -1505,7 +1531,11 @@ async function jarvisCheckSecurity() {
 
 async function jarvisRefreshReadout() {
   try {
-    const [jobs, channels] = await Promise.all([API("/api/jobs?limit=30"), API("/api/channels")]);
+    const [jobs, channels, settings] = await Promise.all([
+      API("/api/jobs?limit=30"), API("/api/channels"), API("/api/settings").catch(() => ({})),
+    ]);
+    const sval = (k) => { const v = settings[k]; return v && typeof v === "object" ? (v.value || "") : (v || ""); };
+    const slotsMode = sval("schedule_mode") === "slots";
     const running = jobs.filter((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status))).length;
     const failed = jobs.filter((j) => j.status === "failed").length;
     const autoOn = channels.filter((c) => c.auto_enabled).length;
@@ -1517,7 +1547,10 @@ async function jarvisRefreshReadout() {
       const t = j.created_at ? new Date(j.created_at.endsWith("Z") ? j.created_at : j.created_at + "Z") : null;
       return t && t >= todayStart;
     }).length;
-    const targetToday = channels.reduce((sum, c) => sum + (c.auto_enabled ? (c.auto_per_day || 0) : 0), 0);
+    const slotTimes = sval("post_schedule_times").split(",").map((s) => s.trim()).filter(Boolean);
+    const targetToday = slotsMode
+      ? slotTimes.length
+      : channels.reduce((sum, c) => sum + (c.auto_enabled ? (c.auto_per_day || 0) : 0), 0);
 
     const readout = document.getElementById("jarvis-readout");
     if (readout) readout.innerHTML =
@@ -1532,10 +1565,23 @@ async function jarvisRefreshReadout() {
 
     const schedule = document.querySelector("#jarvis-schedule .jarvis-schedule-body");
     if (schedule) {
-      const auto = channels.filter((c) => c.auto_enabled);
-      schedule.innerHTML = auto.length
-        ? auto.map((c) => `${escapeHtml(c.name)} — ${c.auto_per_day}/day${c.auto_publish_scheduled ? " · auto-publish" : ""}`).join("<br>")
-        : "No channels on auto-schedule.";
+      if (slotsMode) {
+        const tz = sval("post_timezone").replace("America/", "").replace("_", " ") || "local";
+        const to12 = (hm) => { const [h, m] = hm.split(":").map(Number); const ap = h < 12 ? "am" : "pm"; const hh = ((h + 11) % 12) + 1; return m ? `${hh}:${String(m).padStart(2, "0")}${ap}` : `${hh}${ap}`; };
+        const times = slotTimes.map(to12).join(" · ");
+        const chName = (id) => (channels.find((c) => c.id === id) || {}).name || "?";
+        const shortsName = chName(sval("schedule_shorts_channel_id"));
+        const lfCh = channels.find((c) => c.id === sval("schedule_longform_channel_id"));
+        const lfLine = lfCh
+          ? `1 long/day → ${escapeHtml(lfCh.name)}${lfCh.youtube_connected ? "" : " <span style='opacity:.7'>(connect to enable)</span>"}`
+          : "";
+        schedule.innerHTML = `<b>Fixed schedule</b> · ${escapeHtml(tz)}<br>${escapeHtml(times)}<br>4 shorts → ${escapeHtml(shortsName)}<br>${lfLine}`;
+      } else {
+        const auto = channels.filter((c) => c.auto_enabled);
+        schedule.innerHTML = auto.length
+          ? auto.map((c) => `${escapeHtml(c.name)} — ${c.auto_per_day}/day${c.auto_publish_scheduled ? " · auto-publish" : ""}`).join("<br>")
+          : "No channels on auto-schedule.";
+      }
     }
 
     const agentRow = document.getElementById("jarvis-agent-row");
