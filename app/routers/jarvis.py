@@ -13,8 +13,9 @@ import json
 import logging
 from xml.sax.saxutils import escape as xml_escape
 
+import base64
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -316,6 +317,64 @@ def speak(payload: SpeakIn, db: Session = Depends(get_db)):
     if resp.status_code != 200:
         raise HTTPException(502, f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:300]}")
     return Response(content=resp.content, media_type="audio/mpeg")
+
+
+@router.post("/transcribe")
+async def transcribe(audio: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Speech-to-text for the mic button. The browser records from whatever
+    input device it captured -- INCLUDING a Bluetooth mic the user picked --
+    and we transcribe it here, server-side. This deliberately does NOT use the
+    browser's built-in SpeechRecognition, which can't target a specific device
+    and has been unreliable on Edge/Windows; recording + server STT sidesteps
+    that entire class of failure. ElevenLabs Scribe first (already the TTS
+    provider, so a key is present), Gemini as a fallback."""
+    data = await audio.read()
+    if not data:
+        raise HTTPException(400, "No audio received.")
+    mime = audio.content_type or "audio/webm"
+    errors = []
+
+    el_key = get_setting(db, "elevenlabs_api_key")
+    if el_key:
+        try:
+            resp = requests.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={"xi-api-key": el_key},
+                files={"file": ("audio.webm", data, mime)},
+                data={"model_id": "scribe_v1"},
+                timeout=60,
+            )
+            if resp.status_code == 200:
+                return {"text": (resp.json().get("text") or "").strip(), "provider": "elevenlabs"}
+            errors.append(f"ElevenLabs {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"ElevenLabs error: {e}")
+
+    gem_key = get_setting(db, "gemini_api_key")
+    if gem_key:
+        try:
+            model = get_setting(db, "gemini_model", "gemini-3.5-flash")
+            b64 = base64.b64encode(data).decode()
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": gem_key, "content-type": "application/json"},
+                json={"contents": [{"parts": [
+                    {"text": "Transcribe this audio to plain text. Return ONLY the exact words spoken, nothing else -- no preamble, no quotes."},
+                    {"inline_data": {"mime_type": mime, "data": b64}},
+                ]}]},
+                timeout=60,
+            )
+            if resp.status_code == 200:
+                cand = (resp.json().get("candidates") or [{}])[0]
+                parts = cand.get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts).strip()
+                return {"text": text, "provider": "gemini"}
+            errors.append(f"Gemini {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Gemini error: {e}")
+
+    raise HTTPException(502, "Transcription failed. " + " | ".join(errors) if errors
+                        else "No speech-to-text provider is configured (needs an ElevenLabs or Gemini key).")
 
 
 @router.get("/log")

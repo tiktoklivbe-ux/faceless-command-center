@@ -1192,6 +1192,130 @@ function _jarvisStartRecognition() {
   jarvisRecognition.start();
 }
 
+// ============================================================ MIC RECORDING (device-selectable, server-transcribed)
+// The reliable voice path: capture audio from a chosen input device (any mic,
+// including Bluetooth) with getUserMedia + MediaRecorder, then transcribe it
+// server-side (/api/jarvis/transcribe). This does NOT touch the browser's
+// built-in SpeechRecognition -- which can't target a device and kept failing
+// on Edge/Windows -- so a paired Bluetooth mic Just Works and none of the old
+// silent-failure modes apply.
+const JARVIS_MIC_DEVICE_KEY = "jarvisMicDeviceId";
+let jarvisMediaStream = null;
+let jarvisMediaRecorder = null;
+let jarvisAudioChunks = [];
+let jarvisRecording = false;
+
+async function jarvisPopulateMicDevices(requestPermission) {
+  const sel = document.getElementById("jarvis-mic-device");
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    // Device LABELS (needed to recognize your Bluetooth mic by name) are only
+    // exposed after mic permission is granted once. Ask on the refresh click.
+    if (requestPermission) {
+      try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); } catch (e) { /* denied -- list stays unlabeled */ }
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((d) => d.kind === "audioinput");
+    const saved = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
+    sel.innerHTML = '<option value="">Default microphone</option>' +
+      inputs.map((d, i) => {
+        const label = d.label || `Microphone ${i + 1}`;
+        const selAttr = d.deviceId === saved ? " selected" : "";
+        return `<option value="${d.deviceId}"${selAttr}>${escapeHtml(label)}</option>`;
+      }).join("");
+  } catch (e) { /* enumeration failed -- default mic still works */ }
+}
+
+async function jarvisStartRecording() {
+  const caption = document.getElementById("jarvis-caption");
+  if (jarvisRecording) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+    // Fall back to the browser speech path if recording isn't available.
+    jarvisStartListening();
+    return;
+  }
+  jarvisUnlockAudio();
+  // Interrupt any reply that's still talking, and clear a possibly-stale busy.
+  if (jarvisBusy) {
+    try { if (jarvisSpeakAudio) jarvisSpeakAudio.pause(); } catch (e) { /* nothing */ }
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
+    jarvisSetBusy(false);
+  }
+  const deviceId = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
+  const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+  try {
+    jarvisMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (err) {
+    // exact-device failed (mic unplugged/changed) -- retry with the default
+    // before giving up, so switching away from a Bluetooth mic doesn't brick it.
+    try { jarvisMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (err2) {
+      const m = (err2 && err2.name === "NotAllowedError")
+        ? "Microphone access was blocked. Allow it for this site (mic icon in the address bar) and try again."
+        : `Couldn't open the microphone (${err2 && err2.name ? err2.name : err2}).`;
+      if (caption) caption.textContent = m; else toast("Jarvis: " + m);
+      jarvisSetOrbState("idle");
+      return;
+    }
+  }
+  jarvisAudioChunks = [];
+  try {
+    jarvisMediaRecorder = new MediaRecorder(jarvisMediaStream);
+  } catch (e) {
+    jarvisMediaRecorder = new MediaRecorder(jarvisMediaStream, { mimeType: "audio/webm" });
+  }
+  jarvisMediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) jarvisAudioChunks.push(e.data); };
+  jarvisMediaRecorder.onstop = () => { jarvisTranscribeRecording(); };
+  jarvisMediaRecorder.start();
+  jarvisRecording = true;
+  jarvisSetOrbState("listening");
+  if (caption) caption.textContent = "Listening… (release to send)";
+}
+
+function jarvisStopRecording() {
+  if (!jarvisRecording) return;
+  jarvisRecording = false;
+  const caption = document.getElementById("jarvis-caption");
+  if (caption) caption.textContent = "Transcribing…";
+  try { if (jarvisMediaRecorder && jarvisMediaRecorder.state !== "inactive") jarvisMediaRecorder.stop(); } catch (e) { /* onstop handles it */ }
+}
+
+async function jarvisTranscribeRecording() {
+  const caption = document.getElementById("jarvis-caption");
+  // Release the mic hardware (and the Bluetooth link) as soon as we're done.
+  try { if (jarvisMediaStream) jarvisMediaStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* fine */ }
+  jarvisMediaStream = null;
+  const chunks = jarvisAudioChunks; jarvisAudioChunks = [];
+  if (!chunks.length) {
+    if (caption) caption.textContent = "Didn't catch any audio -- hold the mic a moment longer and speak.";
+    jarvisSetOrbState("idle");
+    return;
+  }
+  const blob = new Blob(chunks, { type: (jarvisMediaRecorder && jarvisMediaRecorder.mimeType) || "audio/webm" });
+  try {
+    const fd = new FormData();
+    fd.append("audio", blob, "speech.webm");
+    const r = await fetch("/api/jarvis/transcribe", { method: "POST", body: fd });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => "");
+      throw new Error(`${r.status} ${detail.slice(0, 140)}`);
+    }
+    const data = await r.json();
+    const text = (data.text || "").trim();
+    if (text) {
+      if (caption) caption.textContent = text;
+      jarvisSend(text);
+    } else {
+      if (caption) caption.textContent = "Didn't catch that -- try again.";
+      jarvisSetOrbState("idle");
+    }
+  } catch (e) {
+    const m = "Transcription failed: " + (e && e.message ? e.message : e);
+    if (caption) caption.textContent = m; else toast("Jarvis: " + m);
+    jarvisSetOrbState("idle");
+  }
+}
+
 function jarvisStartListening() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const caption = document.getElementById("jarvis-caption");
@@ -2252,8 +2376,15 @@ async function renderJarvisPanel(body) {
 
       <div class="jarvis-searchbox">
         <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
-        <button class="icon-btn" id="jarvis-mic" title="Hold to talk (or hold Enter)" style="width:28px;height:28px">🎤</button>
+        <button class="icon-btn" id="jarvis-mic" title="Hold to talk" style="width:28px;height:28px">🎤</button>
         <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
+      </div>
+      <div class="jarvis-mic-row" style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;opacity:0.8">
+        <span style="white-space:nowrap">🎙️ Mic:</span>
+        <select id="jarvis-mic-device" title="Choose your microphone (including Bluetooth)" style="flex:1;min-width:0;background:rgba(255,255,255,0.06);color:inherit;border:1px solid rgba(120,170,255,0.3);border-radius:6px;padding:3px 6px;font-size:11px">
+          <option value="">Default microphone</option>
+        </select>
+        <button class="icon-btn" id="jarvis-mic-refresh" title="Refresh device list (click after connecting a Bluetooth mic)" style="width:24px;height:24px;font-size:12px">⟳</button>
       </div>
       <div class="jarvis-caption-float" id="jarvis-caption">Hold Enter to talk, or type above.</div>
 
@@ -2403,26 +2534,44 @@ async function renderJarvisPanel(body) {
     jarvisStartListening();
   });
 
-  // A real hold-to-talk button. The Enter key path has too many ways to fail
-  // silently (focus in a text field, a keyup lost to a focus change, the OS
-  // swallowing the key) -- this depends on none of them: press and hold the
-  // mic, speak, let go. Pointer events cover mouse, pen and touch alike, and
-  // releasing anywhere on the page still finalizes.
+  // Hold-to-talk mic button -> records from your chosen device and transcribes
+  // server-side (jarvisStartRecording). Depends on none of the things that
+  // kept breaking: not the Enter key, not cursor focus, not the browser's
+  // speech engine, not any Windows speech setting. Press and hold, speak, let
+  // go. Pointer events cover mouse/pen/touch; release is handled on window so
+  // drifting off the button can't leave it stuck recording.
   const mic = document.getElementById("jarvis-mic");
   if (mic) {
     const micDown = (e) => {
       e.preventDefault();
       const ae = document.activeElement;
       if (ae && typeof ae.blur === "function") ae.blur();
-      jarvisStartListening();
+      jarvisStartRecording();
     };
-    const micUp = () => { if (jarvisKeyHeld) jarvisStopListening(); };
+    const micUp = () => { if (jarvisRecording) jarvisStopRecording(); };
     mic.addEventListener("pointerdown", micDown);
-    // Listen on window, not the button: if the pointer drifts off the button
-    // before release, the button would never see pointerup and recording
-    // would hang -- the same class of stuck state as the lost keyup.
     window.addEventListener("pointerup", micUp);
     window.addEventListener("pointercancel", micUp);
+    window.addEventListener("blur", () => { if (jarvisRecording) jarvisStopRecording(); });
+  }
+
+  // Microphone device picker (lets you choose a Bluetooth mic).
+  const micDevice = document.getElementById("jarvis-mic-device");
+  if (micDevice) {
+    micDevice.addEventListener("change", () => {
+      localStorage.setItem(JARVIS_MIC_DEVICE_KEY, micDevice.value || "");
+    });
+  }
+  const micRefresh = document.getElementById("jarvis-mic-refresh");
+  if (micRefresh) {
+    micRefresh.addEventListener("click", () => { jarvisPopulateMicDevices(true); });
+  }
+  // Populate the list on open (labels fill in once permission is granted --
+  // the ⟳ button forces that). Also refresh automatically if devices change,
+  // e.g. a Bluetooth mic connecting or disconnecting.
+  jarvisPopulateMicDevices(false);
+  if (navigator.mediaDevices) {
+    navigator.mediaDevices.ondevicechange = () => { jarvisPopulateMicDevices(false); };
   }
 
   // Push-to-talk itself is wired globally now (see jarvisSetupGlobalPushToTalk,
