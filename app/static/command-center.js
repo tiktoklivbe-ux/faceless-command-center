@@ -1755,9 +1755,31 @@ const PINCH_THRESHOLD = 0.055;     // normalized distance; tuned loose since a
  *  widget -- then drives the shared drag primitives accordingly. Callable
  *  directly with synthetic landmarks for testing, with no camera or model
  *  involved at all. */
+let jarvisHandPrev = null;              // last pinch-point {x,y,t} for flick detection
+let jarvisLastPinchTap = { el: null, t: 0 };  // for double-tap-to-expand
+const FLICK_SPEED = 3.8;                // screen-widths/sec -- a real flick, not a drag
+const DOUBLE_TAP_MS = 480;
+
+function jarvisToggleExpandCard(el) {
+  const expanded = el.dataset.expanded === "1";
+  el.style.transformOrigin = "top left";
+  if (expanded) {
+    el.dataset.expanded = "0";
+    const s = el.dataset.prevScale || "1";
+    el.dataset.scale = s; el.style.transform = `scale(${s})`; el.style.zIndex = "45";
+  } else {
+    el.dataset.expanded = "1";
+    el.dataset.prevScale = el.dataset.scale || "1";
+    el.dataset.scale = "2.1"; el.style.transform = "scale(2.1)"; el.style.zIndex = "60";
+  }
+  try { jarvisPlayGestureChime(); } catch (e) { /* fine */ }
+}
+
 function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
   if (!landmarks || !landmarks.length) {
     if (state.pinching) { jarvisDragEnd(); state.pinching = false; }
+    if (state.resizing) { jarvisResizeEnd(); state.resizing = false; }
+    jarvisHandPrev = null;
     return null;
   }
   const thumb = landmarks[4], index = landmarks[8];
@@ -1769,28 +1791,60 @@ function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
   const midX = (thumb.x + index.x) / 2, midY = (thumb.y + index.y) / 2;
   const screenX = (1 - midX) * window.innerWidth;
   const screenY = midY * window.innerHeight;
+  const now = performance.now();
 
-  const inside = (r) => screenX >= r.left && screenX <= r.right && screenY >= r.top && screenY <= r.bottom;
-
-  if (pinching && !state.pinching && !state.resizing) {
-    // Resize grips first: pinch a panel's corner grip and move your hand to
-    // scale it. Grips are given a generous hit area below.
-    for (const grip of rootEl.querySelectorAll(".jf-resize")) {
-      const gr = grip.getBoundingClientRect();
-      const pad = 14;  // easier to hit with a hand than a mouse
-      if (screenX >= gr.left - pad && screenX <= gr.right + pad && screenY >= gr.top - pad && screenY <= gr.bottom + pad) {
-        jarvisResizeStart(grip.closest(".jarvis-widget"), screenX, screenY);
-        state.resizing = true;
-        break;
+  // --- FLICK: a fast hand motion drops everything and resets to idle ---
+  if (jarvisHandPrev) {
+    const dt = (now - jarvisHandPrev.t) / 1000;
+    if (dt > 0.005) {
+      const movedFrac = Math.hypot(screenX - jarvisHandPrev.x, screenY - jarvisHandPrev.y) / window.innerWidth;
+      const speed = movedFrac / dt;
+      // Both a real distance AND real speed -- so a tiny jitter over a tiny
+      // frame gap can't divide out to a false "flick", and a normal drag
+      // (slower) never trips it; only a deliberate fast flick does.
+      if (movedFrac > 0.16 && speed > FLICK_SPEED) {
+        if (state.pinching) jarvisDragEnd();
+        if (state.resizing) jarvisResizeEnd();
+        state.pinching = false; state.resizing = false;
+        jarvisSetOrbState("idle");
+        jarvisHandPrev = { x: screenX, y: screenY, t: now };
+        return { screenX, screenY, pinching, flick: true };
       }
     }
-    if (!state.resizing) {
-      for (const handle of rootEl.querySelectorAll(".jarvis-widget-handle")) {
-        if (inside(handle.getBoundingClientRect())) {
-          jarvisDragStart(handle.closest(".jarvis-widget"), screenX, screenY);
-          state.pinching = true;
+  }
+  jarvisHandPrev = { x: screenX, y: screenY, t: now };
+
+  // Generous hit test so panels are VERY easy to grab -- pad the box out.
+  const inside = (r, pad = 0) => screenX >= r.left - pad && screenX <= r.right + pad && screenY >= r.top - pad && screenY <= r.bottom + pad;
+
+  if (pinching && !state.pinching && !state.resizing) {
+    let handled = false;
+    // 1. Corner resize grips first (scale).
+    for (const grip of rootEl.querySelectorAll(".jf-resize")) {
+      if (inside(grip.getBoundingClientRect(), 16)) { jarvisResizeStart(grip.closest(".jarvis-widget"), screenX, screenY); state.resizing = true; handled = true; break; }
+    }
+    // 2. Grab ANYWHERE on a data panel (much easier than the thin title bar),
+    //    and double-tap (two quick pinches) on one to expand it.
+    if (!handled) {
+      for (const card of rootEl.querySelectorAll(".jf-datacard")) {
+        if (inside(card.getBoundingClientRect(), 12)) {
+          if (jarvisLastPinchTap.el === card && (now - jarvisLastPinchTap.t) < DOUBLE_TAP_MS) {
+            jarvisToggleExpandCard(card);
+            jarvisLastPinchTap = { el: null, t: 0 };  // consume the double-tap
+          } else {
+            jarvisLastPinchTap = { el: card, t: now };
+            jarvisDragStart(card, screenX, screenY);
+            state.pinching = true;
+          }
+          handled = true;
           break;
         }
+      }
+    }
+    // 3. Any other draggable widget, grabbed by its title handle.
+    if (!handled) {
+      for (const handle of rootEl.querySelectorAll(".jarvis-widget-handle")) {
+        if (inside(handle.getBoundingClientRect(), 6)) { jarvisDragStart(handle.closest(".jarvis-widget"), screenX, screenY); state.pinching = true; break; }
       }
     }
   } else if (pinching && state.resizing) {
