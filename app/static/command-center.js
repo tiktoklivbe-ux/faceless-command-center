@@ -789,6 +789,21 @@ function jarvisLoadConversation() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.history) || !Array.isArray(parsed.transcript)) return null;
+    // Guard against a conversation saved by a DIFFERENT build of the app.
+    // A version shipped today stored history entries as {role, text}; this
+    // (restored) build sends history straight to the LLM, which expects
+    // {role, content} (Anthropic) or {role, parts} (Gemini). Feeding back the
+    // wrong shape makes the provider reject EVERY message -- which is exactly
+    // "it worked yesterday but not now" the moment the stored format and the
+    // running code fall out of sync. If the saved history isn't this build's
+    // shape, drop it and start clean instead of poisoning every request.
+    const incompatible = parsed.history.some(
+      (m) => m && typeof m === "object" && !("content" in m) && !("parts" in m)
+    );
+    if (incompatible) {
+      localStorage.removeItem(JARVIS_CONVO_KEY);
+      return null;
+    }
     return parsed;
   } catch (e) { return null; }
 }
