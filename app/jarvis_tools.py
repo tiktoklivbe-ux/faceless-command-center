@@ -103,6 +103,18 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_channel_stats",
+        "description": "Get LIVE YouTube metrics (current subscriber count, total views, "
+                        "video count) for a channel, fetched fresh from YouTube right now -- "
+                        "use this whenever asked how a channel is doing, how many subs/views "
+                        "we have, or to check real-time performance. Omit channel_id for all "
+                        "channels.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"channel_id": {"type": "string", "description": "Optional -- omit for all channels."}},
+        },
+    },
+    {
         "name": "set_channel_automation",
         "description": "Turn Chronos auto-generation on/off for a channel, change how "
                         "many videos per day, or toggle auto-publish.",
@@ -560,6 +572,37 @@ def list_channels(db):
     } for c in channels]}
 
 
+def get_channel_stats(db, channel_id=None):
+    """LIVE YouTube stats fetched fresh right now (no cache), so Jarvis can
+    answer 'how many subs do we have' with the real current number."""
+    from . import crypto
+    from .pipeline import publish_youtube
+    channels = [db.get(models.Channel, channel_id)] if channel_id else db.query(models.Channel).all()
+    out = []
+    for c in channels:
+        if not c:
+            continue
+        if not c.youtube_connected or not c.youtube_refresh_token_enc:
+            out.append({"channel": c.name, "connected": False,
+                        "note": "YouTube isn't connected for this channel, so there are no stats to read."})
+            continue
+        try:
+            token = publish_youtube.refresh_access_token(db, crypto.decrypt(c.youtube_refresh_token_enc))
+            s = publish_youtube.fetch_channel_stats(token)
+            out.append({
+                "channel": c.name,
+                "youtube_title": c.youtube_channel_title or "",
+                "connected": True,
+                "subscribers": s.get("subscribers"),
+                "views": s.get("views"),
+                "video_count": s.get("video_count"),
+                "subscribers_hidden": s.get("hidden_subs", False),
+            })
+        except Exception as e:  # noqa: BLE001
+            out.append({"channel": c.name, "connected": True, "error": str(e)[:150]})
+    return {"ok": True, "stats": out}
+
+
 def set_channel_automation(db, channel_id, auto_enabled=None, auto_per_day=None, auto_publish_scheduled=None):
     c = db.get(models.Channel, channel_id)
     if not c:
@@ -584,6 +627,7 @@ DISPATCH = {
     "cancel_job": cancel_job,
     "make_video": make_video,
     "list_channels": list_channels,
+    "get_channel_stats": get_channel_stats,
     "set_channel_automation": set_channel_automation,
     "list_available_commands": list_available_commands,
     "run_whitelisted_command": run_whitelisted_command,

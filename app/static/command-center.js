@@ -1204,6 +1204,51 @@ let jarvisMediaStream = null;
 let jarvisMediaRecorder = null;
 let jarvisAudioChunks = [];
 let jarvisRecording = false;
+let jarvisLiveRecognition = null;
+let jarvisLiveTranscript = "";
+
+// LIVE words on screen AS YOU SPEAK, shown alongside the reliable recording.
+// Purely visual and best-effort: the actual text sent to Jarvis comes from the
+// SERVER transcription of the recorded audio (which works even when this
+// doesn't). If the browser's speech engine is flaky or busy, this just stays
+// quiet -- it can never block or break the recording path.
+function _jarvisStartLiveCaption() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  jarvisLiveTranscript = "";
+  try {
+    jarvisLiveRecognition = new SR();
+    jarvisLiveRecognition.continuous = true;
+    jarvisLiveRecognition.interimResults = true;
+    jarvisLiveRecognition.lang = "en-US";
+    jarvisLiveRecognition.onresult = (ev) => {
+      let interim = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript;
+        if (ev.results[i].isFinal) jarvisLiveTranscript += t + " ";
+        else interim += t;
+      }
+      const caption = document.getElementById("jarvis-caption");
+      const shown = (jarvisLiveTranscript + interim).trim();
+      if (caption && shown && jarvisRecording) caption.textContent = shown;
+    };
+    jarvisLiveRecognition.onerror = () => {};  // display-only -- never surface
+    jarvisLiveRecognition.onend = () => {
+      // Keep the live words flowing across the browser's silence timeouts,
+      // but only while we're still actually recording.
+      if (jarvisRecording && jarvisLiveRecognition) {
+        try { jarvisLiveRecognition.start(); } catch (e) { /* fine */ }
+      }
+    };
+    jarvisLiveRecognition.start();
+  } catch (e) { /* live caption is optional */ }
+}
+
+function _jarvisStopLiveCaption() {
+  const r = jarvisLiveRecognition;
+  jarvisLiveRecognition = null;  // clearing first stops onend from restarting it
+  if (r) { try { r.abort ? r.abort() : r.stop(); } catch (e) { /* already stopped */ } }
+}
 
 async function jarvisPopulateMicDevices(requestPermission) {
   const sel = document.getElementById("jarvis-mic-device");
@@ -1269,14 +1314,18 @@ async function jarvisStartRecording() {
   jarvisMediaRecorder.start();
   jarvisRecording = true;
   jarvisSetOrbState("listening");
-  if (caption) caption.textContent = "Listening… (release to send)";
+  if (caption) caption.textContent = "Listening…";
+  _jarvisStartLiveCaption();  // show words on screen as they're spoken
 }
 
 function jarvisStopRecording() {
   if (!jarvisRecording) return;
   jarvisRecording = false;
+  _jarvisStopLiveCaption();
   const caption = document.getElementById("jarvis-caption");
-  if (caption) caption.textContent = "Transcribing…";
+  // Keep the words just spoken on screen while the reliable transcript comes
+  // back, rather than blanking them to "Transcribing…".
+  if (caption) caption.textContent = jarvisLiveTranscript.trim() || "Transcribing…";
   try { if (jarvisMediaRecorder && jarvisMediaRecorder.state !== "inactive") jarvisMediaRecorder.stop(); } catch (e) { /* onstop handles it */ }
 }
 
@@ -1301,7 +1350,9 @@ async function jarvisTranscribeRecording() {
       throw new Error(`${r.status} ${detail.slice(0, 140)}`);
     }
     const data = await r.json();
-    const text = (data.text || "").trim();
+    // Server transcription is authoritative; fall back to the live-caption
+    // transcript if the server somehow returns nothing.
+    const text = (data.text || "").trim() || jarvisLiveTranscript.trim();
     if (text) {
       if (caption) caption.textContent = text;
       jarvisSend(text);
