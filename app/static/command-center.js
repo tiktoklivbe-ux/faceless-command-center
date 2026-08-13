@@ -2024,15 +2024,22 @@ async function jarvisShowDataCards() {
       body: (notes.notes && notes.notes.length) ? notes.notes.slice(0, 3).map((n) => `<div class="jf-dc-line small">${escapeHtml(String(n).slice(0, 40))}</div>`).join("") : `<div class="jf-dc-muted">No notes yet.</div>` },
   ];
 
-  // Lay them out in COLUMNS going down: left column first, wrap to the next
-  // column on the right once it's full, so 12 panels frame the camera view.
-  const perCol = 6, colW = 210, rowH = 96, startTop = 78;
+  // Spread them in a grid ACROSS the whole camera view (fixed/viewport coords
+  // from the real window size, so they land ON the camera feed, not off in the
+  // letterbox bars). Row spacing clears the tallest panel and panels are
+  // height-capped in CSS, so they never overlap. Rightmost columns sit right
+  // over the feed; the user drags/scales/closes them as they like.
+  const W = window.innerWidth, H = window.innerHeight;
+  const pw = 196, mL = 16, mR = 16, mT = 60, mB = 16;
+  const cols = 4, rows = 3;
+  const stepX = (W - mL - mR - pw) / (cols - 1);
+  const stepY = (H - mT - mB - 150) / (rows - 1);  // 150 = capped panel height
   cards.forEach((c, i) => {
-    const col = Math.floor(i / perCol), rowN = i % perCol;
+    const col = i % cols, rowN = Math.floor(i / cols);
     const el = document.createElement("div");
     el.className = "jarvis-widget jf-datacard"; el.dataset.card = "1";
-    el.style.left = (18 + col * colW) + "px";
-    el.style.top = (startTop + rowN * rowH) + "px";
+    el.style.left = Math.round(mL + col * stepX) + "px";
+    el.style.top = Math.round(mT + rowN * stepY) + "px";
     el.innerHTML = `<div class="jarvis-widget-handle">⠿ ${c.title}<button class="jf-datacard-close" title="Close">✕</button></div>
       <div class="jf-datacard-body">${c.body}</div><div class="jf-resize" title="Pinch/drag this corner to resize"></div>`;
     root.appendChild(el);

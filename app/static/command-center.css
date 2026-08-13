@@ -1557,3 +1557,7 @@ button.msc-link-card { cursor: pointer; }
 .jf-dc-mono { font-family: var(--font-mono); font-size: 11px; color: var(--ink); }
 .jf-dc-meter { height: 4px; margin: 6px 0 3px; border-radius: 3px; background: rgba(232,236,239,0.12); overflow: hidden; }
 .jf-dc-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, rgba(232,236,239,0.5), var(--ink)); box-shadow: 0 0 8px rgba(232,236,239,0.5); transition: width 1s cubic-bezier(0.16,1,0.3,1); }
+
+/* keep every data panel within a predictable height so the grid never overlaps */
+.jf-datacard { max-height: 150px; overflow: hidden; }
+.jf-datacard .jf-datacard-body { max-height: 112px; overflow-y: auto; }
