@@ -1118,44 +1118,37 @@ function _jarvisStartRecognition() {
     const caption = document.getElementById("jarvis-caption");
     if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
-  // Surface mic errors instead of swallowing them. A blocked/denied
-  // microphone fails EVERY recognition start with "not-allowed" -- with the
-  // old no-op handler that produced total silence: hold Enter, speak,
-  // release, nothing happens and no reason why. This tells you the real
-  // cause and stops the pointless auto-restart loop on errors that can't
-  // self-recover (a blocked mic won't un-block by retrying).
+  // CRITICAL: "no-speech" and "aborted" are ROUTINE, not failures. "no-speech"
+  // fires on any natural pause while you're talking; "aborted" fires from our
+  // own restart. A previous version set an error flag on EVERY error, so the
+  // first pause in your sentence flagged the session as errored and onend
+  // then refused to keep listening -- which is exactly why voice "did
+  // nothing". These are ignored here so onend restarts recognition while the
+  // key is still held, just like it worked before. Only a genuinely fatal
+  // error (blocked mic, unreachable speech service) stops the session and
+  // shows a message.
   let jarvisMicError = null;
   jarvisRecognition.onerror = (ev) => {
     if (myGen !== jarvisRecognitionGen) return;
-    jarvisMicError = ev.error;
+    if (ev.error === "no-speech" || ev.error === "aborted") return;  // routine -- keep listening
     const caption = document.getElementById("jarvis-caption");
     const say = (m) => { if (caption) caption.textContent = m; else toast("Jarvis: " + m); };
     const MSG = {
       "not-allowed": "Microphone is blocked. Click the mic/lock icon in the address bar, allow it for this site, reload, and try again.",
       "service-not-allowed": "Microphone is blocked. Allow mic access for this site, reload, and try again.",
       "audio-capture": "No microphone detected -- check it's plugged in and not in use by another app.",
-      // Edge's #1 voice failure: the browser's speech service couldn't be
-      // reached. On Windows that needs "Online speech recognition" turned ON
-      // (Settings > Privacy & security > Speech). This was silent before.
       "network": "Voice service unreachable. On Edge: open Windows Settings > Privacy & security > Speech and turn ON 'Online speech recognition', then reload and try again.",
     };
-    if (MSG[ev.error]) {
-      jarvisKeyHeld = false;  // stop the restart loop -- these won't fix themselves by retrying
-      say(MSG[ev.error]);
-      jarvisSetOrbState("idle");
-    } else if (ev.error !== "no-speech" && ev.error !== "aborted") {
-      // ANY other real error is now shown rather than swallowed, so voice
-      // failures are finally diagnosable instead of "nothing happens".
-      jarvisKeyHeld = false;
-      say(`Voice error: "${ev.error}". Reload and retry, or just type your message instead.`);
-      jarvisSetOrbState("idle");
-    }
+    jarvisMicError = ev.error;
+    jarvisKeyHeld = false;  // real error -- stop the restart loop, it won't fix itself by retrying
+    say(MSG[ev.error] || `Voice error: "${ev.error}". Reload and retry, or just type your message instead.`);
+    jarvisSetOrbState("idle");
   };
   jarvisRecognition.onend = () => {
     if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
     if (jarvisKeyHeld && !jarvisMicError) {
-      // Ended on its own while the key's still down -- not the user
-      // stopping, just the browser's silence timeout. Keep listening.
+      // Ended on its own while the key's still down -- just the browser's
+      // silence timeout (or our restart). Keep listening.
       try { _jarvisStartRecognition(); return; } catch (e) { jarvisKeyHeld = false; }
     }
     jarvisSetOrbState("idle");
