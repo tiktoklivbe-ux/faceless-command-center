@@ -1770,7 +1770,6 @@ function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
 const JARVIS_GESTURES_KEY = "jarvisTrainedGestures";
 const GESTURE_MATCH_THRESHOLD = 0.28;  // loose enough that re-performing the same gesture (never pixel-identical) still matches, tight enough to stay well clear of a genuinely different pose
 const GESTURE_MATCH_COOLDOWN_MS = 2500;  // don't re-fire the same action every single frame you hold the pose
-const GESTURE_STABLE_FRAMES = 9;  // a built-in pose must be HELD this many frames before firing, so passing through it on the way to another pose doesn't trigger it
 
 function jarvisGestureFeatureVector(landmarks) {
   const wrist = landmarks[0];
@@ -1862,6 +1861,11 @@ const JARVIS_GESTURE_ACTIONS = [
 function jarvisExecuteGestureAction(action) {
   if (!action) return;
   if (action.startsWith("nav:")) {
+    // Navigating leaves the Jarvis HUD, which is where the camera lives.
+    // Stop the camera + gesture loop FIRST and explicitly, so it can't keep
+    // running invisibly after you open something with a gesture ("Jarvis
+    // thinks the camera is still on"). Idempotent with the panel teardown.
+    if (jarvisCameraClose) { try { jarvisCameraClose(); } catch (e) { /* already stopped */ } }
     const which = action.slice(4);
     if (which === "orbit") closeBigPanel();
     else { openBigPanel(which); setActiveSideItem(which); }
@@ -2033,8 +2037,8 @@ function jarvisStopSpeaking() {
 
 function jarvisShowHelpGuide() {
   if (document.getElementById("jarvis-help-overlay")) return;
-  const gestureRows = JARVIS_BUILTIN_GESTURES.map((g) =>
-    `<tr><td style="padding:3px 10px 3px 0">${g.emoji} ${escapeHtml(g.name)}</td><td style="opacity:.85">${escapeHtml(g.does)}</td></tr>`
+  const gestureRows = JARVIS_GESTURE_ACTIONS.map((a) =>
+    `<tr><td style="padding:3px 10px 3px 0;opacity:.85">${escapeHtml(a.label)}</td></tr>`
   ).join("");
   const el = document.createElement("div");
   el.id = "jarvis-help-overlay";
@@ -2055,9 +2059,8 @@ function jarvisShowHelpGuide() {
         <li><b>Jarvis</b> — talk or type to run any of it hands-free.</li>
       </ul>
       <p style="margin:6px 0"><b>Jarvis</b> can check jobs, pull live subs/views, retry or start videos, and more — hold 🎤 (or Enter) and speak, or type.</p>
-      <p style="margin:10px 0 4px"><b>Camera gestures</b> — turn on the camera, hold a pose ~½ second:</p>
+      <p style="margin:10px 0 4px"><b>Camera gestures</b> — turn on the camera, then train your own hand poses (hold a pose, name it, bind it to one of these actions, save):</p>
       <table style="border-collapse:collapse;font-size:13px">${gestureRows}</table>
-      <p style="margin:10px 0 0;opacity:.75;font-size:12px">You can also train your own gestures and bind them to actions in the Train Gestures panel.</p>
     </div>`;
   document.body.appendChild(el);
   const close = () => el.remove();
@@ -2065,54 +2068,9 @@ function jarvisShowHelpGuide() {
   document.getElementById("jarvis-help-close").addEventListener("click", close);
 }
 
-// ============================================================ BUILT-IN GESTURES
-// 10 hand gestures recognized out of the box -- NO training needed. Each is
-// classified purely from the hand's finger-extension pattern (which fingers
-// are up), so they work the moment gesture control is on.
-const JARVIS_BUILTIN_GESTURES = [
-  { emoji: "✋", name: "Open palm",          fingers: [1, 1, 1, 1, 1], action: "cam:fullscreen",    does: "Camera fullscreen" },
-  { emoji: "✊", name: "Fist",               fingers: [0, 0, 0, 0, 0], action: "cam:restore",       does: "Shrink camera back to its corner" },
-  { emoji: "☝️", name: "Point up (1 finger)", fingers: [0, 1, 0, 0, 0], action: "nav:jobs",         does: "Open Videos" },
-  { emoji: "✌️", name: "Peace (2 fingers)",   fingers: [0, 1, 1, 0, 0], action: "nav:missioncontrol", does: "Open Mission Control" },
-  { emoji: "🖖", name: "Three fingers",       fingers: [0, 1, 1, 1, 0], action: "nav:channels",     does: "Open Channels" },
-  { emoji: "🖐️", name: "Four fingers",       fingers: [0, 1, 1, 1, 1], action: "nav:settings",     does: "Open Settings" },
-  { emoji: "👍", name: "Thumbs up",          fingers: [1, 0, 0, 0, 0], action: "nav:orbit",        does: "Go home (the Village)" },
-  { emoji: "🤘", name: "Rock / horns",       fingers: [0, 1, 0, 0, 1], action: "cam:center",       does: "Center the camera" },
-  { emoji: "🤙", name: "Call me / shaka",    fingers: [1, 0, 0, 0, 1], action: "cam:top-right",    does: "Move camera to the top-right" },
-  { emoji: "🤏", name: "Pinky only",         fingers: [0, 0, 0, 0, 1], action: "cam:bottom-right", does: "Move camera to the bottom-right" },
-];
-
-/** [thumb, index, middle, ring, pinky] booleans -- which fingers are extended.
- *  Assumes a roughly upright hand facing the webcam, which is how people
- *  naturally gesture. Uses MediaPipe's 21-point hand landmark indices. */
-function jarvisFingersUp(lm) {
-  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  // Fingers 2-5: tip is higher (smaller y) than the middle knuckle => extended.
-  const index  = lm[8].y  < lm[6].y;
-  const middle = lm[12].y < lm[10].y;
-  const ring   = lm[16].y < lm[14].y;
-  const pinky  = lm[20].y < lm[18].y;
-  // Thumb: its tip sticks out sideways, away from the index base, well beyond
-  // where its own base sits -- distinguishes an out-thumb from a tucked one
-  // regardless of left/right hand or mirroring.
-  const indexBase = lm[5];
-  const thumb = dist(lm[4], indexBase) > dist(lm[2], indexBase) * 1.4;
-  return [thumb, index, middle, ring, pinky];
-}
-
-function jarvisRecognizeBuiltinGesture(landmarks) {
-  if (!landmarks || landmarks.length < 21) return null;
-  const f = jarvisFingersUp(landmarks);
-  for (const g of JARVIS_BUILTIN_GESTURES) {
-    if (g.fingers.every((v, i) => !!v === !!f[i])) return g;
-  }
-  return null;
-}
 
 let jarvisGestureTrainingArmed = false;
 let jarvisLastGestureMatchAt = 0;
-let jarvisGestureCandidate = null;   // built-in gesture currently being held
-let jarvisGestureStableCount = 0;    // how many frames it's been held
 
 /** Kicks off training: a short countdown so you have time to get into
  *  position, then the next still frame is captured as the new gesture's
@@ -2164,28 +2122,15 @@ function jarvisSaveGestureFromForm() {
 function jarvisRenderTrainedGesturesList() {
   const list = document.getElementById("jarvis-gesture-list");
   if (!list) return;
-  // Always show the 10 built-in gestures + exactly what each one does, so you
-  // can see the whole vocabulary at a glance while the camera's open.
-  const builtinHTML = JARVIS_BUILTIN_GESTURES.map((g) =>
-    `<div class="qa-row" style="align-items:center">
-       <span style="font-size:15px;width:22px;text-align:center">${g.emoji}</span>
-       <b style="min-width:120px">${escapeHtml(g.name)}</b>
-       <span class="qa-status">${escapeHtml(g.does)}</span>
-     </div>`
-  ).join("");
-  const trained = jarvisLoadTrainedGestures();
-  const trainedHTML = trained.length
-    ? `<div class="hint" style="margin-top:8px;opacity:.7">Your trained gestures</div>` +
-      trained.map((g, i) => {
+  const gestures = jarvisLoadTrainedGestures();
+  list.innerHTML = gestures.length
+    ? gestures.map((g, i) => {
         const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
         return `<div class="qa-row"><b>${escapeHtml(g.name)}</b>
           <span class="qa-status">${escapeHtml(found ? found.label : g.action)}</span>
           <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete" style="width:20px;height:20px;margin-left:4px">✕</button></div>`;
       }).join("")
-    : "";
-  list.innerHTML =
-    `<div class="hint" style="opacity:.7;margin-bottom:4px">Hold a pose ~½ second — a chime confirms it</div>` +
-    builtinHTML + trainedHTML;
+    : `<div class="hint">No gestures yet — train one: hold a pose, name it, pick an action, save.</div>`;
   list.querySelectorAll(".jarvis-gesture-del").forEach((btn) => {
     btn.addEventListener("click", () => {
       jarvisDeleteTrainedGesture(Number(btn.dataset.idx));
@@ -2417,30 +2362,14 @@ function jarvisSetupGestureControl(panelEl) {
             jarvisCaptureTrainedGesture(landmarks);
           } else {
             const now = performance.now();
-            // Built-in gestures first (no training needed). Require the pose to
-            // be HELD for a few frames so brushing through it doesn't fire it.
-            const builtin = jarvisRecognizeBuiltinGesture(landmarks);
-            if (builtin) {
-              if (jarvisGestureCandidate === builtin.name) jarvisGestureStableCount++;
-              else { jarvisGestureCandidate = builtin.name; jarvisGestureStableCount = 1; }
-              if (jarvisGestureStableCount === GESTURE_STABLE_FRAMES &&
-                  now - jarvisLastGestureMatchAt > GESTURE_MATCH_COOLDOWN_MS) {
+            // Only YOUR trained gestures fire -- no pre-made poses.
+            if (now - jarvisLastGestureMatchAt > GESTURE_MATCH_COOLDOWN_MS) {
+              const match = jarvisMatchTrainedGesture(landmarks, jarvisLoadTrainedGestures());
+              if (match) {
                 jarvisLastGestureMatchAt = now;
                 jarvisPlayGestureChime();
-                toast(`${builtin.emoji} ${builtin.name} → ${builtin.does}`);
-                jarvisExecuteGestureAction(builtin.action);
-              }
-            } else {
-              jarvisGestureCandidate = null; jarvisGestureStableCount = 0;
-              // Fall back to any gesture the user trained themselves.
-              if (now - jarvisLastGestureMatchAt > GESTURE_MATCH_COOLDOWN_MS) {
-                const match = jarvisMatchTrainedGesture(landmarks, jarvisLoadTrainedGestures());
-                if (match) {
-                  jarvisLastGestureMatchAt = now;
-                  jarvisPlayGestureChime();
-                  toast(`Gesture recognized: ${match.name}`);
-                  jarvisExecuteGestureAction(match.action);
-                }
+                toast(`Gesture recognized: ${match.name}`);
+                jarvisExecuteGestureAction(match.action);
               }
             }
           }
