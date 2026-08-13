@@ -111,19 +111,10 @@ function renderJobStatusCard(j) {
   const elapsed = started ? Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000)) : 0;
   const mmss = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
 
-  // A retried job's stage_log carries every attempt's full history
-  // concatenated (deliberate -- see scheduler.py's clear_stuck_jobs), but
-  // progress must only reflect the CURRENT attempt. A retry regenerates the
-  // script from scratch and often lands on a different segment count, so
-  // reading the segment total from the FIRST "Segment N/M" in the whole log
-  // while counting "clip rendered in" across ALL of it double-counted the
-  // abandoned attempt's clips on top of the new one -- exactly how a real
-  // job's progress bar hit 133% (56 clips rendered across two attempts,
-  // divided by the first attempt's total of 35).
-  const currentLog = (j.stage_log || "").split(/\[watchdog\] retrying[^\n]*\n?/).pop();
-  const totalMatches = [...currentLog.matchAll(/Segment \d+\/(\d+)/g)];
-  const total = totalMatches.length ? parseInt(totalMatches[totalMatches.length - 1][1], 10) : null;
-  const doneCount = (currentLog.match(/clip rendered in/g) || []).length;
+  // How many segments are done, and how many there are in total.
+  const totalMatch = /Segment \d+\/(\d+)/.exec(j.stage_log || "");
+  const total = totalMatch ? parseInt(totalMatch[1], 10) : null;
+  const doneCount = ((j.stage_log || "").match(/clip rendered in/g) || []).length;
 
   let headline, detail, pct = 0;
   const status = String(j.status || "");
@@ -134,7 +125,7 @@ function renderJobStatusCard(j) {
   else if (status === "queued")          { headline = "⏳ Waiting in line";  detail = "Another video is rendering. Videos run one at a time on purpose."; }
   else if (/Script Agent/.test(last))    { headline = "✍️ Writing the script"; detail = "Usually 10-20 seconds."; pct = 5; }
   else if (/Voice Agent|Visual Agent/.test(last) || /clip rendered|Assembly Agent rendering/.test(last)) {
-    pct = total ? Math.min(100, Math.round(5 + (doneCount / total) * 80)) : 30;
+    pct = total ? Math.round(5 + (doneCount / total) * 80) : 30;
     headline = total ? `🎬 Building clip ${Math.min(doneCount + 1, total)} of ${total}` : "🎬 Building clips";
     detail = "Making narration, generating an image, and rendering each clip.";
   }
@@ -396,15 +387,8 @@ async function renderChannelsPanel(body) {
           <input type="checkbox" id="autopub-${c.id}" ${c.auto_publish_scheduled ? "checked" : ""} style="width:auto;margin:0"/>
           <span style="text-transform:none;font-size:12px;color:var(--muted)">Auto-publish when ready</span>
         </label>
-        <div style="margin-top:10px"><label>YouTube upload privacy</label>
-          <select id="ytprivacy-${c.id}">
-            <option value="public" ${(c.youtube_privacy || "public") === "public" ? "selected" : ""}>Public</option>
-            <option value="unlisted" ${c.youtube_privacy === "unlisted" ? "selected" : ""}>Unlisted</option>
-            <option value="private" ${c.youtube_privacy === "private" ? "selected" : ""}>Private</option>
-          </select></div>
         <div class="hint" style="margin-top:6px">Shorts (vertical, under a minute) and long-form (horizontal, 5-7 min) run on
-        separate schedules — set either to 0 to skip that kind entirely. Long-form only ever goes to YouTube, never TikTok.
-        <br><b>Note:</b> until your Google app passes verification, YouTube forces every upload to private no matter what you pick here.</div>
+        separate schedules — set either to 0 to skip that kind entirely. Long-form only ever goes to YouTube, never TikTok.</div>
         <button class="btn secondary" data-autosave="${c.id}">Save Automation</button>
         ${c.auto_enabled ? `<div class="hint" style="margin-top:10px">🤖 Auto-generating ~${c.auto_per_day} short${c.auto_per_day === 1 ? "" : "s"}/day${c.auto_longform_per_day ? ` + ${c.auto_longform_per_day} long-form/day` : ""}. Needs the app running continuously to fire on schedule — see the README hosting note if it's on a host that sleeps when idle.</div>` : ""}
       </div>
@@ -424,7 +408,6 @@ async function renderChannelsPanel(body) {
         auto_per_day: parseInt($(`#perday-${c.id}`).value, 10) || 0,
         auto_longform_per_day: parseInt($(`#perdaylong-${c.id}`).value, 10) || 0,
         auto_publish_scheduled: $(`#autopub-${c.id}`).checked,
-        youtube_privacy: $(`#ytprivacy-${c.id}`).value,
       };
       await API(`/api/channels/${c.id}`, { method: "PUT", body: JSON.stringify(payload) });
       toast(`Automation saved for ${c.name}.`);
@@ -825,23 +808,7 @@ function _jarvisSpeakBrowser(text, onDone) {
 // repeated replies in one session don't each hit the API and wait on a
 // failure before falling back -- one bad response is enough to know.
 let jarvisElevenLabsUnavailable = false;
-
-// ONE persistent <audio> element, reused for every spoken reply. This is the
-// crux of the "Jarvis won't talk" fix: browsers gate autoplay PER ELEMENT
-// (mobile Safari strictly, others increasingly), and the old code created a
-// fresh `new Audio(url)` for every reply. That fresh element was never the
-// one the user's gesture unlocked, so its play() got blocked by the autoplay
-// policy every single time -- the reply text appeared but he stayed silent.
-// jarvisUnlockAudio primes THIS exact element inside a real click/keypress,
-// and jarvisSpeak reuses it, so its later programmatic play() is allowed.
-let jarvisSpeakEl = null;
-function _jarvisSpeakEl() {
-  if (!jarvisSpeakEl) {
-    jarvisSpeakEl = new Audio();
-    jarvisSpeakEl.preload = "auto";
-  }
-  return jarvisSpeakEl;
-}
+let jarvisSpeakAudio = null;
 
 /** Jarvis's spoken replies -- ElevenLabs (the same account already used for
  *  video narration) when a key is configured, the browser's built-in voice
@@ -850,9 +817,7 @@ function _jarvisSpeakEl() {
  *  instead of guessing a fixed duration. */
 async function jarvisSpeak(text, onDone) {
   if (!text) { if (onDone) onDone(); return; }
-  // Stop anything currently talking (either path) before the new reply.
-  try { if (jarvisSpeakEl) jarvisSpeakEl.pause(); } catch (e) { /* fine */ }
-  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
+  if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
   if (jarvisElevenLabsUnavailable) { _jarvisSpeakBrowser(text, onDone); return; }
   try {
     const r = await fetch("/api/jarvis/speak", {
@@ -871,23 +836,21 @@ async function jarvisSpeak(text, onDone) {
     }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
-    const el = _jarvisSpeakEl();
-    // onended/onerror are ASSIGNED (not addEventListener) so a reused element
-    // can't accumulate a new pair of listeners on every reply.
-    el.onended = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
-    el.onerror = () => { URL.revokeObjectURL(url); _jarvisSpeakBrowser(text, onDone); };
-    el.src = url;
-    try { el.currentTime = 0; } catch (e) { /* not seekable yet -- fine */ }
-    const p = el.play();
-    if (p && p.catch) p.catch((playErr) => {
-      // Reaching here despite the persistent-element unlock means audio was
-      // never primed by a real gesture this session (e.g. a reply triggered
-      // by a proactive/voice path before any click). Fall back to the browser
-      // voice for THIS reply; the next gesture re-primes ElevenLabs. Not
-      // proof ElevenLabs is unavailable, so don't latch it off.
-      console.warn("Jarvis: audio blocked from autoplaying:", playErr);
-      el.onended = null; el.onerror = null;
-      URL.revokeObjectURL(url);
+    const audio = new Audio(url);
+    jarvisSpeakAudio = audio;
+    const cleanup = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
+    audio.addEventListener("ended", cleanup);
+    audio.addEventListener("error", cleanup);
+    audio.play().catch((playErr) => {
+      // This is a real ElevenLabs response failing to autoplay -- almost
+      // always the browser's autoplay policy (the reply arrives seconds
+      // after the click that triggered it, past the window browsers count
+      // as "still a user gesture"), NOT a broken key or voice. That's a
+      // one-off, not proof ElevenLabs itself is unavailable, so this
+      // message falls back to the browser voice but the NEXT one still
+      // tries ElevenLabs again -- jarvisUnlockAudio() (wired to the first
+      // click in the panel) is what actually fixes it going forward.
+      console.warn("Jarvis: ElevenLabs audio blocked from autoplaying:", playErr);
       _jarvisSpeakBrowser(text, onDone);
     });
   } catch (e) {
@@ -905,23 +868,13 @@ async function jarvisSpeak(text, onDone) {
  *  session, so the later async play() actually works. */
 let jarvisAudioUnlocked = false;
 function jarvisUnlockAudio() {
-  if (!jarvisAudioUnlocked) {
-    jarvisAudioUnlocked = true;
-    try {
-      // Prime the SAME element jarvisSpeak will reuse (see _jarvisSpeakEl),
-      // not a throwaway one. Playing a silent clip on it inside this genuine
-      // gesture is what marks THIS element as user-activated, so its later
-      // programmatic play() for real replies is allowed by the autoplay
-      // policy. Muting keeps the priming inaudible.
-      const el = _jarvisSpeakEl();
-      el.muted = true;
-      el.src = "data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA";
-      const p = el.play();
-      const reset = () => { try { el.pause(); el.currentTime = 0; el.muted = false; el.removeAttribute("src"); el.load(); } catch (e) { el.muted = false; } };
-      if (p && p.then) p.then(reset).catch(() => { el.muted = false; });
-      else reset();
-    } catch (e) { /* nothing to unlock without Audio support anyway */ }
-  }
+  if (jarvisAudioUnlocked) return;
+  jarvisAudioUnlocked = true;
+  try {
+    const a = new Audio("data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA");
+    a.volume = 0;
+    a.play().then(() => a.pause()).catch(() => {});
+  } catch (e) { /* nothing to unlock without Audio support anyway */ }
   // Desktop-notification permission needs a genuine user gesture too, or
   // most browsers silently ignore the request -- this fires at exactly the
   // same moments (send, push-to-talk) so one real interaction covers both.
@@ -1043,72 +996,27 @@ async function jarvisSend(message) {
   const log = document.getElementById("jarvis-log");
   if (log) { log.appendChild(thinking); log.scrollTop = log.scrollHeight; }
 
-  // Streamed instead of a single await-the-whole-thing call: the reply now
-  // starts appearing (and gets spoken) within well under a second of the
-  // first tokens coming back, rather than only after the full multi-second
-  // completion landed. This is the actual fix for "instant" -- the earlier
-  // "Got it, one sec…" caption on key-release only covered the dead air
-  // before the request even started.
-  let reply = "";
-  let started = false;
   try {
-    const resp = await fetch("/api/jarvis/chat/stream", {
+    const r = await API("/api/jarvis/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, history: jarvisHistory }),
     });
-    if (!resp.ok || !resp.body) throw new Error(`${resp.status}: ${await resp.text().catch(() => "")}`);
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let historyOut = null, actionsOut = [];
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const events = buf.split("\n\n");
-      buf = events.pop();  // last chunk may be incomplete -- keep it for next read
-      for (const raw of events) {
-        const line = raw.split("\n").find((l) => l.startsWith("data: "));
-        if (!line) continue;
-        let ev;
-        try { ev = JSON.parse(line.slice(6)); } catch (e) { continue; }
-
-        if (ev.type === "text") {
-          reply += ev.text;
-          if (!started) {
-            started = true;
-            thinking.classList.remove("jarvis-thinking");
-          }
-          thinking.textContent = reply;
-          if (log) log.scrollTop = log.scrollHeight;
-          if (caption) caption.textContent = reply.slice(0, 90);
-        } else if (ev.type === "error") {
-          throw new Error(ev.text || "stream error");
-        } else if (ev.type === "done") {
-          historyOut = ev.history;
-          actionsOut = ev.actions || [];
-        }
-      }
-    }
-
-    if (!started) thinking.remove();  // no text ever arrived (e.g. kill switch reply came as one shot -- still handled above, this is just the empty-stream edge case)
-    jarvisHistory = historyOut || jarvisHistory;
-    jarvisTranscript.push({ role: "assistant", text: reply });
+    thinking.remove();
+    jarvisHistory = r.history || jarvisHistory;
+    jarvisAppendMsg("assistant", r.reply);
     jarvisSaveConversation(jarvisTranscript);
-    if (!caption) toast(`Jarvis: ${reply.slice(0, 120)}`);
+    if (caption) caption.textContent = r.reply.slice(0, 90);
+    else toast(`Jarvis: ${r.reply.slice(0, 120)}`);
     // A reply that lands while you're on another tab is easy to miss
     // entirely otherwise -- audio keeps playing regardless, but a desktop
     // notification is what actually gets your attention if you've moved on.
-    if (document.hidden) jarvisNotify("Jarvis", reply.slice(0, 180));
-    if (actionsOut.length) {
-      toast(`Jarvis: ${actionsOut.map((a) => a.tool).join(", ")}`);
+    if (document.hidden) jarvisNotify("Jarvis", r.reply.slice(0, 180));
+    if (r.actions && r.actions.length) {
+      toast(`Jarvis: ${r.actions.map((a) => a.tool).join(", ")}`);
       // Some tool calls have a real effect on THIS page, not just the
       // backend -- the model decided to call them from the conversation,
       // this is just carrying that decision out client-side.
-      actionsOut.forEach((a) => {
+      r.actions.forEach((a) => {
         if (a.tool === "control_camera_dock" && a.result && a.result.ok) {
           jarvisCameraDockAction(a.result.action);
         }
@@ -1119,15 +1027,10 @@ async function jarvisSend(message) {
         if (a.tool === "send_notification" && a.result && a.result.ok) {
           jarvisNotify("Jarvis", a.result.message);
         }
-        // Jarvis chose to pull up a dataset -- render the animated chart
-        // overlay from the same numbers he's about to narrate.
-        if (a.tool === "show_dataset" && a.result && a.result.ok) {
-          jarvisShowDataset(a.result);
-        }
       });
     }
     jarvisSetOrbState("speaking");
-    jarvisSpeak(reply, () => {
+    jarvisSpeak(r.reply, () => {
       jarvisSetOrbState("idle");
       jarvisBusy = false;
     });
@@ -1178,58 +1081,19 @@ function _jarvisStartRecognition() {
     const caption = document.getElementById("jarvis-caption");
     if (caption) caption.textContent = (jarvisTranscriptSoFar + interim) || "Listening…";
   };
-  // Silently swallowing every error here (the old `() => {}`) is exactly
-  // why holding Enter could look and feel like nothing was happening: if
-  // mic permission was ever denied, EVERY start() fails immediately with
-  // "not-allowed", onend fires right after, and since the key's still held
-  // the code above just restarts recognition -- which fails the same way
-  // again, forever, with the caption stuck on "Listening..." the whole
-  // time and zero indication anything's wrong. Now it actually says so,
-  // and stops retrying on the errors that can't self-recover.
-  let jarvisLastError = null;
-  jarvisRecognition.onerror = (ev) => {
-    if (myGen !== jarvisRecognitionGen) return;
-    jarvisLastError = ev.error;
-    const caption = document.getElementById("jarvis-caption");
-    const FATAL = {
-      "not-allowed": "Mic access is blocked -- allow microphone access for this site in your browser's settings, then try again.",
-      "service-not-allowed": "Mic access is blocked -- allow microphone access for this site in your browser's settings, then try again.",
-      "audio-capture": "No microphone found -- check it's connected and not in use by another app.",
-    };
-    if (FATAL[ev.error]) {
-      jarvisKeyHeld = false;  // stop the auto-restart below; retrying a permission error forever is the exact bug this fixes
-      if (caption) caption.textContent = FATAL[ev.error];
-      jarvisSetOrbState("idle");
-    } else if (ev.error !== "no-speech" && ev.error !== "aborted") {
-      // no-speech/aborted are routine (silence timeout, a deliberate
-      // restart) -- anything else is worth surfacing rather than hiding.
-      if (caption) caption.textContent = `Mic error: ${ev.error} -- try again, or type instead.`;
-    }
-  };
+  jarvisRecognition.onerror = () => {};
   jarvisRecognition.onend = () => {
     if (myGen !== jarvisRecognitionGen) return;  // a newer session already took over
     if (jarvisKeyHeld) {
       // Ended on its own while the key's still down -- not the user
       // stopping, just the browser's silence timeout. Keep listening.
-      try {
-        _jarvisStartRecognition();
-        return;
-      } catch (e) {
-        // The old comment here claimed this "falls through to finalize
-        // below" -- it didn't; an unconditional `return` right after the
-        // try/catch meant a restart failure was silently swallowed with
-        // the caption stuck on "Listening..." and nothing actually
-        // listening anymore. Now it actually finalizes instead of hanging.
-        jarvisKeyHeld = false;
-      }
+      try { _jarvisStartRecognition(); } catch (e) { /* fall through to finalize below */ }
+      return;
     }
     jarvisSetOrbState("idle");
     const said = jarvisTranscriptSoFar.trim();
     if (said) jarvisSend(said);
-    // Don't stomp the error message onerror just set (e.g. "Mic access is
-    // blocked...") with this generic fallback -- FATAL errors above already
-    // set jarvisKeyHeld=false, which is what routes execution here.
-    else if (!jarvisLastError) {
+    else {
       const caption = document.getElementById("jarvis-caption");
       if (caption) caption.textContent = "Press and hold Enter to talk, or type below.";
     }
@@ -1697,32 +1561,18 @@ function jarvisSaveGestureFromForm() {
   jarvisRenderTrainedGesturesList();
 }
 
-// Built-in gestures that always work (no training needed) -- shown at the
-// top of the list so the user always knows what the camera understands.
-const JARVIS_BUILTIN_GESTURES = [
-  { icon: "🤏", name: "Pinch", desc: "Grab & drag a widget" },
-];
-
 function jarvisRenderTrainedGesturesList() {
   const list = document.getElementById("jarvis-gesture-list");
   if (!list) return;
   const gestures = jarvisLoadTrainedGestures();
-  const builtin = JARVIS_BUILTIN_GESTURES.map((g) =>
-    `<div class="jf-gest-row jf-gest-builtin">
-       <span class="jf-gest-icon">${g.icon}</span>
-       <span class="jf-gest-name">${escapeHtml(g.name)}</span>
-       <span class="jf-gest-desc">${escapeHtml(g.desc)}</span>
-     </div>`).join("");
-  const trained = gestures.map((g, i) => {
-    const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
-    return `<div class="jf-gest-row">
-       <span class="jf-gest-icon">✋</span>
-       <span class="jf-gest-name">${escapeHtml(g.name)}</span>
-       <span class="jf-gest-desc">${escapeHtml(found ? found.label : g.action)}</span>
-       <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete">✕</button>
-     </div>`;
-  }).join("");
-  list.innerHTML = builtin + trained + (gestures.length ? "" : `<div class="hint" style="padding:8px 4px">Train your own below.</div>`);
+  list.innerHTML = gestures.length
+    ? gestures.map((g, i) => {
+        const found = JARVIS_GESTURE_ACTIONS.find((a) => a.value === g.action);
+        return `<div class="qa-row"><b>${escapeHtml(g.name)}</b>
+          <span class="qa-status">${escapeHtml(found ? found.label : g.action)}</span>
+          <button class="icon-btn jarvis-gesture-del" data-idx="${i}" title="Delete" style="width:20px;height:20px;margin-left:4px">✕</button></div>`;
+      }).join("")
+    : `<div class="hint">No trained gestures yet.</div>`;
   list.querySelectorAll(".jarvis-gesture-del").forEach((btn) => {
     btn.addEventListener("click", () => {
       jarvisDeleteTrainedGesture(Number(btn.dataset.idx));
@@ -1772,99 +1622,6 @@ async function jarvisLoadHandModel() {
  *  WHETHER and WHEN to do this from the conversation (a real tool call,
  *  not a keyword match on my end); this is just the DOM action once it
  *  has, since the backend tool itself can't touch the page. */
-// ---------------------------------------------------------------- data sets
-// An animated, glass data-viz overlay Jarvis (or the Data button) can pull
-// up. Renders from the same numbers Jarvis narrates (see show_dataset /
-// /api/jarvis/dataset). Appended to <body> with a high z-index so it works
-// regardless of which panel is open.
-const JARVIS_DATASETS = [
-  { key: "output", label: "Output" },
-  { key: "status", label: "Status" },
-  { key: "channels", label: "Channels" },
-  { key: "publishing", label: "Publishing" },
-];
-
-function jarvisDatasetChartSVG(series) {
-  const max = Math.max(1, ...series.map((s) => s.value));
-  const n = series.length || 1;
-  const W = 640, H = 300, padB = 46, padT = 20, gap = 22;
-  const bw = (W - gap * (n + 1)) / n;
-  let bars = "";
-  series.forEach((s, i) => {
-    const x = gap + i * (bw + gap);
-    const fullH = (H - padB - padT) * (s.value / max);
-    const y = H - padB - fullH;
-    // Bars start flat (scaleY via a 0-height rect) and grow in -- animated
-    // by transitioning the CSS custom prop below after mount.
-    bars += `<g class="jf-ds-bar" style="--i:${i}">
-      <rect class="jf-ds-bar-rect" x="${x.toFixed(1)}" y="${(H - padB).toFixed(1)}" width="${bw.toFixed(1)}" height="0" rx="5"
-            data-fy="${y.toFixed(1)}" data-fh="${fullH.toFixed(1)}"/>
-      <text class="jf-ds-bar-val" x="${(x + bw / 2).toFixed(1)}" y="${(y - 8).toFixed(1)}" text-anchor="middle">${s.value}</text>
-      <text class="jf-ds-bar-lbl" x="${(x + bw / 2).toFixed(1)}" y="${(H - padB + 20).toFixed(1)}" text-anchor="middle">${escapeHtml(String(s.label))}</text>
-    </g>`;
-  });
-  return `<svg class="jf-ds-chart" viewBox="0 0 ${W} ${H}" width="100%">
-    <line x1="0" y1="${H - padB}" x2="${W}" y2="${H - padB}" class="jf-ds-axis"/>
-    ${bars}
-  </svg>`;
-}
-
-function jarvisShowDataset(data) {
-  if (!data || !data.series) return;
-  let overlay = document.getElementById("jarvis-dataset-overlay");
-  if (overlay) overlay.remove();
-  overlay = el(`<div id="jarvis-dataset-overlay" class="jarvis-dataset-overlay">
-    <div class="jarvis-dataset-card">
-      <button class="jarvis-dataset-close" title="Close">✕</button>
-      <div class="jarvis-dataset-title">${escapeHtml(data.title || "Data")}</div>
-      <div class="jarvis-dataset-chart-wrap">${jarvisDatasetChartSVG(data.series)}</div>
-      <div class="jarvis-dataset-summary">${escapeHtml(data.summary || "")}</div>
-      <div class="jarvis-dataset-chips">
-        ${JARVIS_DATASETS.map((d) => `<button class="jarvis-dataset-chip ${d.key === data.dataset ? "on" : ""}" data-ds="${d.key}">${d.label}</button>`).join("")}
-      </div>
-    </div>
-  </div>`);
-  document.body.appendChild(overlay);
-  // Fade/scale the card in, then grow the bars -- two-stage so the card is
-  // settled before the data animates (reads as deliberate, not chaotic).
-  // setTimeout rather than requestAnimationFrame: rAF only fires while the
-  // tab is actively being painted, so it can silently never fire at all if
-  // the window is backgrounded/unfocused right when Jarvis pulls this up
-  // (confirmed in testing) -- a real risk here since this can be triggered
-  // from a conversation, not just a deliberate click on a visible button.
-  // A short timeout still gives the browser a paint tick to register the
-  // initial (0-height) state first, so the CSS transition still animates,
-  // but it actually fires regardless of tab focus.
-  setTimeout(() => {
-    overlay.classList.add("shown");
-    setTimeout(() => {
-      overlay.querySelectorAll(".jf-ds-bar-rect").forEach((r) => {
-        r.setAttribute("y", r.dataset.fy);
-        r.setAttribute("height", r.dataset.fh);
-      });
-    }, 60);
-  }, 20);
-  const close = () => { overlay.classList.remove("shown"); setTimeout(() => overlay.remove(), 320); };
-  overlay.querySelector(".jarvis-dataset-close").addEventListener("click", close);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-  overlay.querySelectorAll(".jarvis-dataset-chip").forEach((chip) => {
-    chip.addEventListener("click", async () => {
-      try {
-        const next = await API(`/api/jarvis/dataset?which=${chip.dataset.ds}`);
-        if (next && next.series) jarvisShowDataset(next);
-      } catch (e) { /* ignore */ }
-    });
-  });
-}
-
-/** Manual open (the HUD's Data button) -- fetches then shows. */
-async function jarvisOpenDataset(which) {
-  try {
-    const data = await API(`/api/jarvis/dataset?which=${which || "status"}`);
-    if (data && data.series) jarvisShowDataset(data);
-  } catch (e) { toast("Couldn't load that dataset."); }
-}
-
 // "center" used to be the only place the camera dock could be moved to on
 // request -- these are the actual named spots Jarvis can now move it to.
 const JARVIS_DOCK_SPOTS = {
@@ -2235,12 +1992,9 @@ function jarvisGlyphSVG() {
     // organic, uneven reach -- not every trace makes it to the frame edge
     const r2 = 150 + ((i * 17) % 66);
     const t = _circuitTrace(cx, cy, angle, chipR, r2, i);
+    const dash = 50 + (i % 5) * 12;
     const width = 1.3 + (i % 3) * 0.5;
-    // Stagger each trace's pulse so energy doesn't leave the chip in one
-    // synchronized ring -- animation-delay is set inline per-trace, the
-    // dash pattern + motion themselves live in CSS (state-driven).
-    const delay = ((i * 137) % 100) / 100;
-    traces += `<path d="${t.d}" class="jf-trace" style="stroke-width:${width};animation-delay:-${delay.toFixed(2)}s" />`;
+    traces += `<path d="${t.d}" class="jf-trace" style="stroke-dasharray:${dash};stroke-width:${width}" />`;
     traces += `<circle cx="${t.x2}" cy="${t.y2}" r="${2.6 + (i % 3) * 0.6}" class="jf-trace-node" />`;
     if (t.branch) {
       traces += `<line x1="${t.branch.x1.toFixed(1)}" y1="${t.branch.y1.toFixed(1)}" x2="${t.branch.x2.toFixed(1)}" y2="${t.branch.y2.toFixed(1)}" class="jf-trace" stroke-width="1"/>`;
@@ -2353,11 +2107,11 @@ async function renderJarvisPanel(body) {
       </div>
 
       <div class="jarvis-nav-stack" id="jarvis-nav-stack">
-        <button class="jarvis-nav-item" data-nav="data">📊 Data</button>
+        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
         <button class="jarvis-nav-item" data-nav="missioncontrol">🛰️ Mission Control</button>
         <button class="jarvis-nav-item" data-nav="jobs">🎬 Videos</button>
         <button class="jarvis-nav-item" data-nav="channels">📺 Channels</button>
-        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
+        <button class="jarvis-nav-item" data-nav="settings">⚙️ Settings</button>
       </div>
 
       <div class="jarvis-dial" id="jarvis-kill-toggle" title="Click to switch Jarvis on/off">
@@ -2411,7 +2165,6 @@ async function renderJarvisPanel(body) {
     btn.addEventListener("click", () => {
       const which = btn.dataset.nav;
       if (which === "orbit") closeBigPanel();
-      else if (which === "data") jarvisOpenDataset("status");
       else { openBigPanel(which); setActiveSideItem(which); }
     });
   });
@@ -2524,27 +2277,14 @@ async function renderJarvisPanel(body) {
   );
   const cleanupGestures = jarvisSetupGestureControl(document.getElementById("bigpanel-inner"));
 
-  // Warm the hand-tracking model in the background the moment the panel
-  // opens, so "open the camera" doesn't then stall for a couple seconds
-  // fetching it from the CDN first -- by the time you ask, it's cached and
-  // the camera comes up effectively instantly. Fire-and-forget; failure is
-  // fine (it'll just load on demand as before).
-  setTimeout(() => { jarvisLoadHandModel().catch(() => {}); }, 400);
-
   // Cleaned up whenever the panel closes/changes -- stopAllPanelPolls runs on
   // every panel switch, so hooking removal there keeps this from piling up
   // as a second, third, fourth global listener (or camera stream!) every
   // time Jarvis reopens.
   const _origStop = stopAllPanelPolls;
   window.stopAllPanelPolls = function () {
-    // Deliberately NOT cancelling speech/audio here anymore -- that was the
-    // "Jarvis gets cut off when I switch to the village tab" bug. His reply
-    // audio is a detached <audio> element (and speechSynthesis is global),
-    // neither tied to this panel's DOM, and every state callback that fires
-    // when it finishes already guards for a missing emblem/caption. So we
-    // let the current reply finish speaking across a tab switch instead of
-    // guillotining it mid-sentence. A brand-new send still stops the prior
-    // clip first (see jarvisSpeak), so this can't stack.
+    window.speechSynthesis && window.speechSynthesis.cancel();
+    if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
     clearInterval(clockInterval);
     clearInterval(readoutInterval);
     // jarvisDragPanel is one shared variable across every draggable widget.
@@ -2821,15 +2561,8 @@ function renderJobBanner(job) {
   let last = log[log.length - 1] || "";
   if (last.startsWith("[")) last = last.slice(last.indexOf("]") + 1).trim();
 
-  // Same fix as renderJobStatusCard: only look at the current attempt's
-  // slice of the log (a retry restarts the segment count from scratch), and
-  // take the LATEST "Segment N/M" line, not the first -- .exec() without
-  // the /g flag only ever finds the first match in the whole string, which
-  // froze this banner at the opening segment instead of tracking real progress.
-  const currentLog = (job.stage_log || "").split(/\[watchdog\] retrying[^\n]*\n?/).pop();
-  const segMatches = [...currentLog.matchAll(/Segment (\d+)\/(\d+)/g)];
-  const lastSeg = segMatches[segMatches.length - 1];
-  const pct = lastSeg ? Math.min(100, Math.round((parseInt(lastSeg[1], 10) / parseInt(lastSeg[2], 10)) * 100)) : 6;
+  const m = /Segment (\d+)\/(\d+)/.exec(job.stage_log || "");
+  const pct = m ? Math.round((parseInt(m[1], 10) / parseInt(m[2], 10)) * 100) : 6;
 
   el.innerHTML = `
     <div class="jb-pulse"></div>
