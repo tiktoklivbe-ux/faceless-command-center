@@ -41,6 +41,13 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     seg_times: list[float] = []
     total_voice = total_visual = total_render = 0.0
     job_started = time.time()
+    # For a countdown that only ever ticks DOWN. The raw estimate below is
+    # avg-per-segment * segments-left; a couple of slow segments raise the
+    # running average, which made that raw number JUMP UP between segments --
+    # the "timer rolls back sometimes" the render display showed. These track
+    # the last shown estimate so it can be clamped to keep decreasing.
+    last_eta: float | None = None
+    last_eta_ts: float | None = None
     # Skipping the pan/zoom is the single biggest render saving available, so
     # it's exposed as a setting for instances that can't keep up.
     fast_render = get_setting(db, "fast_render", "false") == "true"
@@ -85,7 +92,20 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
             eta_note = ""
             if seg_times:
                 avg = sum(seg_times) / len(seg_times)
-                remaining = avg * (n - i)
+                raw_remaining = avg * (n - i)
+                now = time.time()
+                if last_eta is not None and last_eta_ts is not None:
+                    # A countdown should only ever go DOWN. Clamp the new
+                    # estimate to at most the previous one minus the real time
+                    # that has passed since it -- so a slow segment (which
+                    # raises avg, and thus raw_remaining) can't make the shown
+                    # timer leap backward. It keeps counting down at real-time
+                    # pace, and only drops FASTER when we're genuinely ahead.
+                    decayed = max(0.0, last_eta - (now - last_eta_ts))
+                    remaining = min(raw_remaining, decayed)
+                else:
+                    remaining = raw_remaining
+                last_eta, last_eta_ts = remaining, now
                 eta_note = f" (~{int(remaining)}s left at {avg:.0f}s/segment)"
             log(f"Segment {i+1}/{n}: Voice Agent narrating + Visual Agent generating image, in parallel…{eta_note}")
 
