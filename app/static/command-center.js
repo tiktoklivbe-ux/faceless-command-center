@@ -1193,6 +1193,11 @@ function jarvisSetupGlobalPushToTalk() {
     const ae = document.activeElement;
     // Don't hijack Enter while it means something else -- typing into any
     // text field, textarea, or contenteditable area anywhere in the app.
+    // The Jarvis message box handles its own Enter (send if it has text,
+    // push-to-talk if empty -- see renderJarvisPanel), so it's covered here
+    // too rather than being special-cased at this level: doing the emptiness
+    // check here is unreliable, because the box's own handler clears the
+    // text BEFORE this runs, making a just-sent message look "empty".
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
     // Belt and suspenders against the real bug this was chasing: a focused
     // <button> (e.g. the sidebar icon you just clicked to open Jarvis)
@@ -2320,11 +2325,24 @@ async function renderJarvisPanel(body) {
     if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
   });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      jarvisUnlockAudio();
-      if (input.value.trim()) { jarvisSend(input.value.trim()); input.value = ""; }
+    if (e.key !== "Enter" || e.repeat) return;
+    e.preventDefault();
+    jarvisUnlockAudio();
+    if (input.value.trim()) {
+      jarvisSend(input.value.trim());
+      input.value = "";
+      return;
     }
+    // Empty box + Enter = PUSH-TO-TALK. This is the fix for "holding Enter
+    // does nothing": the cursor stays in this box after you type to Jarvis,
+    // and the global push-to-talk handler deliberately ignores Enter while a
+    // text field is focused -- so voice silently never started again until
+    // you happened to click elsewhere. Confirmed live before the fix: focus
+    // in this box => Enter was a complete no-op (no listening, no caption,
+    // no words on screen, no error); focus anywhere else => voice worked.
+    // Handled here rather than in the global handler because only this
+    // handler knows the box was empty BEFORE a send cleared it.
+    jarvisStartListening();
   });
 
   // Push-to-talk itself is wired globally now (see jarvisSetupGlobalPushToTalk,
