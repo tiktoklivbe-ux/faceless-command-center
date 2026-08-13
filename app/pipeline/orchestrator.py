@@ -343,7 +343,7 @@ def _run_job_inner(job_id: str):
                 db, channel, segments, job_dir, lambda msg: _log(db, job, msg), set_agent, kind=job.kind
             )
             job.video_path = str(final_path)
-            job.captions_path = str(srt_path)
+            job.captions_path = str(srt_path) if srt_path else ""  # None when captions are off
             job.status = models.JobStatus.READY
             db.commit()
             _log(db, job, "All agents done. Video assembled and ready for review.")

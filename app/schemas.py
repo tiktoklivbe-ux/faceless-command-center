@@ -72,6 +72,7 @@ class SettingsIn(BaseModel):
     tiktok_client_key: Optional[str] = None
     tiktok_client_secret: Optional[str] = None
     fast_render: Optional[str] = None
+    burn_captions: Optional[str] = None
     # Jarvis / WhatsApp -- these were missing entirely, which meant every
     # field under Settings > Jarvis silently failed to save: Pydantic drops
     # unknown fields from a request body by default instead of erroring, so

@@ -182,14 +182,25 @@ def assemble_video(db, channel, segments: list[dict], job_dir: Path, log, set_ag
     ffmpeg_utils.concat_clips(clip_paths, joined_path)
     concat_elapsed = time.time() - t
 
-    t = time.time()
-    log("Assembly Agent: building caption timings…")
-    srt_path = job_dir / "captions.srt"
-    captions_stage.build_srt(timed_segments, srt_path)
-
-    log("Assembly Agent: burning captions into the video (final encode — the slowest single step)…")
     final_path = job_dir / "final.mp4"
-    ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path, width=render_w, height=render_h)
+    srt_path = None
+    # Captions are OFF by default now: burning subtitles in re-encodes the
+    # ENTIRE video, which is by far the slowest single step -- and the stitch
+    # above is a fast stream-copy. With captions off we just use the stitched
+    # video as the final one (no re-encode at all), which is the single biggest
+    # render-time saving available. Flip burn_captions="true" in settings to
+    # bring them back.
+    burn_captions = get_setting(db, "burn_captions", "false") == "true"
+    t = time.time()
+    if burn_captions:
+        log("Assembly Agent: building caption timings…")
+        srt_path = job_dir / "captions.srt"
+        captions_stage.build_srt(timed_segments, srt_path)
+        log("Assembly Agent: burning captions into the video (final encode — the slowest single step)…")
+        ffmpeg_utils.burn_subtitles(joined_path, srt_path, final_path, width=render_w, height=render_h)
+    else:
+        log("Assembly Agent: captions off — skipping the final re-encode (much faster).")
+        shutil.move(str(joined_path), str(final_path))
     finalize_elapsed = time.time() - t
 
     # A breakdown of where the time actually went. This is what makes "it's

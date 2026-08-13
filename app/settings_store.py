@@ -49,6 +49,7 @@ KNOWN_KEYS = {
     "tiktok_client_key": True,
     "tiktok_client_secret": True,
     "fast_render": False,
+    "burn_captions": False,   # "true" burns subtitles in (slow re-encode); off by default
     "lock_enabled": False,          # "true" turns the password gate on
     "lock_password_hash": True,     # PBKDF2 hash -- never the password itself
     "lock_salt": True,
