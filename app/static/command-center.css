@@ -1541,3 +1541,19 @@ button.msc-link-card { cursor: pointer; }
 .jf-dc-stat span { color: var(--muted); }
 .jf-dc-stat b { color: var(--ink); text-shadow: 0 0 10px rgba(232,236,239,0.25); }
 @media (prefers-reduced-motion: reduce) { .jf-datacard { animation-duration: 0.01s; } }
+
+/* ---- data card resize grip + body bits ---- */
+.jf-datacard { transition: box-shadow 0.15s; }
+.jf-resize {
+  position: absolute; right: 2px; bottom: 2px; width: 15px; height: 15px; cursor: nwse-resize;
+  border-right: 2px solid rgba(232,236,239,0.45); border-bottom: 2px solid rgba(232,236,239,0.45);
+  border-bottom-right-radius: 9px; opacity: 0.7;
+}
+.jf-datacard:hover .jf-resize { opacity: 1; }
+.jf-dc-muted { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.jf-dc-line { font-size: 12px; color: var(--ink); padding: 1px 0; }
+.jf-dc-line.small { font-size: 11px; display: flex; justify-content: space-between; gap: 6px; }
+.jf-dc-big { font-family: var(--font-mono); font-size: 20px; color: var(--ink); text-shadow: 0 0 12px rgba(232,236,239,0.3); }
+.jf-dc-mono { font-family: var(--font-mono); font-size: 11px; color: var(--ink); }
+.jf-dc-meter { height: 4px; margin: 6px 0 3px; border-radius: 3px; background: rgba(232,236,239,0.12); overflow: hidden; }
+.jf-dc-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, rgba(232,236,239,0.5), var(--ink)); box-shadow: 0 0 8px rgba(232,236,239,0.5); transition: width 1s cubic-bezier(0.16,1,0.3,1); }

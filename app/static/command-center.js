@@ -1626,6 +1626,39 @@ async function jarvisLoadActivity() {
 // its own localStorage key (set by jarvisMakeDraggable) for its position.
 let jarvisDragPanel = null;
 let jarvisDragOffset = { x: 0, y: 0 };
+// Resize state -- pinching a panel's corner grip scales it (fingers), same
+// primitives reused for a mouse drag on the grip.
+let jarvisResizePanel = null;
+let jarvisResizeAnchor = { x: 0, y: 0 };
+let jarvisResizeStartDist = 1;
+let jarvisResizeStartScale = 1;
+
+function jarvisResizeStart(panelEl, clientX, clientY) {
+  jarvisResizePanel = panelEl;
+  const r = panelEl.getBoundingClientRect();
+  jarvisResizeAnchor = { x: r.left, y: r.top };  // scale from the top-left corner
+  jarvisResizeStartDist = Math.hypot(clientX - r.left, clientY - r.top) || 1;
+  jarvisResizeStartScale = Number(panelEl.dataset.scale || 1);
+  panelEl.classList.add("jarvis-dragging");
+}
+function jarvisResizeMove(clientX, clientY) {
+  if (!jarvisResizePanel) return;
+  const d = Math.hypot(clientX - jarvisResizeAnchor.x, clientY - jarvisResizeAnchor.y);
+  let scale = jarvisResizeStartScale * (d / jarvisResizeStartDist);
+  scale = Math.max(0.6, Math.min(2.6, scale));
+  jarvisResizePanel.dataset.scale = scale;
+  jarvisResizePanel.style.transformOrigin = "top left";
+  jarvisResizePanel.style.transform = `scale(${scale})`;
+}
+function jarvisResizeEnd() {
+  if (!jarvisResizePanel) return;
+  jarvisResizePanel.classList.remove("jarvis-dragging");
+  try {
+    const key = (jarvisResizePanel.dataset.dragKey || "jarvisPanelPos") + ":scale";
+    localStorage.setItem(key, jarvisResizePanel.dataset.scale || "1");
+  } catch (e) { /* fine */ }
+  jarvisResizePanel = null;
+}
 
 function jarvisDragStart(panelEl, clientX, clientY) {
   jarvisDragPanel = panelEl;
@@ -1737,22 +1770,37 @@ function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
   const screenX = (1 - midX) * window.innerWidth;
   const screenY = midY * window.innerHeight;
 
-  if (pinching && !state.pinching) {
-    const handles = rootEl.querySelectorAll(".jarvis-widget-handle");
-    for (const handle of handles) {
-      const hr = handle.getBoundingClientRect();
-      const over = screenX >= hr.left && screenX <= hr.right && screenY >= hr.top && screenY <= hr.bottom;
-      if (over) {
-        jarvisDragStart(handle.closest(".jarvis-widget"), screenX, screenY);
-        state.pinching = true;
+  const inside = (r) => screenX >= r.left && screenX <= r.right && screenY >= r.top && screenY <= r.bottom;
+
+  if (pinching && !state.pinching && !state.resizing) {
+    // Resize grips first: pinch a panel's corner grip and move your hand to
+    // scale it. Grips are given a generous hit area below.
+    for (const grip of rootEl.querySelectorAll(".jf-resize")) {
+      const gr = grip.getBoundingClientRect();
+      const pad = 14;  // easier to hit with a hand than a mouse
+      if (screenX >= gr.left - pad && screenX <= gr.right + pad && screenY >= gr.top - pad && screenY <= gr.bottom + pad) {
+        jarvisResizeStart(grip.closest(".jarvis-widget"), screenX, screenY);
+        state.resizing = true;
         break;
       }
     }
+    if (!state.resizing) {
+      for (const handle of rootEl.querySelectorAll(".jarvis-widget-handle")) {
+        if (inside(handle.getBoundingClientRect())) {
+          jarvisDragStart(handle.closest(".jarvis-widget"), screenX, screenY);
+          state.pinching = true;
+          break;
+        }
+      }
+    }
+  } else if (pinching && state.resizing) {
+    jarvisResizeMove(screenX, screenY);
   } else if (pinching && state.pinching) {
     jarvisDragMove(screenX, screenY);
-  } else if (!pinching && state.pinching) {
-    jarvisDragEnd();
-    state.pinching = false;
+  } else if (!pinching && (state.pinching || state.resizing)) {
+    if (state.pinching) jarvisDragEnd();
+    if (state.resizing) jarvisResizeEnd();
+    state.pinching = false; state.resizing = false;
   }
   return { screenX, screenY, pinching };
 }
@@ -1898,22 +1946,24 @@ function jarvisExecuteGestureAction(action) {
   }
 }
 
-/** Floating, pinch-draggable data panels that pop up around the camera view --
- *  live metrics, job status, the schedule, and what's rendering right now.
- *  Each is a .jarvis-widget with a handle, so the SAME pinch-drag that moves
- *  the other widgets moves these too (grab a title bar with a pinch), and
- *  jarvisMakeDraggable adds mouse dragging + position memory. */
+/** Floating data panels around the camera view: many of them, laid out in
+ *  columns going down. Each is a .jarvis-widget with a title handle (so the
+ *  same hand-PINCH that moves the other widgets grabs these too) plus a corner
+ *  RESIZE grip (pinch the corner and move your hand to scale it). Mouse users
+ *  get drag + a scroll-to-scale on hover. Positions and scale are remembered. */
 async function jarvisShowDataCards() {
   const root = document.querySelector(".jarvis-hud") || document.getElementById("bigpanel-inner");
   if (!root) { toast("Open Jarvis to summon the panels."); return; }
-  jarvisHideDataCards();  // re-summon repositions cleanly
+  jarvisHideDataCards();
 
-  let stats = [], jobs = [], settings = {};
+  let stats = [], jobs = [], settings = {}, channels = [], notes = { notes: [] };
   try {
-    [stats, jobs, settings] = await Promise.all([
+    [stats, jobs, settings, channels, notes] = await Promise.all([
       API("/api/jarvis/stats").then((d) => d.stats || []).catch(() => []),
-      API("/api/jobs?limit=30").catch(() => []),
+      API("/api/jobs?limit=40").catch(() => []),
       API("/api/settings").catch(() => ({})),
+      API("/api/channels").catch(() => []),
+      API("/api/jarvis/notes?limit=5").catch(() => ({ notes: [] })),
     ]);
   } catch (e) { /* show whatever we got */ }
 
@@ -1922,43 +1972,81 @@ async function jarvisShowDataCards() {
   const ready = jobs.filter((j) => j.status === "ready_for_review").length;
   const published = jobs.filter((j) => j.status === "published").length;
   const failed = jobs.filter((j) => j.status === "failed").length;
+  const queued = jobs.filter((j) => j.status === "queued").length;
   const active = jobs.find((j) => !["published", "ready_for_review", "failed", "queued"].includes(String(j.status)));
   const conn = stats.find((s) => s.connected && !s.error) || null;
   const row = (label, val) => `<div class="jf-dc-stat"><span>${label}</span><b>${val}</b></div>`;
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const madeToday = jobs.filter((j) => { const t = j.created_at ? new Date((j.created_at.endsWith("Z") ? j.created_at : j.created_at + "Z")) : null; return t && t >= todayStart && j.status !== "failed"; }).length;
+  const recent = jobs.slice(0, 4);
+  const lastFail = jobs.find((j) => j.status === "failed");
+  const trained = (typeof jarvisLoadTrainedGestures === "function") ? jarvisLoadTrainedGestures() : [];
 
-  const cards = [];
-  if (conn) {
-    cards.push({ key: "jfCardMetrics", title: "LIVE METRICS", top: "88px", right: "22px",
-      body: row("Subscribers", (conn.subscribers || 0).toLocaleString())
-          + row("Views", (conn.views || 0).toLocaleString())
-          + row("Videos", (conn.video_count || 0).toLocaleString()) });
-  }
-  cards.push({ key: "jfCardStatus", title: "STATUS", top: conn ? "290px" : "88px", right: "22px",
-    body: row("Rendering", running) + row("Ready", ready) + row("Published", published) + row("Failed", failed) });
+  // --- next scheduled post time (from the fixed slot schedule) ---
+  let nextPost = "—";
   if (sval("schedule_mode") === "slots") {
-    cards.push({ key: "jfCardSchedule", title: "SCHEDULE", top: "88px", left: "22px",
-      body: `<div style="font-family:var(--font-mono);font-size:11px;color:var(--ink)">${escapeHtml(sval("post_schedule_times"))}</div>
-             <div style="font-size:11px;color:var(--muted);margin-top:5px">${escapeHtml(sval("post_timezone").replace("America/", ""))} · 4 shorts + 1 long/day</div>` });
+    const times = sval("post_schedule_times").split(",").map((s) => s.trim()).filter(Boolean);
+    const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+    const upcoming = times.map((t) => { const [h, m] = t.split(":").map(Number); return { t, min: h * 60 + m }; })
+      .filter((x) => x.min > nowMin).sort((a, b) => a.min - b.min)[0];
+    const to12 = (hm) => { const [h, m] = hm.split(":").map(Number); const ap = h < 12 ? "am" : "pm"; const hh = ((h + 11) % 12) + 1; return m ? `${hh}:${String(m).padStart(2, "0")}${ap}` : `${hh}${ap}`; };
+    nextPost = upcoming ? to12(upcoming.t) + " (today)" : (times.length ? to12(times.slice().sort()[0]) + " (tomorrow)" : "—");
   }
-  cards.push({ key: "jfCardNow", title: "NOW RENDERING", top: "290px", left: "22px",
-    body: active
-      ? `<div style="font-size:12px;color:var(--ink)">${escapeHtml((active.title || active.topic || "Untitled").slice(0, 60))}</div>
-         <div style="font-size:11px;color:var(--muted);margin-top:4px">${escapeHtml(String(active.status))}</div>`
-      : `<div style="font-size:12px;color:var(--muted)">Nothing rendering right now.</div>` });
 
-  cards.forEach((c) => {
+  const cards = [
+    { key: "jfCardMetrics", title: "LIVE METRICS",
+      body: conn ? row("Subscribers", (conn.subscribers || 0).toLocaleString()) + row("Views", (conn.views || 0).toLocaleString()) + row("Videos", (conn.video_count || 0).toLocaleString())
+                 : `<div class="jf-dc-muted">No channel connected.</div>` },
+    { key: "jfCardStatus", title: "PIPELINE",
+      body: row("Rendering", running) + row("Queued", queued) + row("Ready", ready) + row("Published", published) + row("Failed", failed) },
+    { key: "jfCardNow", title: "NOW RENDERING",
+      body: active ? `<div class="jf-dc-line">${escapeHtml((active.title || active.topic || "Untitled").slice(0, 54))}</div><div class="jf-dc-muted">${escapeHtml(String(active.status))}</div>`
+                   : `<div class="jf-dc-muted">Nothing rendering.</div>` },
+    { key: "jfCardToday", title: "TODAY",
+      body: row("Videos made", madeToday) + row("Published", jobs.filter((j) => j.status === "published" && (() => { const t = j.created_at ? new Date(j.created_at + "Z") : null; return t && t >= todayStart; })()).length) },
+    { key: "jfCardNext", title: "NEXT POST",
+      body: `<div class="jf-dc-big">${escapeHtml(nextPost)}</div><div class="jf-dc-muted">4 shorts + 1 long / day</div>` },
+    { key: "jfCardSchedule", title: "SCHEDULE",
+      body: sval("schedule_mode") === "slots"
+        ? `<div class="jf-dc-mono">${escapeHtml(sval("post_schedule_times"))}</div><div class="jf-dc-muted">${escapeHtml(sval("post_timezone").replace("America/", ""))}</div>`
+        : `<div class="jf-dc-muted">No fixed schedule.</div>` },
+    { key: "jfCardRecent", title: "RECENT VIDEOS",
+      body: recent.length ? recent.map((j) => `<div class="jf-dc-line small">${escapeHtml((j.title || j.topic || "Untitled").slice(0, 34))} <span class="jf-dc-muted">${escapeHtml(String(j.status).replace("ready_for_review", "ready"))}</span></div>`).join("") : `<div class="jf-dc-muted">No videos yet.</div>` },
+    { key: "jfCardChannels", title: "CHANNELS",
+      body: channels.length ? channels.map((c) => `<div class="jf-dc-line small">${escapeHtml(c.name)} <span class="jf-dc-muted">${c.youtube_connected ? "live" : "off"}</span></div>`).join("") : `<div class="jf-dc-muted">No channels.</div>` },
+    { key: "jfCardGoal", title: "NEXT MILESTONE",
+      body: conn ? (() => { const ms = _jfNextMilestone(conn.subscribers || 0); const pct = Math.min(100, Math.round(((conn.subscribers || 0) / ms) * 100)); return `<div class="jf-dc-big">${(conn.subscribers || 0)} / ${ms}</div><div class="jf-dc-meter"><div class="jf-dc-fill" style="width:${pct}%"></div></div><div class="jf-dc-muted">subscribers</div>`; })() : `<div class="jf-dc-muted">—</div>` },
+    { key: "jfCardFail", title: "LAST FAILURE",
+      body: lastFail ? `<div class="jf-dc-line small">${escapeHtml((lastFail.title || lastFail.topic || "Untitled").slice(0, 34))}</div><div class="jf-dc-muted">${escapeHtml((lastFail.error_message || "no message").slice(0, 60))}</div>` : `<div class="jf-dc-muted">None recently. ✓</div>` },
+    { key: "jfCardGestures", title: "GESTURES",
+      body: `<div class="jf-dc-big">${trained.length}</div><div class="jf-dc-muted">trained ${trained.length === 1 ? "gesture" : "gestures"}</div>` },
+    { key: "jfCardNotes", title: "NOTES",
+      body: (notes.notes && notes.notes.length) ? notes.notes.slice(0, 3).map((n) => `<div class="jf-dc-line small">${escapeHtml(String(n).slice(0, 40))}</div>`).join("") : `<div class="jf-dc-muted">No notes yet.</div>` },
+  ];
+
+  // Lay them out in COLUMNS going down: left column first, wrap to the next
+  // column on the right once it's full, so 12 panels frame the camera view.
+  const perCol = 6, colW = 210, rowH = 96, startTop = 78;
+  cards.forEach((c, i) => {
+    const col = Math.floor(i / perCol), rowN = i % perCol;
     const el = document.createElement("div");
     el.className = "jarvis-widget jf-datacard"; el.dataset.card = "1";
-    el.style.top = c.top;
-    if (c.left) el.style.left = c.left;
-    if (c.right) el.style.right = c.right;
+    el.style.left = (18 + col * colW) + "px";
+    el.style.top = (startTop + rowN * rowH) + "px";
     el.innerHTML = `<div class="jarvis-widget-handle">⠿ ${c.title}<button class="jf-datacard-close" title="Close">✕</button></div>
-      <div class="jf-datacard-body">${c.body}</div>`;
+      <div class="jf-datacard-body">${c.body}</div><div class="jf-resize" title="Pinch/drag this corner to resize"></div>`;
     root.appendChild(el);
+    // restore saved scale
+    try { const s = localStorage.getItem(c.key + ":scale"); if (s) { el.dataset.scale = s; el.style.transformOrigin = "top left"; el.style.transform = `scale(${s})`; } } catch (e) { /* fine */ }
     jarvisMakeDraggable(el, el.querySelector(".jarvis-widget-handle"), c.key);
+    // mouse resize on the corner grip
+    const grip = el.querySelector(".jf-resize");
+    grip.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); jarvisResizeStart(el, e.clientX, e.clientY); const mv = (ev) => jarvisResizeMove(ev.clientX, ev.clientY); const up = () => { jarvisResizeEnd(); window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); }; window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up); });
+    // scroll to scale
+    el.addEventListener("wheel", (e) => { e.preventDefault(); let s = Number(el.dataset.scale || 1) * (e.deltaY < 0 ? 1.08 : 0.93); s = Math.max(0.6, Math.min(2.6, s)); el.dataset.scale = s; el.style.transformOrigin = "top left"; el.style.transform = `scale(${s})`; try { localStorage.setItem(c.key + ":scale", String(s)); } catch (er) {} }, { passive: false });
     el.querySelector(".jf-datacard-close").addEventListener("click", () => el.remove());
   });
-  if (cards.length) toast("Data panels up — pinch a title bar (or drag with the mouse) to move them.");
+  toast(`${cards.length} data panels up — pinch a title bar to move, pinch a corner to resize.`);
 }
 
 function jarvisHideDataCards() {
@@ -2358,7 +2446,7 @@ function jarvisSetupGestureControl(panelEl) {
   // clicked, and `genId` invalidates any start() still in flight so a
   // stop() mid-load actually wins instead of being silently overwritten
   // by the load finishing afterward.
-  const state = { pinching: false, running: false, active: false, genId: 0 };
+  const state = { pinching: false, resizing: false, running: false, active: false, genId: 0 };
   let videoEl = null;
 
   const toggle = document.getElementById("jarvis-gesture-toggle");
@@ -2376,6 +2464,7 @@ function jarvisSetupGestureControl(panelEl) {
     if (toggle) { toggle.textContent = "📷 Gesture Control: Off"; toggle.classList.remove("copied"); }
     jarvisCameraDockAction("restore");
     jarvisHideQuickAccess();
+    jarvisHideDataCards();  // clear the floating panels when the camera turns off
     const gw = document.getElementById("jarvis-gestures-widget");
     if (gw) gw.style.display = "none";
   };
@@ -2424,6 +2513,7 @@ function jarvisSetupGestureControl(panelEl) {
     const gw = document.getElementById("jarvis-gestures-widget");
     if (gw) gw.style.display = "block";
     jarvisRenderTrainedGesturesList();
+    jarvisShowDataCards();  // the floating data panels appear on the camera page
 
     let model;
     try {
