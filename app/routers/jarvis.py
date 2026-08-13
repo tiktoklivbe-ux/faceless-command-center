@@ -307,10 +307,19 @@ def speak(payload: SpeakIn, db: Session = Depends(get_db)):
     resp = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": api_key, "content-type": "application/json", "accept": "audio/mpeg"},
+        # optimize_streaming_latency=4 is the max latency optimization -- gets
+        # the audio back fastest, which is what "he takes a while to speak
+        # even though the reply's ready" was about.
+        params={"optimize_streaming_latency": 4},
         json={
             "text": text[:2000],  # a runaway reply shouldn't turn into a multi-minute TTS call
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.45, "similarity_boost": 0.8},
+            # eleven_flash_v2_5 is ElevenLabs' lowest-latency model (~75ms
+            # generation) -- far faster to start than multilingual_v2 the
+            # revert had restored. speed 1.15 delivers the line noticeably
+            # quicker without sounding rushed (1.2 is the ceiling before it
+            # starts clipping).
+            "model_id": "eleven_flash_v2_5",
+            "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "speed": 1.15},
         },
         timeout=60,
     )
