@@ -974,6 +974,19 @@ button.msc-link-card { cursor: pointer; }
   flex: 1; background: transparent; border: none; color: var(--ink);
   font-family: var(--font-body); font-size: 13px; outline: none;
 }
+/* The mic device picker sits just ABOVE the search box. Without its own
+   absolute positioning it fell out of the searchbox's absolute context and
+   floated to the very top of the panel, stranded full-width away from the
+   input + mic button -- which is why it "wasn't there" where you'd look. */
+.jarvis-mic-row {
+  position: absolute; bottom: calc(16% + 46px); left: 50%; transform: translateX(-50%);
+  width: 320px; box-sizing: border-box;
+  background: rgba(8,14,26,0.78); border: 1px solid rgba(120,170,255,0.28);
+  border-radius: 6px; padding: 5px 10px; backdrop-filter: blur(6px);
+  z-index: 3;
+}
+.jarvis-mic-row select { color: var(--ink); }
+.jarvis-mic-row select option { background: #0b1220; color: var(--ink); }
 .jarvis-caption-float {
   position: absolute; bottom: calc(16% - 32px); left: 50%; transform: translateX(-50%);
   width: 320px; text-align: center; font-family: var(--font-mono); font-size: 10px; color: var(--muted);
