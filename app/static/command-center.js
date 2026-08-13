@@ -825,7 +825,23 @@ function _jarvisSpeakBrowser(text, onDone) {
 // repeated replies in one session don't each hit the API and wait on a
 // failure before falling back -- one bad response is enough to know.
 let jarvisElevenLabsUnavailable = false;
-let jarvisSpeakAudio = null;
+
+// ONE persistent <audio> element, reused for every spoken reply. This is the
+// crux of the "Jarvis won't talk" fix: browsers gate autoplay PER ELEMENT
+// (mobile Safari strictly, others increasingly), and the old code created a
+// fresh `new Audio(url)` for every reply. That fresh element was never the
+// one the user's gesture unlocked, so its play() got blocked by the autoplay
+// policy every single time -- the reply text appeared but he stayed silent.
+// jarvisUnlockAudio primes THIS exact element inside a real click/keypress,
+// and jarvisSpeak reuses it, so its later programmatic play() is allowed.
+let jarvisSpeakEl = null;
+function _jarvisSpeakEl() {
+  if (!jarvisSpeakEl) {
+    jarvisSpeakEl = new Audio();
+    jarvisSpeakEl.preload = "auto";
+  }
+  return jarvisSpeakEl;
+}
 
 /** Jarvis's spoken replies -- ElevenLabs (the same account already used for
  *  video narration) when a key is configured, the browser's built-in voice
@@ -834,7 +850,9 @@ let jarvisSpeakAudio = null;
  *  instead of guessing a fixed duration. */
 async function jarvisSpeak(text, onDone) {
   if (!text) { if (onDone) onDone(); return; }
-  if (jarvisSpeakAudio) { jarvisSpeakAudio.pause(); jarvisSpeakAudio = null; }
+  // Stop anything currently talking (either path) before the new reply.
+  try { if (jarvisSpeakEl) jarvisSpeakEl.pause(); } catch (e) { /* fine */ }
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
   if (jarvisElevenLabsUnavailable) { _jarvisSpeakBrowser(text, onDone); return; }
   try {
     const r = await fetch("/api/jarvis/speak", {
@@ -853,21 +871,23 @@ async function jarvisSpeak(text, onDone) {
     }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    jarvisSpeakAudio = audio;
-    const cleanup = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
-    audio.addEventListener("ended", cleanup);
-    audio.addEventListener("error", cleanup);
-    audio.play().catch((playErr) => {
-      // This is a real ElevenLabs response failing to autoplay -- almost
-      // always the browser's autoplay policy (the reply arrives seconds
-      // after the click that triggered it, past the window browsers count
-      // as "still a user gesture"), NOT a broken key or voice. That's a
-      // one-off, not proof ElevenLabs itself is unavailable, so this
-      // message falls back to the browser voice but the NEXT one still
-      // tries ElevenLabs again -- jarvisUnlockAudio() (wired to the first
-      // click in the panel) is what actually fixes it going forward.
-      console.warn("Jarvis: ElevenLabs audio blocked from autoplaying:", playErr);
+    const el = _jarvisSpeakEl();
+    // onended/onerror are ASSIGNED (not addEventListener) so a reused element
+    // can't accumulate a new pair of listeners on every reply.
+    el.onended = () => { URL.revokeObjectURL(url); if (onDone) onDone(); };
+    el.onerror = () => { URL.revokeObjectURL(url); _jarvisSpeakBrowser(text, onDone); };
+    el.src = url;
+    try { el.currentTime = 0; } catch (e) { /* not seekable yet -- fine */ }
+    const p = el.play();
+    if (p && p.catch) p.catch((playErr) => {
+      // Reaching here despite the persistent-element unlock means audio was
+      // never primed by a real gesture this session (e.g. a reply triggered
+      // by a proactive/voice path before any click). Fall back to the browser
+      // voice for THIS reply; the next gesture re-primes ElevenLabs. Not
+      // proof ElevenLabs is unavailable, so don't latch it off.
+      console.warn("Jarvis: audio blocked from autoplaying:", playErr);
+      el.onended = null; el.onerror = null;
+      URL.revokeObjectURL(url);
       _jarvisSpeakBrowser(text, onDone);
     });
   } catch (e) {
@@ -885,13 +905,23 @@ async function jarvisSpeak(text, onDone) {
  *  session, so the later async play() actually works. */
 let jarvisAudioUnlocked = false;
 function jarvisUnlockAudio() {
-  if (jarvisAudioUnlocked) return;
-  jarvisAudioUnlocked = true;
-  try {
-    const a = new Audio("data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA");
-    a.volume = 0;
-    a.play().then(() => a.pause()).catch(() => {});
-  } catch (e) { /* nothing to unlock without Audio support anyway */ }
+  if (!jarvisAudioUnlocked) {
+    jarvisAudioUnlocked = true;
+    try {
+      // Prime the SAME element jarvisSpeak will reuse (see _jarvisSpeakEl),
+      // not a throwaway one. Playing a silent clip on it inside this genuine
+      // gesture is what marks THIS element as user-activated, so its later
+      // programmatic play() for real replies is allowed by the autoplay
+      // policy. Muting keeps the priming inaudible.
+      const el = _jarvisSpeakEl();
+      el.muted = true;
+      el.src = "data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA";
+      const p = el.play();
+      const reset = () => { try { el.pause(); el.currentTime = 0; el.muted = false; el.removeAttribute("src"); el.load(); } catch (e) { el.muted = false; } };
+      if (p && p.then) p.then(reset).catch(() => { el.muted = false; });
+      else reset();
+    } catch (e) { /* nothing to unlock without Audio support anyway */ }
+  }
   // Desktop-notification permission needs a genuine user gesture too, or
   // most browsers silently ignore the request -- this fires at exactly the
   // same moments (send, push-to-talk) so one real interaction covers both.
