@@ -12,32 +12,88 @@ log = logging.getLogger("uvicorn.error")
 _DB_PATH = DATABASE_URL.replace("sqlite:///", "") if DATABASE_URL.startswith("sqlite:///") else ""
 
 
+def _db_is_healthy(path: str) -> bool:
+    """A real check, not a shallow one. ``SELECT 1`` doesn't read any table
+    pages, so it happily passes on a database whose pages are corrupt -- which
+    is exactly how a "database disk image is malformed" slipped past the first
+    version of this heal and only blew up later inside create_all(). quick_check
+    actually scans the pages, so it catches page-level corruption up front."""
+    try:
+        con = _sqlite3.connect(path, timeout=5)
+        try:
+            con.execute("PRAGMA journal_mode=WAL")  # surfaces bad -wal/-shm sidecars
+            row = con.execute("PRAGMA quick_check").fetchone()
+            return bool(row) and row[0] == "ok"
+        finally:
+            con.close()
+    except _sqlite3.Error:
+        return False
+
+
+def _recover_corrupt_db(corrupt_path: str, dest_path: str) -> int:
+    """Salvage what's readable from a malformed SQLite file into a fresh one.
+
+    Dumps the old database as SQL and replays it into a brand-new file, skipping
+    any statement that hits a corrupt page. iterdump walks sqlite_master then
+    each table in turn, so even when one table's pages are damaged, the tables
+    read before it -- crucially the small, early ``channels`` and ``settings``
+    rows that hold the YouTube OAuth token, API keys and the posting schedule --
+    are still recovered. Returns the number of statements successfully applied
+    (0 means nothing could be salvaged)."""
+    applied = 0
+    src = _sqlite3.connect(corrupt_path, timeout=5)
+    dst = _sqlite3.connect(dest_path, timeout=5)
+    try:
+        cur = dst.cursor()
+        dump = src.iterdump()
+        while True:
+            try:
+                stmt = next(dump)
+            except StopIteration:
+                break
+            except _sqlite3.Error as e:
+                # The dump generator hit a corrupt page -- stop, but keep
+                # everything recovered up to this point.
+                log.warning("Recovery stopped early at a corrupt page (%s); keeping %d statements.", e, applied)
+                break
+            try:
+                cur.execute(stmt)
+                applied += 1
+            except _sqlite3.Error:
+                continue  # skip one bad row/statement, keep going
+        dst.commit()
+    finally:
+        src.close()
+        dst.close()
+    return applied
+
+
 def heal_sqlite_if_needed():
-    """Recover from corrupt SQLite WAL sidecar files before opening the engine.
+    """Get the app booting again after SQLite corruption, preserving data.
 
     A hard stop mid-write -- a cancelled render, an OOM kill, a redeploy landing
-    mid-transaction -- can leave the ``-wal``/``-shm`` sidecar files corrupt.
-    After that, EVERY connection fails at ``PRAGMA journal_mode=WAL`` with
-    "disk I/O error", and because that pragma runs on connect, the whole app
-    crash-loops on boot (the 502 seen 2026-08-13). The main ``app.db`` is fine;
-    only the sidecars are bad, and deleting them is safe -- SQLite regenerates
-    them and the only loss is any transaction still sitting uncheckpointed in
-    the WAL, an acceptable trade for the app actually starting.
+    mid-transaction -- corrupted the database on 2026-08-13 and crash-looped the
+    app (permanent 502). Two distinct failure modes, handled in order:
 
-    Does nothing if the database opens cleanly, so it's a no-op on a healthy
-    boot. Only touches the sidecars when a real query genuinely fails.
+    1. Corrupt ``-wal``/``-shm`` sidecar files: every connect fails at
+       ``PRAGMA journal_mode=WAL`` with "disk I/O error". The main file is fine;
+       deleting the sidecars fixes it (SQLite regenerates them).
+    2. The main ``app.db`` itself is malformed ("database disk image is
+       malformed"): actual page corruption. Here we quarantine the bad file and
+       rebuild a fresh one from whatever is still readable, so the channels
+       (incl. the YouTube OAuth token) and settings survive rather than being
+       lost to a from-scratch database.
+
+    A no-op on a healthy boot.
     """
     if not _DB_PATH:
         return
-    try:
-        con = _sqlite3.connect(_DB_PATH, timeout=5)
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("SELECT 1")
-        con.close()
-        return  # healthy -- leave everything alone
-    except _sqlite3.Error as e:
-        log.warning("SQLite failed to open (%s); clearing WAL sidecar files and retrying.", e)
+    if not _Path(_DB_PATH).exists():
+        return  # brand-new install; create_all will make it fresh
+    if _db_is_healthy(_DB_PATH):
+        return
 
+    # --- stage 1: bad sidecars ------------------------------------------------
     for suffix in ("-wal", "-shm"):
         p = _Path(_DB_PATH + suffix)
         try:
@@ -46,19 +102,53 @@ def heal_sqlite_if_needed():
                 log.warning("Removed possibly-corrupt SQLite sidecar %s", p.name)
         except OSError as e:
             log.warning("Couldn't remove %s: %s", p.name, e)
-
-    # Best-effort: reopen in the plain rollback-journal mode (no sidecars needed)
-    # to confirm it's healthy now. If this still fails, the problem is the disk
-    # itself (full/unmounted), not the WAL, and no code change can fix that.
-    try:
-        con = _sqlite3.connect(_DB_PATH, timeout=5)
-        con.execute("PRAGMA journal_mode=DELETE")
-        con.execute("SELECT 1")
-        con.close()
+    if _db_is_healthy(_DB_PATH):
         log.warning("SQLite recovered after clearing sidecar files.")
-    except _sqlite3.Error as e:
-        log.error("SQLite STILL failing after sidecar cleanup (%s) -- likely a full or "
-                  "unavailable disk, not WAL corruption.", e)
+        return
+
+    # --- stage 2: the main file is malformed ---------------------------------
+    import time as _time
+    quarantine = f"{_DB_PATH}.corrupt-{int(_time.time())}"
+    recovered = f"{_DB_PATH}.recovered"
+    try:
+        _Path(_DB_PATH).rename(quarantine)
+    except OSError as e:
+        log.error("DB is malformed but couldn't be moved aside (%s) -- the disk may be "
+                  "read-only or full; cannot auto-recover.", e)
+        return
+    for stale in (recovered, _DB_PATH + "-wal", _DB_PATH + "-shm"):
+        try:
+            _Path(stale).unlink()
+        except OSError:
+            pass
+
+    log.error("SQLite main database was MALFORMED. Quarantined it as %s and attempting to "
+              "salvage data into a fresh file.", _Path(quarantine).name)
+    try:
+        applied = _recover_corrupt_db(quarantine, recovered)
+    except Exception as e:  # recovery must never itself crash the boot
+        log.error("Recovery attempt failed outright (%s).", e)
+        applied = 0
+
+    if applied > 0 and _db_is_healthy(recovered):
+        try:
+            _Path(recovered).rename(_DB_PATH)
+            log.warning("Recovered %d statements into a fresh, healthy database. "
+                        "The corrupt original is kept at %s for inspection.", applied, _Path(quarantine).name)
+            return
+        except OSError as e:
+            log.error("Couldn't swap the recovered database into place (%s).", e)
+
+    # Salvage failed -- leave the quarantined corrupt file in place for a manual
+    # `sqlite3 .recover` later, and let create_all() build a fresh empty DB so
+    # the app at least boots. (Fresh DB = channels/settings/OAuth must be
+    # re-entered; the quarantined file still holds the originals.)
+    try:
+        _Path(recovered).unlink()
+    except OSError:
+        pass
+    log.error("Could not salvage the corrupt database. Booting with a FRESH empty database; "
+              "the original is preserved at %s for manual recovery.", _Path(quarantine).name)
 
 # busy_timeout makes concurrent writers wait-and-retry instead of failing
 # immediately; WAL mode lets Chronos's background loop, the web requests, and
