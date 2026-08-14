@@ -46,6 +46,11 @@ CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 STUCK_JOB_TIMEOUT_MINUTES = 30
 MAX_AUTO_RETRIES = 2
 MAX_JOB_AGE_HOURS = 2  # absolute ceiling; past this a job is failed regardless of retries
+# Hard cap on how long a SINGLE render may actually run. Unlike the stalled
+# check (which only fires once a job stops updating), this cancels a job that's
+# still making steady progress but has simply taken too long -- a lone video is
+# never worth this much compute/API usage.
+MAX_JOB_RUNTIME_MINUTES = 100
 _ACTIVE_STATUSES = [
     models.JobStatus.QUEUED,
     models.JobStatus.SCRIPT,
@@ -55,6 +60,11 @@ _ACTIVE_STATUSES = [
     models.JobStatus.ASSEMBLING,
     models.JobStatus.PUBLISHING,
 ]
+# Statuses where a job is actively burning compute (everything active except
+# QUEUED, which is just waiting for the render slot and costs nothing). The
+# runtime cap only applies to these, so a job patiently queued behind a long
+# render isn't punished for someone else's runtime.
+_RENDERING_STATUSES = [s for s in _ACTIVE_STATUSES if s != models.JobStatus.QUEUED]
 
 
 def clear_stuck_jobs(db: Session) -> int:
@@ -70,6 +80,50 @@ def clear_stuck_jobs(db: Session) -> int:
     MAX_AUTO_RETRIES times. Only after that does it get marked FAILED, so a
     genuinely broken job can't loop forever.
     """
+    # --- absolute runtime cap ------------------------------------------------
+    # Cancel any job that's been actively rendering longer than the cap, EVEN IF
+    # it's still making steady progress -- the stalled check below only catches
+    # jobs that stop updating, so a long video grinding forward segment by
+    # segment would otherwise sail past every limit and burn 100+ minutes of
+    # usage. Uses the same PID kill as a manual cancel: just flipping the DB row
+    # to FAILED wouldn't stop the live worker, which would carry on rendering
+    # and overwrite the status right back.
+    from .pipeline import ffmpeg_utils
+    runtime_cutoff = datetime.utcnow() - timedelta(minutes=MAX_JOB_RUNTIME_MINUTES)
+    overrun = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.status.in_(_RENDERING_STATUSES))
+        .filter(models.VideoJob.created_at < runtime_cutoff)
+        .all()
+    )
+    for job in overrun:
+        log.warning("Chronos watchdog: job %s passed the %d-min runtime cap; cancelling to save usage.",
+                    job.id, MAX_JOB_RUNTIME_MINUTES)
+        try:
+            ffmpeg_utils.kill_worker_by_pid(job.worker_pid)
+            ffmpeg_utils.kill_orphaned_ffmpeg(max_age_seconds=0)
+        except Exception:
+            log.exception("Chronos watchdog: couldn't kill worker for overrun job %s", job.id)
+        try:
+            render_gate.release(job.id)
+        except Exception:
+            pass
+        try:
+            agents = json.loads(job.agent_status or "{}")
+            job.agent_status = json.dumps({k: ("idle" if v == "running" else v) for k, v in agents.items()})
+        except (json.JSONDecodeError, TypeError):
+            pass
+        job.status = models.JobStatus.FAILED
+        job.error_message = (
+            f"Cancelled automatically after {MAX_JOB_RUNTIME_MINUTES} minutes of rendering -- a single "
+            "video taking this long isn't worth the compute, so the render was stopped and the slot freed."
+        )
+        job.stage_log = (job.stage_log or "") + (
+            f"\n[watchdog] Runtime cap hit ({MAX_JOB_RUNTIME_MINUTES} min). Killed the render and freed the slot.\n"
+        )
+    if overrun:
+        db.commit()
+
     cutoff = datetime.utcnow() - timedelta(minutes=STUCK_JOB_TIMEOUT_MINUTES)
     stuck_jobs = (
         db.query(models.VideoJob)
