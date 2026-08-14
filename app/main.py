@@ -37,6 +37,18 @@ app.include_router(jarvis.router)
 
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
+
+@app.get("/api/version")
+def version():
+    """Which commit is actually running, plus the live render-gate holder --
+    so a deploy can be verified for real instead of inferred from behaviour."""
+    import os
+    from . import render_gate
+    return {
+        "commit": os.environ.get("RENDER_GIT_COMMIT", "unknown"),
+        "render_lock_holder": render_gate.active_jobs(),
+    }
+
 # encoding="utf-8" is required, not optional: Windows defaults to cp1252,
 # which cannot decode the emoji in index.html and crashes the app on startup.
 # Linux defaults to UTF-8, so this only ever surfaced when running locally.
