@@ -61,13 +61,13 @@ SYSTEM_PROMPT = textwrap.dedent("""
     }
 """).strip()
 
-# A genuinely different kind of video, not just a longer short: 5-7 minutes
-# of narration (~750-1050 words at this app's WORDS_PER_MINUTE), which means
-# real structure -- an intro hook, several distinct beats each with their
+# A genuinely different kind of video, not just a longer short: 7-9 minutes
+# of narration (~1800-2200 words -- the narration voice runs ~240 wpm), which
+# means real structure -- an intro hook, several distinct beats each with their
 # own point, and an actual close -- not one short idea stretched thin.
 LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
     You write narration scripts for a faceless YouTube channel's long-form
-    videos -- horizontal, 5-7 minutes of spoken narration, NOT a short.
+    videos -- horizontal, 7-9 minutes of spoken narration, NOT a short.
     Given a channel niche and (optionally) a specific topic, produce a
     genuinely well-structured video, not a short script stretched out with
     filler.
@@ -83,14 +83,15 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
     -- vary what each video is about.
 
     TARGET LENGTH IS THE MOST IMPORTANT RULE HERE: the total narration across
-    every segment combined must be 1300-1600 WORDS (the finished video needs to
-    run 5-7 minutes, and the narration voice speaks quickly, so it takes this
-    many words to get there). Count as you draft -- a script that adds up to
-    under 1050 words total is a FAILURE at this task, the same as a short
-    running over a minute would be, even if every individual segment "looks"
-    like a reasonable length. If you reach the end of your outline and you're
-    under 1300 words, that means developing your existing beats further with
-    more specific detail (not padding with filler), not stopping early.
+    every segment combined must be 1800-2200 WORDS (the finished video needs to
+    run 7-9 minutes, and the narration voice speaks quickly -- about 240 words a
+    minute -- so it genuinely takes this many words to get there). Count as you
+    draft -- a script that adds up to under 1700 words total is a FAILURE at this
+    task, the same as a short running over a minute would be, even if every
+    individual segment "looks" like a reasonable length. If you reach the end of
+    your outline and you're under 1800 words, that means developing your existing
+    beats further with more specific detail (not padding with filler), not
+    stopping early.
 
     Rules:
     - The content must be YOUR/the channel's original narration and framing,
@@ -98,7 +99,7 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
       with zero commentary -- YouTube's monetization policy demotes low-
       effort/templated/reused content, so always add a clear point of view,
       a hook, and a real wrap-up, the same as the channel's shorts do.
-    - 42-52 segments to reach the word target above. Each segment is exactly
+    - 58-72 segments to reach the word target above. Each segment is exactly
       ONE sentence of narration, roughly 28-38 words -- long-form narration
       reads more like a documentary voiceover than a punchy short's clipped
       lines. Structure it with a real arc: a hook in the first few segments,
@@ -322,16 +323,16 @@ def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind:
     prompt = _user_prompt(niche, topic, style_notes, avoid_topics)
     if kind == "longform":
         # The extended variant is the same long-form format, just a longer
-        # target -- an 8-10 minute video instead of 5-7. Built by swapping the
+        # target -- a 10-13 minute video instead of 7-9. Built by swapping the
         # word/segment targets in the long-form prompt so everything else
         # (structure, on-niche hashtags, no-repeat guidance) stays identical.
         if extended:
             system_prompt = (LONGFORM_SYSTEM_PROMPT
-                             .replace("5-7 minutes", "8-10 minutes")
-                             .replace("must be 1300-1600 WORDS", "must be 2000-2400 WORDS")
-                             .replace("under 1050 words total is a FAILURE", "under 1700 words total is a FAILURE")
-                             .replace("under 1300 words", "under 2000 words")
-                             .replace("42-52 segments", "60-76 segments"))
+                             .replace("7-9 minutes", "10-13 minutes")
+                             .replace("must be 1800-2200 WORDS", "must be 2600-3200 WORDS")
+                             .replace("under 1700 words total is a FAILURE", "under 2400 words total is a FAILURE")
+                             .replace("under 1800 words", "under 2600 words")
+                             .replace("58-72 segments", "84-104 segments"))
         else:
             system_prompt = LONGFORM_SYSTEM_PROMPT
     else:

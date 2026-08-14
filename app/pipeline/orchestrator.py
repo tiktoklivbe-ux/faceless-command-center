@@ -446,7 +446,25 @@ def _publish(db: Session, job: models.VideoJob, channel: models.Channel, video_p
             failures.append(f"TikTok: {e}")
             _log(db, job, f"Publish Agent: TikTok publish failed: {e}")
 
-    if attempted and len(failures) == len(attempted):
+    if not attempted:
+        # Nothing was even attempted -- this channel has no connected platform
+        # (e.g. YouTube was never linked). The old code fell through to the
+        # "else" below and marked the job PUBLISHED, so it looked posted in the
+        # app while nothing ever reached an actual account. That's exactly the
+        # "I publish it but it doesn't go to my real posts" symptom. Make it
+        # honest instead: leave the finished video in review with a clear
+        # reason, so it's obvious the channel needs connecting, not that a
+        # post silently vanished.
+        job.status = models.JobStatus.READY
+        job.error_message = (
+            f"Not posted: the channel \"{channel.name}\" isn't connected to YouTube "
+            f"(or any platform), so there's nowhere to upload. Connect it under "
+            f"Settings → Channels → Connect YouTube, then publish again. The finished "
+            f"video is saved and ready."
+        )
+        set_agent("publish", "error")
+        _log(db, job, job.error_message)
+    elif len(failures) == len(attempted):
         # Attempted at least one platform and every single one failed --
         # this is a real failure, not a success, and needs to look like one.
         job.status = models.JobStatus.FAILED
