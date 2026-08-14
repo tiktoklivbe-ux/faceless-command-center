@@ -48,6 +48,16 @@ def _pid_alive(pid: int) -> bool:
 def _clear_if_stale() -> None:
     info = _read_lock()
     if not info:
+        # A lock FILE that exists but won't parse (empty or garbage -- e.g. a
+        # worker killed by O_EXCL-create-then-die, leaving a 0-byte file) is the
+        # worst case: _read_lock returns None so is_busy()/active_jobs() report
+        # the gate as FREE, yet try_acquire's O_EXCL create still fails on the
+        # existing file -- so every render is blocked forever while the gate
+        # looks empty (exactly the "queued with lock_holder []" stall). Delete
+        # it so the slot actually frees.
+        if _LOCK_FILE.exists():
+            log.warning("Removing an unparseable/empty render lock file.")
+            force_clear()
         return
     job_id, pid, ts = info
     age = time.time() - ts
