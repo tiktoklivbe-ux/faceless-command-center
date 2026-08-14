@@ -1744,9 +1744,14 @@ let jarvisGestureRAF = null;
 // toggle button uses, instead of a separate parallel path.
 let jarvisCameraOpen = null;
 let jarvisCameraClose = null;
-const PINCH_THRESHOLD = 0.055;     // normalized distance; tuned loose since a
-                                    // false "no pinch" is just an ignored frame,
-                                    // not a real cost, so err toward detecting it
+// Pinch is measured RELATIVE to the hand's own size, not as a fixed
+// normalized distance. A fixed threshold only works at one camera distance:
+// hold your hand close and even an open hand reads as "pinched"; hold it far
+// and a real pinch never gets under the threshold -- which is exactly why
+// finger-dragging "didn't work". Dividing the thumb-tip/index-tip gap by the
+// palm span (wrist -> middle-finger knuckle) makes it distance-invariant: a
+// pinch is a pinch whether your hand fills the frame or is far away.
+const PINCH_RATIO = 0.55;          // thumb-index gap as a fraction of palm span; below this = pinching
 
 /** Pure logic, deliberately separate from the camera/model: given one
  *  frame's hand landmarks (MediaPipe's 21-point hand format) and the root
@@ -1783,8 +1788,13 @@ function jarvisProcessHandLandmarks(rootEl, landmarks, state) {
     return null;
   }
   const thumb = landmarks[4], index = landmarks[8];
+  const wrist = landmarks[0], midKnuckle = landmarks[9];
   const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-  const pinching = dist < PINCH_THRESHOLD;
+  // Palm span = wrist to middle-finger knuckle. Stable across hand poses and
+  // independent of how close the hand is to the camera, so it's a good "how
+  // big is this hand in frame" yardstick to measure the pinch gap against.
+  const palm = Math.hypot(wrist.x - midKnuckle.x, wrist.y - midKnuckle.y) || 0.0001;
+  const pinching = (dist / palm) < PINCH_RATIO;
 
   // Mirrored horizontally -- a front-facing camera feels backwards
   // otherwise (move your hand right, the widget goes left).
@@ -2078,22 +2088,24 @@ async function jarvisShowDataCards() {
       body: (notes.notes && notes.notes.length) ? notes.notes.slice(0, 3).map((n) => `<div class="jf-dc-line small">${escapeHtml(String(n).slice(0, 40))}</div>`).join("") : `<div class="jf-dc-muted">No notes yet.</div>` },
   ];
 
-  // Spread them in a grid ACROSS the whole camera view (fixed/viewport coords
-  // from the real window size, so they land ON the camera feed, not off in the
-  // letterbox bars). Row spacing clears the tallest panel and panels are
-  // height-capped in CSS, so they never overlap. Rightmost columns sit right
-  // over the feed; the user drags/scales/closes them as they like.
+  // Lay them out in ONE horizontal row ACROSS the camera view (fixed/viewport
+  // coords from the real window size, so they land ON the feed). The left
+  // edges are spread evenly from the left margin to the right margin, so every
+  // panel stays fully on-screen and grabbable -- on a wide screen they sit
+  // apart with clear gaps; on a narrow one they overlap a little, and you just
+  // pinch-drag them apart. Vertically centred so the row reads as a single
+  // band over the middle of the feed. Each is finger-scalable to enlarge
+  // whichever one you're reading.
   const W = window.innerWidth, H = window.innerHeight;
-  const pw = 196, mL = 16, mR = 16, mT = 60, mB = 16;
-  const cols = 4, rows = 3;
-  const stepX = (W - mL - mR - pw) / (cols - 1);
-  const stepY = (H - mT - mB - 150) / (rows - 1);  // 150 = capped panel height
+  const pw = 190, mL = 16, mR = 16;
+  const n = cards.length;
+  const stepX = n > 1 ? (W - mL - mR - pw) / (n - 1) : 0;
+  const rowTop = Math.max(60, Math.round(H * 0.5 - 75));  // ~centred (panels ~150 tall)
   cards.forEach((c, i) => {
-    const col = i % cols, rowN = Math.floor(i / cols);
     const el = document.createElement("div");
     el.className = "jarvis-widget jf-datacard"; el.dataset.card = "1";
-    el.style.left = Math.round(mL + col * stepX) + "px";
-    el.style.top = Math.round(mT + rowN * stepY) + "px";
+    el.style.left = Math.round(mL + i * stepX) + "px";
+    el.style.top = rowTop + "px";
     el.innerHTML = `<div class="jarvis-widget-handle">⠿ ${c.title}<button class="jf-datacard-close" title="Close">✕</button></div>
       <div class="jf-datacard-body">${c.body}</div><div class="jf-resize" title="Pinch/drag this corner to resize"></div>`;
     root.appendChild(el);
