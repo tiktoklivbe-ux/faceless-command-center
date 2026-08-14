@@ -496,6 +496,14 @@ def _tick():
         if cleared:
             log.warning("Chronos watchdog: cleared %d stuck job(s) this tick", cleared)
 
+        # Keep the jobs folder bounded every tick, so leftover render files can
+        # never silently fill the disk (a full disk is what corrupted the DB on
+        # 2026-08-13). Cheap: a no-op until there are more than the cap.
+        try:
+            orchestrator.prune_old_job_dirs()
+        except Exception:
+            log.exception("Chronos: job-dir prune failed")
+
         try:
             check_and_send_alerts(db)
         except Exception:

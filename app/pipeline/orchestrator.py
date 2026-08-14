@@ -30,6 +30,36 @@ from . import script_stage, assemble_stage, ffmpeg_utils, publish_youtube, publi
 
 AGENT_NAMES = ["script", "voice", "visuals", "assembly", "publish"]
 
+# Keep at most this many job directories on disk. Their videos, once published,
+# live on YouTube; anything older is a stale render leftover. A finished long
+# video is only tens of MB, but at 5+ a day with nothing ever deleted the disk
+# fills within weeks -- which is what corrupted the database on 2026-08-13.
+MAX_JOB_DIRS_KEPT = 50
+
+
+def _cleanup_job_dir(job_dir):
+    """Remove a finished job's working directory (video already on YouTube)."""
+    import shutil
+    try:
+        shutil.rmtree(job_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def prune_old_job_dirs(keep: int = MAX_JOB_DIRS_KEPT):
+    """Hard cap on the jobs folder so it can never fill the disk again: keep the
+    newest `keep` job directories by modification time and delete the rest."""
+    import shutil
+    try:
+        dirs = [d for d in JOBS_DIR.iterdir() if d.is_dir()]
+    except OSError:
+        return
+    if len(dirs) <= keep:
+        return
+    dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    for d in dirs[keep:]:
+        shutil.rmtree(d, ignore_errors=True)
+
 
 def _log(db: Session, job: models.VideoJob, message: str):
     # Each line gets an ISO-8601 UTC timestamp prefix in brackets so Mission
@@ -353,6 +383,20 @@ def _run_job_inner(job_id: str):
                 _publish(db, job, channel, final_path, set_agent)
             else:
                 set_agent("publish", "idle")
+
+            # Once a job is safely on YouTube its local files are dead weight,
+            # and letting them pile up is exactly what filled the disk and
+            # corrupted the database (2026-08-13). Delete a PUBLISHED job's
+            # working dir -- the video lives on YouTube now. Jobs left in review
+            # keep their files so they can still be downloaded.
+            db.refresh(job)
+            if job.status == models.JobStatus.PUBLISHED:
+                _cleanup_job_dir(job_dir)
+                job.video_path = ""
+                db.commit()
+            # Hard cap regardless of per-job outcome, so failed/review leftovers
+            # can never silently fill the disk again.
+            prune_old_job_dirs()
 
         except Exception as e:
             # str(e) alone is frequently empty or useless -- plenty of
