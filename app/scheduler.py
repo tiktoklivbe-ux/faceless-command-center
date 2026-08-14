@@ -589,6 +589,16 @@ async def automation_loop():
             cleared = clear_stuck_jobs(db)
             if cleared:
                 log.warning("Chronos watchdog: cleared %d stuck job(s) on startup", cleared)
+            # Drop any orphaned render lock left by a crash (e.g. a blank-holder
+            # lock, or one naming a job that no longer exists). Without this the
+            # render slot stays wedged shut and the scheduler skips every tick
+            # thinking a render is forever in progress -- exactly what stalled
+            # posting after the 2026-08-13 corruption/restart.
+            active_ids = [
+                r[0] for r in db.query(models.VideoJob.id)
+                .filter(models.VideoJob.status.in_(_RENDERING_STATUSES)).all()
+            ]
+            render_gate.reconcile(active_ids)
         finally:
             db.close()
     except Exception:

@@ -51,12 +51,35 @@ def _clear_if_stale() -> None:
         return
     job_id, pid, ts = info
     age = time.time() - ts
-    if age > _STALE_AFTER_SECONDS or not _pid_alive(pid):
-        log.warning("Clearing stale render lock for job %s (pid %s, age %.0fs)", job_id, pid, age)
-        try:
-            _LOCK_FILE.unlink(missing_ok=True)
-        except OSError:
-            pass
+    # A blank holder is always an orphan (a crash left a "|pid|ts" lock with no
+    # job id) -- it can never be released by name, so it would otherwise block
+    # every render forever. Treat it as stale unconditionally.
+    if not job_id or age > _STALE_AFTER_SECONDS or not _pid_alive(pid):
+        log.warning("Clearing stale render lock for job %r (pid %s, age %.0fs)", job_id, pid, age)
+        force_clear()
+
+
+def force_clear() -> None:
+    """Remove the lock unconditionally -- recovery path for an orphaned lock the
+    staleness heuristics don't catch."""
+    try:
+        _LOCK_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def reconcile(active_job_ids) -> None:
+    """Drop the lock unless a genuinely-active job still holds it. Called on
+    boot: a lock whose holder is blank, or names a job that no longer exists or
+    has finished, is an orphan from a crash and must not wedge the render slot
+    shut for every future job."""
+    info = _read_lock()
+    if not info:
+        return
+    job_id = info[0]
+    if not job_id or job_id not in set(active_job_ids):
+        log.warning("Clearing orphaned render lock (holder=%r is not an active job).", job_id)
+        force_clear()
 
 
 def active_jobs() -> list[str]:
