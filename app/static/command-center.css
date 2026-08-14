@@ -1102,6 +1102,23 @@ button.msc-link-card { cursor: pointer; }
 }
 .jarvis-gesture-list { margin-top: 10px; max-height: 160px; overflow-y: auto; }
 
+/* -------- teach-a-task widget: top-right, always available -------- */
+.jarvis-hud .jarvis-widget.jarvis-tasks {
+  top: 6%; right: 2.5%; width: 230px; z-index: 17;
+  box-shadow: 0 16px 46px rgba(0,0,0,0.5), 0 0 30px rgba(232,236,239,0.1), 0 0 0 1px rgba(232,236,239,0.05) inset;
+}
+.jarvis-task-reccount {
+  margin-top: 8px; text-align: center; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.5px; color: #ff6b6b; animation: jarvisRecPulse 1.1s ease-in-out infinite;
+}
+@keyframes jarvisRecPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.jarvis-task-run {
+  background: rgba(120,220,160,0.14); border: 1px solid var(--green, #7ee0a0);
+  color: var(--green, #7ee0a0); border-radius: 5px; padding: 3px 8px; font-size: 11px;
+  cursor: pointer; flex-shrink: 0;
+}
+.jarvis-task-run:hover { background: rgba(120,220,160,0.28); }
+
 /* -------- fullscreen camera mode -------- */
 /* The feed fills the whole HUD -- but stays UNDER the cockpit frame
    (z-index below .jarvis-frame's implicit stacking) so the corner

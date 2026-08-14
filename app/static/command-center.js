@@ -304,6 +304,10 @@ function stopAllPanelPolls() {
 const PANEL_DIR = { missioncontrol: "top", jobs: "bottom", channels: "left", settings: "right" };
 
 async function openBigPanel(which) {
+  // If a "teach a task" recording is in progress, capture the navigation as a
+  // step -- whether it came from a nav button, the side menu, or a gesture,
+  // it all funnels through here, so this is the one place that sees them all.
+  jarvisRecordStep({ type: "nav", which });
   // If the village is on screen, let its camera pull back and dim first --
   // otherwise a panel opening while the world instantly vanishes underneath
   // it feels like a hard cut instead of a single continuous camera move.
@@ -346,6 +350,7 @@ function setActiveSideItem(panelName) {
   if (id) { const el = document.getElementById(id); if (el) el.classList.add("active"); }
 }
 window.closeBigPanel = () => {
+  jarvisRecordStep({ type: "nav", which: "orbit" });  // "go home" is a task step too
   stopAllPanelPolls();
   $("#bigpanel").classList.remove("open");
   setActiveSideItem(null);
@@ -1019,8 +1024,16 @@ function jarvisSetBusy(v) {
 
 async function jarvisSend(message) {
   if (!message || !message.trim()) return;
+  // "run <task name>" / "do <task>" spoken or typed replays a taught task
+  // locally instead of going to the LLM -- so a demonstrated task is runnable
+  // by voice, not just the ▶ button. Skipped while replaying so a task step's
+  // own text can't recursively re-trigger a task.
+  if (!jarvisTaskReplaying && jarvisMaybeRunTaskByName(message)) return;
   if (jarvisBusy) { toast("Jarvis is still answering -- one at a time."); return; }
   jarvisSetBusy(true);
+  // Capture the command as a step while teaching a task (each thing you ask
+  // Jarvis during a demonstration becomes part of the replayable sequence).
+  jarvisRecordStep({ type: "say", text: message });
   jarvisAppendMsg("user", message);
   const caption = document.getElementById("jarvis-caption");
   if (caption) caption.textContent = "…";
@@ -1974,6 +1987,9 @@ const JARVIS_GESTURE_ACTIONS = [
 
 function jarvisExecuteGestureAction(action) {
   if (!action) return;
+  // Record non-nav actions as task steps (nav is captured in openBigPanel/
+  // closeBigPanel instead, so a nav gesture isn't recorded twice).
+  if (!action.startsWith("nav:")) jarvisRecordStep({ type: "action", action });
   if (action.startsWith("nav:")) {
     // Navigating leaves the Jarvis HUD, which is where the camera lives.
     // Stop the camera + gesture loop FIRST and explicitly, so it can't keep
@@ -2008,6 +2024,149 @@ function jarvisExecuteGestureAction(action) {
     case "data:hide": jarvisHideDataCards(); break;
     default: break;
   }
+}
+
+// ---------------------------------------------------------------- taught tasks
+// "Teach Jarvis a task by demonstration": you hit Record, then DO the task --
+// talk to Jarvis (each thing you ask), open panels, fire any gesture/quick
+// action -- give it a name, and Jarvis can replay that exact sequence later on
+// command. It records the ACTUAL actions (each one funnels through jarvisSend,
+// openBigPanel/closeBigPanel or jarvisExecuteGestureAction), not pixels off a
+// screen video, so replay is exact and reliable instead of a guess.
+const JARVIS_TASKS_KEY = "jarvisTaughtTasks";
+let jarvisTaskRecording = false;
+let jarvisTaskReplaying = false;
+let jarvisTaskSteps = [];
+
+function jarvisLoadTasks() {
+  try { return JSON.parse(localStorage.getItem(JARVIS_TASKS_KEY) || "[]"); } catch (e) { return []; }
+}
+function jarvisSaveTasks(tasks) {
+  try { localStorage.setItem(JARVIS_TASKS_KEY, JSON.stringify(tasks)); } catch (e) { /* fine */ }
+}
+
+/** Append one step to the in-progress recording. No-op unless actively
+ *  recording, and never while REPLAYING (or a replay would record itself into
+ *  an ever-growing loop). Hoisted, so the choke-point functions defined
+ *  earlier in the file can call it. */
+function jarvisRecordStep(step) {
+  if (!jarvisTaskRecording || jarvisTaskReplaying) return;
+  // Drop an identical nav/action fired twice in a row (some paths both
+  // navigate and fire an action) so the recorded task doesn't get noisy --
+  // but never de-dupe "say" steps, since asking the same thing twice can be
+  // intentional.
+  const last = jarvisTaskSteps[jarvisTaskSteps.length - 1];
+  if (step.type !== "say" && last && last.type === step.type &&
+      last.action === step.action && last.which === step.which) return;
+  jarvisTaskSteps.push(step);
+  const badge = document.getElementById("jarvis-task-reccount");
+  if (badge) badge.textContent = `● Recording — ${jarvisTaskSteps.length} step${jarvisTaskSteps.length === 1 ? "" : "s"}`;
+}
+
+function jarvisStartTaskRecording() {
+  if (jarvisTaskReplaying) { toast("Can't record while a task is running."); return; }
+  jarvisTaskRecording = true;
+  jarvisTaskSteps = [];
+  const btn = document.getElementById("jarvis-task-rec-btn");
+  if (btn) { btn.textContent = "■ Stop & save"; btn.classList.add("copied"); }
+  const badge = document.getElementById("jarvis-task-reccount");
+  if (badge) { badge.style.display = "block"; badge.textContent = "● Recording — 0 steps"; }
+  toast("Recording — now DO the task: talk to Jarvis, open panels, use gestures. Hit Stop when done.");
+}
+
+function jarvisStopTaskRecording() {
+  jarvisTaskRecording = false;
+  const btn = document.getElementById("jarvis-task-rec-btn");
+  if (btn) { btn.textContent = "● Record a task"; btn.classList.remove("copied"); }
+  const badge = document.getElementById("jarvis-task-reccount");
+  if (badge) badge.style.display = "none";
+  const steps = jarvisTaskSteps.slice();
+  jarvisTaskSteps = [];
+  if (!steps.length) { toast("Nothing recorded — task was empty."); return; }
+  const name = (window.prompt(`Name this task (${steps.length} step${steps.length === 1 ? "" : "s"} recorded):`, "") || "").trim();
+  if (!name) { toast("Task discarded (no name given)."); return; }
+  const tasks = jarvisLoadTasks();
+  const existing = tasks.findIndex((t) => t.name.toLowerCase() === name.toLowerCase());
+  const rec = { id: "t" + Date.now().toString(36), name, steps, created_at: new Date().toISOString() };
+  if (existing >= 0) tasks[existing] = { ...rec, id: tasks[existing].id }; else tasks.push(rec);
+  jarvisSaveTasks(tasks);
+  jarvisRenderTaskList();
+  toast(`Taught Jarvis "${name}" (${steps.length} steps). Say "run ${name}" or hit ▶.`);
+}
+
+/** Replay a taught task step by step, with small pauses so each action lands
+ *  before the next fires. */
+async function jarvisRunTask(id) {
+  const task = jarvisLoadTasks().find((t) => t.id === id);
+  if (!task) { toast("Task not found."); return; }
+  if (jarvisTaskRecording) { toast("Stop recording before running a task."); return; }
+  if (jarvisTaskReplaying) { toast("A task is already running."); return; }
+  jarvisTaskReplaying = true;
+  toast(`Running "${task.name}"… (${task.steps.length} steps)`);
+  try {
+    for (const step of task.steps) {
+      if (step.type === "nav") {
+        if (step.which === "orbit") closeBigPanel(); else { openBigPanel(step.which); setActiveSideItem(step.which); }
+        await new Promise((r) => setTimeout(r, 900));
+      } else if (step.type === "action") {
+        jarvisExecuteGestureAction(step.action);
+        await new Promise((r) => setTimeout(r, 700));
+      } else if (step.type === "say") {
+        await jarvisSend(step.text);   // awaits Jarvis's full reply
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    toast(`Done: "${task.name}" ✓`);
+  } catch (e) {
+    toast(`Task "${task.name}" stopped: ${e && e.message ? e.message : e}`);
+  } finally {
+    jarvisTaskReplaying = false;
+  }
+}
+
+function jarvisDeleteTask(id) {
+  jarvisSaveTasks(jarvisLoadTasks().filter((t) => t.id !== id));
+  jarvisRenderTaskList();
+}
+
+function jarvisRenderTaskList() {
+  const list = document.getElementById("jarvis-task-list");
+  if (!list) return;
+  const tasks = jarvisLoadTasks();
+  if (!tasks.length) {
+    list.innerHTML = `<div class="hint">No taught tasks yet — hit “Record a task”, then demonstrate it (talk to Jarvis, open panels, use gestures) and name it.</div>`;
+    return;
+  }
+  list.innerHTML = tasks.map((t) => `<div class="qa-row jarvis-gest-item">
+      <b class="jarvis-gest-name">${escapeHtml(t.name)}</b>
+      <span class="qa-status jarvis-gest-action">${t.steps.length} step${t.steps.length === 1 ? "" : "s"}</span>
+      <button class="jarvis-task-run" data-id="${t.id}" title="Run this task">▶</button>
+      <button class="jarvis-gesture-del" data-id="${t.id}" title="Delete this task">🗑</button>
+    </div>`).join("");
+  list.querySelectorAll(".jarvis-task-run").forEach((btn) =>
+    btn.addEventListener("click", () => jarvisRunTask(btn.dataset.id)));
+  list.querySelectorAll(".jarvis-gesture-del").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const t = jarvisLoadTasks().find((x) => x.id === btn.dataset.id);
+      jarvisDeleteTask(btn.dataset.id);
+      toast(`Deleted "${(t && t.name) || "task"}".`);
+    }));
+}
+
+/** Match a typed/spoken message against a taught task's name so "run <name>",
+ *  "do <name>", or just the bare name replays it. Returns true if it fired. */
+function jarvisMaybeRunTaskByName(message) {
+  const stripped = message.trim().toLowerCase()
+    .replace(/^(hey |ok )?jarvis[,\s]+/, "").replace(/[.!?]+$/, "").trim();
+  for (const t of jarvisLoadTasks()) {
+    const n = t.name.toLowerCase();
+    if ([n, "run " + n, "do " + n, "start " + n, "run the " + n,
+         "run " + n + " task", "run task " + n].includes(stripped)) {
+      jarvisRunTask(t.id);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Floating data panels around the camera view: many of them, laid out in
@@ -2906,6 +3065,13 @@ async function renderJarvisPanel(body) {
         <div class="jarvis-gesture-list" id="jarvis-gesture-list"></div>
       </div>
 
+      <div class="jarvis-widget jarvis-tasks" id="jarvis-tasks-widget">
+        <div class="jarvis-widget-handle">⠿ Teach a Task</div>
+        <button class="jarvis-gesture-btn" id="jarvis-task-rec-btn" title="Record yourself doing a task, then Jarvis can repeat it">● Record a task</button>
+        <div class="jarvis-task-reccount" id="jarvis-task-reccount" style="display:none"></div>
+        <div class="jarvis-gesture-list" id="jarvis-task-list"></div>
+      </div>
+
       <div class="jarvis-widget jarvis-quickaccess" id="jarvis-quickaccess" style="display:none">
         <div class="jarvis-widget-handle">⠿ Quick Access</div>
         <div class="jarvis-tabs">
@@ -3069,6 +3235,17 @@ async function renderJarvisPanel(body) {
   document.getElementById("jarvis-gesture-train-btn").addEventListener("click", jarvisStartGestureTraining);
   document.getElementById("jarvis-gesture-save-btn").addEventListener("click", jarvisSaveGestureFromForm);
 
+  // Teach-a-Task widget: record button toggles record/stop, and the saved
+  // task list renders immediately (so tasks taught earlier are there on open).
+  const cleanupDragTasks = jarvisMakeDraggable(
+    document.querySelector(".jarvis-tasks"), document.querySelector(".jarvis-tasks .jarvis-widget-handle"), "jarvisTasksPos"
+  );
+  const taskRecBtn = document.getElementById("jarvis-task-rec-btn");
+  if (taskRecBtn) taskRecBtn.addEventListener("click", () => {
+    jarvisTaskRecording ? jarvisStopTaskRecording() : jarvisStartTaskRecording();
+  });
+  jarvisRenderTaskList();
+
   // Typed input
   const input = document.getElementById("jarvis-text-input");
   document.getElementById("jarvis-send").addEventListener("click", () => {
@@ -3170,6 +3347,7 @@ async function renderJarvisPanel(body) {
     cleanupDragCam();
     cleanupDragQuickAccess();
     cleanupDragGestures();
+    cleanupDragTasks();
     cleanupGestures();
     window.stopAllPanelPolls = _origStop;
     _origStop();
