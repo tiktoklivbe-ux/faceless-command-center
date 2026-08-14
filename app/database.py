@@ -1,6 +1,64 @@
+import logging
+import sqlite3 as _sqlite3
+from pathlib import Path as _Path
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from .config import DATABASE_URL
+
+log = logging.getLogger("uvicorn.error")
+
+# Filesystem path of the SQLite file, for the WAL self-heal below.
+_DB_PATH = DATABASE_URL.replace("sqlite:///", "") if DATABASE_URL.startswith("sqlite:///") else ""
+
+
+def heal_sqlite_if_needed():
+    """Recover from corrupt SQLite WAL sidecar files before opening the engine.
+
+    A hard stop mid-write -- a cancelled render, an OOM kill, a redeploy landing
+    mid-transaction -- can leave the ``-wal``/``-shm`` sidecar files corrupt.
+    After that, EVERY connection fails at ``PRAGMA journal_mode=WAL`` with
+    "disk I/O error", and because that pragma runs on connect, the whole app
+    crash-loops on boot (the 502 seen 2026-08-13). The main ``app.db`` is fine;
+    only the sidecars are bad, and deleting them is safe -- SQLite regenerates
+    them and the only loss is any transaction still sitting uncheckpointed in
+    the WAL, an acceptable trade for the app actually starting.
+
+    Does nothing if the database opens cleanly, so it's a no-op on a healthy
+    boot. Only touches the sidecars when a real query genuinely fails.
+    """
+    if not _DB_PATH:
+        return
+    try:
+        con = _sqlite3.connect(_DB_PATH, timeout=5)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("SELECT 1")
+        con.close()
+        return  # healthy -- leave everything alone
+    except _sqlite3.Error as e:
+        log.warning("SQLite failed to open (%s); clearing WAL sidecar files and retrying.", e)
+
+    for suffix in ("-wal", "-shm"):
+        p = _Path(_DB_PATH + suffix)
+        try:
+            if p.exists():
+                p.unlink()
+                log.warning("Removed possibly-corrupt SQLite sidecar %s", p.name)
+        except OSError as e:
+            log.warning("Couldn't remove %s: %s", p.name, e)
+
+    # Best-effort: reopen in the plain rollback-journal mode (no sidecars needed)
+    # to confirm it's healthy now. If this still fails, the problem is the disk
+    # itself (full/unmounted), not the WAL, and no code change can fix that.
+    try:
+        con = _sqlite3.connect(_DB_PATH, timeout=5)
+        con.execute("PRAGMA journal_mode=DELETE")
+        con.execute("SELECT 1")
+        con.close()
+        log.warning("SQLite recovered after clearing sidecar files.")
+    except _sqlite3.Error as e:
+        log.error("SQLite STILL failing after sidecar cleanup (%s) -- likely a full or "
+                  "unavailable disk, not WAL corruption.", e)
 
 # busy_timeout makes concurrent writers wait-and-retry instead of failing
 # immediately; WAL mode lets Chronos's background loop, the web requests, and
@@ -23,11 +81,26 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-    # Keeps the WAL file from growing unbounded during a long render, which
-    # otherwise makes every later read progressively slower.
-    cursor.execute("PRAGMA wal_autocheckpoint=200")
+    # WAL needs healthy -wal/-shm sidecar files. If they're corrupt, setting WAL
+    # raises "disk I/O error" -- and since this runs on EVERY connect, an
+    # unguarded failure here crash-loops the whole app. heal_sqlite_if_needed()
+    # clears bad sidecars at boot, but guard anyway so a single bad connection
+    # degrades to the plain rollback journal instead of taking the app down.
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    except Exception as e:
+        log.warning("Could not enable WAL on this connection (%s); using rollback journal.", e)
+        try:
+            cursor.execute("PRAGMA journal_mode=DELETE")
+        except Exception:
+            pass
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        # Keeps the WAL file from growing unbounded during a long render, which
+        # otherwise makes every later read progressively slower.
+        cursor.execute("PRAGMA wal_autocheckpoint=200")
+    except Exception:
+        pass
     cursor.close()
 
 
@@ -45,6 +118,9 @@ def get_db():
 
 def init_db():
     from . import models  # noqa: F401 -- ensure models are registered
+    # Clear any corrupt WAL sidecar files BEFORE the engine opens its first
+    # connection, so a bad-sidecar boot self-heals instead of crash-looping.
+    heal_sqlite_if_needed()
     Base.metadata.create_all(bind=engine)
     _migrate_add_missing_columns()
 
