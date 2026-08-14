@@ -553,12 +553,18 @@ def make_video(db, channel_id, topic="", kind="short"):
     if not channel:
         return {"error": "No channel with that ID."}
     kind = kind if kind in ("short", "longform") else "short"
-    job = models.VideoJob(channel_id=channel.id, topic=topic or "", kind=kind, auto_publish=False)
+    # Was hardcoded to auto_publish=False -- a job queued through Jarvis chat
+    # ALWAYS sat in review-only regardless of the channel's own auto-publish
+    # setting or the user's stated preference (auto-publish should be on).
+    # Now it follows the same rule the fixed-slot scheduler already uses.
+    job = models.VideoJob(channel_id=channel.id, topic=topic or "", kind=kind,
+                           auto_publish=bool(channel.auto_publish_scheduled))
     db.add(job)
     db.commit()
     db.refresh(job)
     orchestrator.dispatch_job(job.id)
-    return {"ok": True, "job_id": job.id, "channel": channel.name, "kind": kind}
+    return {"ok": True, "job_id": job.id, "channel": channel.name, "kind": kind,
+            "auto_publish": job.auto_publish}
 
 
 def list_channels(db):
