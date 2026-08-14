@@ -96,6 +96,13 @@ def is_busy() -> bool:
 def try_acquire(job_id: str, timeout: float = 0.0) -> bool:
     """Claim the render slot via an atomic file create. Returns False if
     another render already holds it."""
+    # Never write a lock for a blank/falsy id. Such a lock names no one, so
+    # release() (which only frees a matching holder) can never clear it, and it
+    # wedges the render slot shut for every future job. Refusing it here kills
+    # that failure at the source; a real job always has an id.
+    if not job_id:
+        log.error("try_acquire called with an empty job_id; refusing to write a nameless lock.")
+        return False
     _clear_if_stale()
     _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.time() + max(timeout, 0)
