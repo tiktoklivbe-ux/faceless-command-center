@@ -82,6 +82,7 @@ KNOWN_KEYS = {
     "schedule_shorts_channel_id": False,    # channel that gets the shorts slots
     "schedule_longform_channel_id": False,  # channel that gets the one daily long-form slot
     "min_hours_between_videos": False,       # floor on spacing for the old per-channel mode
+    "schedule_shorts_only": False,          # "true" = every slot is a short; long-form never runs (also disables the old per-channel long-form quota)
 }
 
 

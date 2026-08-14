@@ -403,6 +403,11 @@ def _channel_due_kind(db: Session, channel: models.Channel) -> str | None:
         return None
     if _quota_due(db, channel, "short", channel.auto_per_day):
         return "short"
+    # Shorts-only mode (user request: long-form burns 15-25x a short's
+    # ElevenLabs credits per video) -- never auto-create a long-form job here,
+    # regardless of the channel's own auto_longform_per_day setting.
+    if get_setting(db, "schedule_shorts_only", "") == "true":
+        return None
     if _quota_due(db, channel, "longform", channel.auto_longform_per_day):
         return "longform"
     return None
@@ -449,9 +454,16 @@ def _slot_schedule_due(db: Session):
     shorts_ch = db.get(models.Channel, shorts_id) if shorts_id else None
     longform_ch = db.get(models.Channel, longform_id) if longform_id else None
 
+    # Shorts-only mode (user request 2026-08-14: long-form burns 15-25x a
+    # short's ElevenLabs credits per video). Setting longform_slot_index to -1
+    # means no slot index can ever match it, so every slot below falls through
+    # to the shorts branch -- durable across restarts/deploys since it's a
+    # setting, not a one-off skip.
+    shorts_only = get_setting(db, "schedule_shorts_only", "") == "true"
+
     now_local = datetime.now(tz)
     doy = now_local.timetuple().tm_yday
-    longform_slot_index = doy % n       # which slot is the long-form today (rotates daily)
+    longform_slot_index = -1 if shorts_only else (doy % n)  # which slot is the long-form today (rotates daily)
     extended_today = (doy % 2 == 0)     # every other day the long-form is the extended variant
 
     # If the process was asleep for hours, skip stale slots rather than dumping
