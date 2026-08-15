@@ -131,18 +131,57 @@ def _gemini_image(db, prompt: str, out_path: Path):
     raise RuntimeError("Gemini image generation returned no image data")
 
 
+SAFETY_MARKERS = ("declined to generate", "safety filter", "prompt blocked")
+
+
+def _is_safety_decline(e: Exception) -> bool:
+    msg = str(e).lower()
+    return any(marker in msg for marker in SAFETY_MARKERS)
+
+
 def generate_image(db, prompt: str, style_suffix: str, out_path: Path, kind: str = "short"):
     provider = get_setting(db, "image_provider", "placeholder")
     orientation = "Horizontal 16:9 cinematic frame" if kind == "longform" else "Vertical 9:16 cinematic frame"
     full_prompt = f"{prompt}. {style_suffix}".strip().rstrip(".") + \
                   f". {orientation}, no text or watermarks."
-    try:
+
+    def _call(p: str):
         if provider == "openai" and get_setting(db, "openai_api_key"):
-            return _openai_image(db, full_prompt, out_path, kind)
+            return _openai_image(db, p, out_path, kind)
         if provider == "stability" and get_setting(db, "stability_api_key"):
-            return _stability_image(db, full_prompt, out_path, kind)
+            return _stability_image(db, p, out_path, kind)
         if provider == "gemini" and get_setting(db, "gemini_api_key"):
-            return _gemini_image(db, full_prompt, out_path)
+            return _gemini_image(db, p, out_path)
+        return "no_key"
+
+    try:
+        result = _call(full_prompt)
+        if result != "no_key":
+            return result
     except Exception as e:
+        if _is_safety_decline(e):
+            # A safety-filter rejection is about THIS prompt's wording, not
+            # about the provider/key being broken -- retrying the identical
+            # prompt would just get declined again. Soften it once (strip the
+            # eerie/dark framing, keep the concrete subject) and try again
+            # before giving up on a real image for this segment. Losing one
+            # segment's image to a false-positive safety filter shouldn't
+            # fail the entire video when every other segment rendered fine.
+            softened = (
+                f"A calm, neutral photograph of: {prompt}. Documentary style, "
+                "no violence, no gore, no disturbing or graphic content."
+            )
+            try:
+                result = _call(softened)
+                if result != "no_key":
+                    return result
+            except Exception as e2:
+                if not _is_safety_decline(e2):
+                    raise RuntimeError(f"Image generation via {provider} failed: {e2}") from e2
+            # Softened retry was also declined (or something else went wrong)
+            # -- fall through to the placeholder rather than failing the whole
+            # video over a single segment's image.
+            _placeholder_image(prompt, out_path, kind)
+            return
         raise RuntimeError(f"Image generation via {provider} failed: {e}")
     _placeholder_image(prompt, out_path, kind)
