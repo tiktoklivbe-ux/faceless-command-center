@@ -137,3 +137,32 @@ class JarvisLog(Base):
     allowed = Column(Boolean, default=True)       # False = whitelist blocked it
     result = Column(Text, default="")             # what happened / why it was blocked
     user_message = Column(Text, default="")       # the request that triggered this, for context
+
+
+class ComputerTask(Base):
+    """One command Jarvis wants run on the user's own computer, via the local
+    companion agent (see local_agent.py, run on that machine). The cloud app
+    has no direct access to the user's desktop -- this table is the queue the
+    companion polls, so a command created here (by Jarvis's tool call) can be
+    picked up, executed, and its result reported back, all over plain HTTPS
+    with no inbound port ever opened on the user's machine.
+
+    'awaiting_confirmation' is the safety gate for anything judged risky --
+    it never reaches 'queued' (and so is never seen by the companion) until
+    the user explicitly confirms in chat."""
+    __tablename__ = "computer_tasks"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    command = Column(Text, nullable=False)
+    reason = Column(Text, default="")             # why Jarvis wants to run it, shown to the user
+    risky = Column(Boolean, default=False)
+    status = Column(String, default="awaiting_confirmation")
+    # "awaiting_confirmation" | "queued" | "running" | "done" | "error" | "cancelled"
+    stdout = Column(Text, default="")
+    stderr = Column(Text, default="")
+    exit_code = Column(Integer, nullable=True)
+    allowed = Column(Boolean, default=True)       # False = whitelist blocked it
+    result = Column(Text, default="")             # what happened / why it was blocked
+    user_message = Column(Text, default="")       # the request that triggered this, for context

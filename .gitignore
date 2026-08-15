@@ -5,3 +5,7 @@ __pycache__/
 .env
 venv/
 notes/
+
+# Jarvis's local computer-companion -- runs on the user's own machine, never
+# deployed, and its config carries a live secret; must never be committed.
+local-agent/

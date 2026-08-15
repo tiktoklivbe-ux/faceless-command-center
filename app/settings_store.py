@@ -83,6 +83,12 @@ KNOWN_KEYS = {
     "schedule_longform_channel_id": False,  # channel that gets the one daily long-form slot
     "min_hours_between_videos": False,       # floor on spacing for the old per-channel mode
     "schedule_shorts_only": False,          # "true" = every slot is a short; long-form never runs (also disables the old per-channel long-form quota)
+
+    # Local computer agent -- lets Jarvis run commands on the user's OWN
+    # machine via a small companion process (see local_agent.py), not just
+    # this server. The companion authenticates its poll/result calls with
+    # this shared secret; nothing else can pull tasks off the queue.
+    "local_agent_secret": True,
 }
 
 

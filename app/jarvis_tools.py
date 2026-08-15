@@ -247,6 +247,38 @@ TOOLS = [
             "required": ["path", "content"],
         },
     },
+    {
+        "name": "run_on_my_computer",
+        "description": "Run a command on the USER'S OWN computer (not this server) via their "
+                        "local companion agent -- e.g. opening an app, checking a file, "
+                        "browsing to something, or any general task they ask for on their "
+                        "machine. Requires the companion to be running there right now; if it "
+                        "isn't connected, this tells you so instead of hanging. Anything judged "
+                        "risky (deleting/overwriting files, installing or uninstalling "
+                        "software, changing system settings, anything touching money/"
+                        "credentials, shutting down/restarting the machine, sending messages) "
+                        "is NOT run immediately -- it comes back asking the user to confirm "
+                        "first; relay that question to them verbatim and call "
+                        "confirm_computer_action once they say yes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The exact command line to run (PowerShell on this machine)."},
+                "reason": {"type": "string", "description": "One short sentence on why, shown to the user for anything needing confirmation."},
+            },
+            "required": ["command", "reason"],
+        },
+    },
+    {
+        "name": "confirm_computer_action",
+        "description": "The user just said yes/confirmed to a pending run_on_my_computer "
+                        "action -- actually run it now. Use the task_id from that earlier call.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
@@ -456,6 +488,92 @@ def write_project_file(db, path, content):
     return {"ok": True, "path": str(target.relative_to(config.BASE_DIR.resolve())), "bytes_written": len(content.encode("utf-8"))}
 
 
+# ---------------------------------------------------------------- local computer agent
+# Jarvis running here (the cloud server) has no access to the user's own
+# machine -- run_on_my_computer/confirm_computer_action queue a command into
+# ComputerTask for the local companion process (local_agent.py, run BY the
+# user on their own PC) to pick up over its own outbound poll. Same
+# risky-vs-safe split as the rest of this app's safety rules: destructive,
+# financial, credential, or irreversible-looking actions stop and ask first;
+# everything else just runs.
+_RISKY_PATTERNS = [
+    r"\brm\s+-rf\b", r"\bremove-item\b.*-recurse", r"\bdel\s+/[sf]\b", r"\brd\s+/s\b",
+    r"\bformat\b", r"\bdiskpart\b", r"\breg\s+delete\b", r"\bregedit\b",
+    r"\bshutdown\b", r"\brestart-computer\b", r"\bstop-computer\b",
+    r"\buninstall\b", r"\bmsiexec\b.*\/x", r"choco\s+uninstall", r"winget\s+uninstall",
+    r"\bnew-localuser\b", r"\bnet\s+user\b", r"\bpassword\b", r"\bcredential\b",
+    r"\bpurchase\b", r"\bcheckout\b", r"\bpay\b.*\$", r"send-mailmessage",
+    r"git\s+push\s+.*--force", r"git\s+reset\s+--hard", r"drop\s+(table|database)",
+]
+
+
+def _is_risky_command(command: str) -> bool:
+    low = (command or "").lower()
+    return any(re.search(p, low) for p in _RISKY_PATTERNS)
+
+
+def run_on_my_computer(db, command, reason=""):
+    command = (command or "").strip()
+    if not command:
+        return {"error": "No command given."}
+    from .routers import local_agent
+    if not local_agent.agent_connected(db):
+        return {"error": "The local companion isn't connected right now -- it needs to be "
+                          "running on the user's computer for this to work. Tell them to "
+                          "start it."}
+
+    risky = _is_risky_command(command)
+    task = models.ComputerTask(
+        command=command, reason=(reason or "").strip(),
+        risky=risky, status="awaiting_confirmation" if risky else "queued",
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    if risky:
+        return {
+            "ok": True, "needs_confirmation": True, "task_id": task.id,
+            "command": command, "reason": task.reason,
+            "message": f"This needs your OK first: `{command}` -- {task.reason or 'no reason given'}. "
+                       f"Say yes to run it.",
+        }
+    return _await_computer_task(db, task)
+
+
+def confirm_computer_action(db, task_id):
+    task = db.get(models.ComputerTask, task_id)
+    if not task:
+        return {"error": "Unknown task -- it may have already run or expired."}
+    if task.status != "awaiting_confirmation":
+        return {"error": f"That task is already '{task.status}', nothing to confirm."}
+    from .routers import local_agent
+    if not local_agent.agent_connected(db):
+        return {"error": "The local companion isn't connected right now."}
+    task.status = "queued"
+    db.commit()
+    return _await_computer_task(db, task)
+
+
+def _await_computer_task(db, task, timeout_seconds: float = 18.0):
+    """Poll the DB for the companion to pick up and finish this task. Bounded
+    so a single Jarvis chat turn can't hang forever -- most commands finish
+    in well under this since the companion polls every couple seconds."""
+    import time
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        db.expire(task)
+        db.refresh(task)
+        if task.status in ("done", "error"):
+            return {
+                "ok": task.status == "done", "task_id": task.id, "exit_code": task.exit_code,
+                "stdout": task.stdout, "stderr": task.stderr,
+            }
+        time.sleep(1)
+    return {"ok": False, "task_id": task.id, "still_running": True,
+            "message": "Still running on their machine -- ask again in a moment to check on it."}
+
+
 # ---------------------------------------------------------------- notes
 # "A plain notes folder Jarvis manages itself" -- not an OS app, just simple
 # text files under the project's own notes/ folder, using the same
@@ -645,6 +763,8 @@ DISPATCH = {
     "list_project_files": list_project_files,
     "read_project_file": read_project_file,
     "write_project_file": write_project_file,
+    "run_on_my_computer": run_on_my_computer,
+    "confirm_computer_action": confirm_computer_action,
 }
 
 
