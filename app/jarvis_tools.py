@@ -497,13 +497,21 @@ def write_project_file(db, path, content):
 # financial, credential, or irreversible-looking actions stop and ask first;
 # everything else just runs.
 _RISKY_PATTERNS = [
-    r"\brm\s+-rf\b", r"\bremove-item\b.*-recurse", r"\bdel\s+/[sf]\b", r"\brd\s+/s\b",
-    r"\bformat\b", r"\bdiskpart\b", r"\breg\s+delete\b", r"\bregedit\b",
+    # Deletion -- ANY delete-like call, not just recursive/forced ones. A
+    # single-file `Remove-Item path` slipped through the first version of
+    # this list (it only matched -Recurse), which is exactly the "deleting
+    # files" case the confirmation gate exists for -- caught in testing
+    # tonight when it deleted a test file with no confirmation asked.
+    r"\brm\b", r"\bremove-item\b", r"\bdel\b", r"\berase\b", r"\brd\b", r"\brmdir\b",
+    r"\bclear-content\b", r"\bformat\b", r"\bdiskpart\b",
+    r"\breg\s+delete\b", r"\bregedit\b",
     r"\bshutdown\b", r"\brestart-computer\b", r"\bstop-computer\b",
     r"\buninstall\b", r"\bmsiexec\b.*\/x", r"choco\s+uninstall", r"winget\s+uninstall",
     r"\bnew-localuser\b", r"\bnet\s+user\b", r"\bpassword\b", r"\bcredential\b",
     r"\bpurchase\b", r"\bcheckout\b", r"\bpay\b.*\$", r"send-mailmessage",
     r"git\s+push\s+.*--force", r"git\s+reset\s+--hard", r"drop\s+(table|database)",
+    r"\bstart-process\b.*-verb\s+runas", r"\binvoke-webrequest\b.*-outfile",
+    r"\bmove-item\b", r"\brename-item\b",  # moving/renaming can also destroy data (overwrite)
 ]
 
 
