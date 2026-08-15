@@ -52,6 +52,11 @@ SYSTEM_PROMPT = textwrap.dedent("""
       niche's tags just because they're popular. Mix a few broad discovery tags
       (#fyp #viral #shorts) with several specific, on-topic ones. Each tag starts
       with # and has no spaces (e.g. "#creepypasta", "#truestory").
+    - For horror/creepypasta/storytime niches: keep the tone EERIE, not GRAPHIC.
+      Unsettling atmosphere, dread, and a twist are the goal -- lean on suggestion,
+      unease, and things left unseen rather than gore, torture, graphic violence,
+      or explicit descriptions of injury/death. Nothing gratuitously disturbing.
+      Think "unsettling campfire story," not "shock content."
     - Return ONLY valid JSON, no markdown fences, matching this shape:
     {
       "title": "...",
