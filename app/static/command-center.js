@@ -1313,7 +1313,19 @@ async function jarvisStartRecording() {
     try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* fine */ }
     jarvisSetBusy(false);
   }
-  const deviceId = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
+  // Resolve the ME6S mic's CURRENT deviceId fresh, right now -- not a value
+  // cached in localStorage from before the picker was locked down to it. A
+  // stale saved id (from an earlier session, or before this lock existed)
+  // would either fail outright or silently fall through to the OS's default
+  // input device, which is exactly how "Jarvis can't hear me" happened: the
+  // system default isn't necessarily the ME6S mic at all.
+  let deviceId = "";
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const me6s = devices.find((d) => d.kind === "audioinput" && ONLY_MIC_LABEL_MATCH.test(d.label || ""));
+    if (me6s) deviceId = me6s.deviceId;
+  } catch (e) { /* enumeration failed -- constraints below fall back to default */ }
+  if (!deviceId) deviceId = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
   const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
   try {
     jarvisMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
