@@ -1265,14 +1265,6 @@ function _jarvisStopLiveCaption() {
   if (r) { try { r.abort ? r.abort() : r.stop(); } catch (e) { /* already stopped */ } }
 }
 
-// The browser's audioinput list makes no distinction between a dedicated
-// microphone and a headset/earbud/AirPods mic -- both just show up as
-// "audioinput" devices. The only signal available is the device's own text
-// label, so this excludes anything whose name reads as a headphone/headset/
-// earbud rather than a standalone mic. Not foolproof (a device with a blank
-// or unusual label slips through), but catches the common cases.
-const _HEADPHONE_LABEL_PATTERN = /headphone|headset|earbud|earphone|airpod|earpiece/i;
-
 async function jarvisPopulateMicDevices(requestPermission) {
   const sel = document.getElementById("jarvis-mic-device");
   if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
@@ -1283,9 +1275,7 @@ async function jarvisPopulateMicDevices(requestPermission) {
       try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); } catch (e) { /* denied -- list stays unlabeled */ }
     }
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devices
-      .filter((d) => d.kind === "audioinput")
-      .filter((d) => !_HEADPHONE_LABEL_PATTERN.test(d.label || ""));
+    const inputs = devices.filter((d) => d.kind === "audioinput");
     const saved = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
     sel.innerHTML = '<option value="">Default microphone</option>' +
       inputs.map((d, i) => {
