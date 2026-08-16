@@ -1265,6 +1265,13 @@ function _jarvisStopLiveCaption() {
   if (r) { try { r.abort ? r.abort() : r.stop(); } catch (e) { /* already stopped */ } }
 }
 
+// Locked to the user's one real mic (the "ME6S" USB device) -- matched by
+// name rather than deviceId, since Windows/the browser can reassign deviceId
+// on reconnect but the device's own name stays the same. If it's ever
+// unplugged and nothing matches, the filter is skipped so the picker falls
+// back to showing everything rather than going empty and breaking the mic.
+const ONLY_MIC_LABEL_MATCH = /ME6S/i;
+
 async function jarvisPopulateMicDevices(requestPermission) {
   const sel = document.getElementById("jarvis-mic-device");
   if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
@@ -1275,14 +1282,15 @@ async function jarvisPopulateMicDevices(requestPermission) {
       try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); } catch (e) { /* denied -- list stays unlabeled */ }
     }
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devices.filter((d) => d.kind === "audioinput");
+    let inputs = devices.filter((d) => d.kind === "audioinput");
+    const onlyMic = inputs.filter((d) => ONLY_MIC_LABEL_MATCH.test(d.label || ""));
+    if (onlyMic.length) inputs = onlyMic;  // lock to the ME6S mic when it's present
     const saved = localStorage.getItem(JARVIS_MIC_DEVICE_KEY) || "";
-    sel.innerHTML = '<option value="">Default microphone</option>' +
-      inputs.map((d, i) => {
+    sel.innerHTML = inputs.map((d, i) => {
         const label = d.label || `Microphone ${i + 1}`;
         const selAttr = d.deviceId === saved ? " selected" : "";
         return `<option value="${d.deviceId}"${selAttr}>${escapeHtml(label)}</option>`;
-      }).join("");
+      }).join("") || '<option value="">Default microphone</option>';
   } catch (e) { /* enumeration failed -- default mic still works */ }
 }
 
