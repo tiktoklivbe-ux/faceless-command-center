@@ -1492,12 +1492,19 @@ function jarvisSetupGlobalPushToTalk() {
     // timing of when that native activation fires.
     if (ae && typeof ae.blur === "function") ae.blur();
     e.preventDefault();
-    jarvisStartListening();
+    // Was jarvisStartListening() -- the browser's OWN SpeechRecognition
+    // engine, the exact thing already documented (see MIC RECORDING section
+    // above) as unreliable/can't-target-a-device on Edge/Windows. That's why
+    // Enter did nothing while the mic BUTTON (wired to jarvisStartRecording,
+    // the getUserMedia+MediaRecorder+server-transcribe path) worked fine --
+    // two different code paths, only one of them actually reliable. Enter
+    // now drives the same reliable path the button uses.
+    jarvisStartRecording();
   });
   document.addEventListener("keyup", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
-    jarvisStopListening();
+    jarvisStopRecording();
   });
   // THE wedge: a keyup that never arrives. Release Enter while the window
   // isn't focused (alt-tab, a permission prompt stealing focus, clicking
@@ -1505,7 +1512,7 @@ function jarvisSetupGlobalPushToTalk() {
   // jarvisKeyHeld stayed true and every later attempt was silently refused,
   // permanently, until a page reload. Finalizing here means losing focus
   // ends the recording cleanly instead of poisoning the state.
-  window.addEventListener("blur", () => { if (jarvisKeyHeld) jarvisStopListening(); });
+  window.addEventListener("blur", () => { if (jarvisRecording) jarvisStopRecording(); });
 }
 
 function jarvisStopListening() {
@@ -3289,8 +3296,12 @@ async function renderJarvisPanel(body) {
     // in this box => Enter was a complete no-op (no listening, no caption,
     // no words on screen, no error); focus anywhere else => voice worked.
     // Handled here rather than in the global handler because only this
-    // handler knows the box was empty BEFORE a send cleared it.
-    jarvisStartListening();
+    // handler knows the box was empty BEFORE a send cleared it. Uses
+    // jarvisStartRecording (same reliable path as the mic button), not
+    // jarvisStartListening -- see the note in jarvisSetupGlobalPushToTalk
+    // for why that one doesn't actually work on Windows/Edge. The matching
+    // keyup (stop) is handled by the global handler regardless of focus.
+    jarvisStartRecording();
   });
 
   // Hold-to-talk mic button -> records from your chosen device and transcribes
