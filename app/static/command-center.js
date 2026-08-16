@@ -2774,15 +2774,22 @@ function jarvisSetupGestureControl(panelEl) {
     jarvisRenderTrainedGesturesList();
     jarvisShowDataCards();  // the floating data panels appear on the camera page
 
-    let model;
+    // Hand-tracking loads 3 separate resources from external CDNs (jsdelivr
+    // twice, storage.googleapis.com once) -- ANY blip there (a firewall, an
+    // ad-blocker, a transient CDN hiccup) used to call stop() here, which
+    // tore the whole camera back down even though getUserMedia had already
+    // succeeded and the plain video feed was fine. That's exactly the "shows
+    // me for a second then goes away" symptom: the camera was genuinely
+    // working, this unrelated failure killed it anyway. Now a model-load
+    // failure only disables GESTURES -- the camera preview stays up.
+    let model = null;
     try {
       model = await jarvisLoadHandModel();
     } catch (e) {
-      toast("Couldn't load hand-tracking -- check your connection.");
-      stop();
-      return;
+      toast("Camera's on, but hand-tracking couldn't load (check your connection) -- gestures are off for now.");
     }
     if (myGen !== state.genId) return;  // stopped while the model was loading
+    if (!model) return;  // camera stays up; just no gesture loop to run
 
     state.running = true;
     const loop = () => {
