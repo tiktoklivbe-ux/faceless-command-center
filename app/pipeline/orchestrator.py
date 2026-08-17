@@ -329,6 +329,14 @@ def _run_job_inner(job_id: str):
             # the model has no idea what the channel already covered and can
             # (and did -- three near-duplicate "owning a private island"
             # videos in one day) land on the same subject repeatedly.
+            # Limit was 10 -- fine when this channel made ~1-2 videos a day, but
+            # at 5 shorts/day (the fixed schedule, shorts-only) that's barely 2
+            # days of memory. Old topics scrolled out of the window just before
+            # the model cycled back to them -- confirmed real duplicates:
+            # "The Dead Man No One Could Name" posted twice verbatim 2 days
+            # apart, several more reworded (same real-world story, different
+            # title) at the same ~2-day spacing. 60 covers roughly 2 weeks at
+            # the current posting rate.
             recent_titles = [
                 t for (t,) in db.query(models.VideoJob.title)
                 .filter(models.VideoJob.channel_id == channel.id)
@@ -336,7 +344,7 @@ def _run_job_inner(job_id: str):
                 .filter(models.VideoJob.title.isnot(None))
                 .filter(models.VideoJob.title != "")
                 .order_by(models.VideoJob.created_at.desc())
-                .limit(10)
+                .limit(60)
                 .all()
             ]
             script = script_stage.generate_script(

@@ -145,10 +145,18 @@ def _user_prompt(niche: str, topic: str, style_notes: str, avoid_topics: list[st
         # private island" in one day) -- spelling out recent titles here is
         # what actually breaks that, not just the "vary who/what" instruction
         # already in the system prompt, which has no visibility into history.
-        recent = "; ".join(avoid_topics[:10])
+        # Confirmed real duplicates even WITH this list present: the model
+        # was reworking the same real-world story/event under a new title
+        # ("The Book No One on Earth Can Read" vs "The Book No One Can Read",
+        # "The Bridge Where Dogs Keep Jumping to Their Deaths" vs "...Choose
+        # to Die") -- so the instruction now explicitly calls that out, not
+        # just literal title matches.
+        recent = "; ".join(avoid_topics[:60])
         parts.append(
             f"Recent videos already made for this channel -- pick something genuinely "
-            f"different, not a variation on any of these: {recent}"
+            f"different. Do not reuse any of these titles OR the same underlying real-world "
+            f"story/event/phenomenon under a new title -- that still counts as a repeat even "
+            f"if the wording is different: {recent}"
         )
     if style_notes:
         parts.append(f"Extra style notes: {style_notes}")
