@@ -245,7 +245,7 @@ def run_job(job_id: str):
         render_gate.release(job_id)
 
 
-def _preflight(db: Session, channel) -> list[str]:
+def _preflight(db: Session, channel, will_auto_publish: bool = False) -> list[str]:
     """Check configuration BEFORE burning time on a render.
 
     Without this, a missing or undecryptable API key doesn't surface until the
@@ -255,6 +255,23 @@ def _preflight(db: Session, channel) -> list[str]:
     has to be made here.
     """
     problems = []
+
+    # If this job will try to auto-publish to YouTube, verify the OAuth token
+    # can actually be refreshed BEFORE spending a full render on it. Without
+    # this, a dead token (e.g. Google's 'Testing' mode expiring it every ~7
+    # days -- see publish_youtube.py) burned a complete script+voice+images
+    # render every single time, only to fail at the very last step. Confirmed
+    # live: 36 renders in one morning, each ~95s of real API spend, every one
+    # doomed from the start because this was never checked first.
+    if will_auto_publish and channel.youtube_connected and channel.youtube_refresh_token_enc:
+        from .. import crypto
+        try:
+            publish_youtube.refresh_access_token(db, crypto.decrypt(channel.youtube_refresh_token_enc))
+        except Exception as e:
+            problems.append(
+                f"YouTube token refresh failed: {e}. This channel needs to be reconnected "
+                f"(Settings/Channels -> Connect YouTube) before another render is worth starting."
+            )
 
     ffmpeg_problem = ffmpeg_utils.available()
     if ffmpeg_problem:
@@ -316,7 +333,7 @@ def _run_job_inner(job_id: str):
             if reaped:
                 _log(db, job, f"Cleaned up {reaped} stuck ffmpeg process(es) left over from earlier renders.")
 
-            issues = _preflight(db, channel)
+            issues = _preflight(db, channel, will_auto_publish=bool(job.auto_publish))
             if issues:
                 raise RuntimeError("Can't start: " + " | ".join(issues))
 
