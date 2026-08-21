@@ -1655,11 +1655,16 @@ function jarvisSetMuted(muted) {
 function jarvisSetupWakeWord() {
   const btn = document.getElementById("jarvis-wake-toggle");
   if (btn) {
-    const muted = jarvisIsMuted();
-    btn.textContent = muted ? "🔇" : "🔊";
     btn.addEventListener("click", () => jarvisSetMuted(!jarvisIsMuted()));
   }
-  jarvisSetMuted(jarvisIsMuted());  // starts listening immediately if not muted
+  // Opt-in, not opt-out: Enter / the mic button (push-to-talk) is the active
+  // default again. The first version of this auto-started listening the
+  // instant the panel opened, which also silently wrote "unmuted" into
+  // localStorage for anyone who never touched the toggle -- so it kept
+  // coming back even after closing the panel. Always starts muted now,
+  // regardless of anything stored from before; tap 🔇 to turn wake-word on
+  // if you want it.
+  jarvisSetMuted(true);
 }
 
 function jarvisStopListening() {
@@ -3286,10 +3291,10 @@ async function renderJarvisPanel(body) {
       <div class="jarvis-searchbox">
         <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
         <button class="icon-btn" id="jarvis-mic" title="Hold to talk (manual, optional)" style="width:28px;height:28px">🎤</button>
-        <button class="icon-btn" id="jarvis-wake-toggle" title="Mute/unmute always-listening mode" style="width:28px;height:28px">🔊</button>
+        <button class="icon-btn" id="jarvis-wake-toggle" title="Tap to try always-listening mode (off by default)" style="width:28px;height:28px">🔇</button>
         <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
       </div>
-      <div class="jarvis-wake-status" id="jarvis-wake-status" style="font-size:10px;opacity:0.65;margin-top:2px">Say "Jarvis" or "Hey Jarvis" any time — unmuted</div>
+      <div class="jarvis-wake-status" id="jarvis-wake-status" style="font-size:10px;opacity:0.65;margin-top:2px">Hold Enter or the mic to talk — tap 🔇 to try always-listening</div>
       <div class="jarvis-mic-row" style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;opacity:0.8">
         <span style="white-space:nowrap">🎙️ Mic:</span>
         <select id="jarvis-mic-device" title="Choose your microphone (including Bluetooth)" style="flex:1;min-width:0;background:rgba(255,255,255,0.06);color:inherit;border:1px solid rgba(120,170,255,0.3);border-radius:6px;padding:3px 6px;font-size:11px">
