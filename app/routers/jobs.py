@@ -11,6 +11,44 @@ from ..pipeline import orchestrator, publish_youtube, publish_tiktok
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
+@router.get("/youtube-status-check")
+def youtube_status_check(channel_id: str, limit: int = 10, db: Session = Depends(get_db)):
+    """Diagnostic: what recently-published videos' privacy status ACTUALLY is
+    on YouTube right now, straight from Google -- not just what this app
+    requested at upload time. The upload call never verified the outcome, so
+    a video silently forced to Private by an unverified OAuth app (the
+    documented Google 'Testing' mode behavior) would look identical to a real
+    success everywhere else in this app. Read-only; changes nothing."""
+    channel = db.get(models.Channel, channel_id)
+    if not channel or not channel.youtube_connected or not channel.youtube_refresh_token_enc:
+        raise HTTPException(400, "That channel isn't connected to YouTube.")
+    try:
+        access_token = publish_youtube.refresh_access_token(db, crypto.decrypt(channel.youtube_refresh_token_enc))
+    except Exception as e:
+        return {"error": f"Couldn't refresh the access token: {e}. If this fails, the OAuth "
+                          f"connection itself may have expired (common in Google's 'Testing' "
+                          f"mode, where tokens expire after ~7 days) -- reconnect the channel."}
+
+    jobs = (
+        db.query(models.VideoJob)
+        .filter(models.VideoJob.channel_id == channel_id)
+        .filter(models.VideoJob.youtube_video_id.isnot(None))
+        .filter(models.VideoJob.youtube_video_id != "")
+        .order_by(models.VideoJob.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    results = []
+    for j in jobs:
+        status = publish_youtube.check_video_status(access_token, j.youtube_video_id)
+        results.append({
+            "job_id": j.id, "video_id": j.youtube_video_id,
+            "title": (j.title or "")[:60], "created_at": str(j.created_at),
+            "actual_privacy_status": status.get("privacyStatus", status.get("error", "unknown")),
+        })
+    return {"channel": channel.name, "checked": len(results), "results": results}
+
+
 @router.get("", response_model=list[schemas.JobOut])
 def list_jobs(channel_id: str | None = None, limit: int = 50, db: Session = Depends(get_db)):
     # Capped deliberately. This returned EVERY job ever created, each carrying

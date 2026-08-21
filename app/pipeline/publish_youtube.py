@@ -121,6 +121,26 @@ def fetch_channel_stats(access_token: str) -> dict:
         return {"subscribers": 0, "views": 0, "video_count": 0, "hidden_subs": False}
 
 
+def check_video_status(access_token: str, video_id: str) -> dict:
+    """Read-only: what a video's privacyStatus ACTUALLY is right now, straight
+    from Google -- not what was requested at upload time. The upload call only
+    ever returns the video id, never checks whether Google honored the
+    requested privacy, so nothing in this app has verified the real outcome
+    until now."""
+    resp = requests.get(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params={"part": "status", "id": video_id},
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        return {"error": f"{resp.status_code}: {resp.text[:300]}"}
+    items = resp.json().get("items", [])
+    if not items:
+        return {"error": "video not found (deleted, or id wrong)"}
+    return items[0].get("status", {})
+
+
 def update_video_privacy(access_token: str, video_id: str, privacy_status: str = "public") -> str:
     """Flip an already-uploaded video's privacy (e.g. a batch of shorts that
     went up private). Same Google caveat as upload: while the OAuth app is
