@@ -1515,6 +1515,153 @@ function jarvisSetupGlobalPushToTalk() {
   window.addEventListener("blur", () => { if (jarvisRecording) jarvisStopRecording(); });
 }
 
+// ---------------------------------------------------------------- WAKE WORD ("Jarvis" / "Hey Jarvis")
+// No more push-to-talk needed: unmuted, Jarvis listens continuously (the
+// browser's free built-in engine -- same known Windows/Edge flakiness noted
+// above, but here that only risks an occasionally-missed wake word, not a
+// missed COMMAND, which is a much cheaper failure). The instant it hears its
+// name, it hands off to the exact same reliable recording path the mic
+// button already uses (getUserMedia + MediaRecorder + server transcription)
+// for the actual command -- never the flaky engine for words that matter.
+const JARVIS_MUTED_KEY = "jarvisMuted";
+let jarvisWakeRecognition = null;
+let jarvisWakeActive = false;      // true while the wake-word listener itself is running
+let jarvisWakeTriggered = false;   // true while a triggered command is being captured/handled
+const WAKE_WORD_PATTERN = /\bhey\s+jarvis\b|\bjarvis\b/i;
+const SILENCE_STOP_MS = 1400;      // how long a pause has to last before auto-ending the command
+const SILENCE_MAX_MS = 12000;      // hard cap so a stuck mic can't listen forever
+
+function jarvisIsMuted() {
+  try { return localStorage.getItem(JARVIS_MUTED_KEY) === "true"; } catch (e) { return false; }
+}
+
+function _jarvisSetWakeStatus(text) {
+  const el = document.getElementById("jarvis-wake-status");
+  if (el) el.textContent = text;
+}
+
+function jarvisStartWakeListening() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { _jarvisSetWakeStatus("Always-listening isn't supported in this browser -- use the mic button instead."); return; }
+  if (jarvisIsMuted() || jarvisWakeActive || jarvisWakeTriggered) return;
+  jarvisWakeActive = true;
+  try {
+    jarvisWakeRecognition = new SR();
+    jarvisWakeRecognition.continuous = true;
+    jarvisWakeRecognition.interimResults = true;
+    jarvisWakeRecognition.lang = "en-US";
+    jarvisWakeRecognition.onresult = (ev) => {
+      if (jarvisWakeTriggered) return;
+      let heard = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) heard += ev.results[i][0].transcript + " ";
+      if (WAKE_WORD_PATTERN.test(heard)) {
+        jarvisWakeTriggered = true;
+        try { jarvisWakeRecognition.stop(); } catch (e) { /* onend will still fire */ }
+        _jarvisHandleWakeTrigger();
+      }
+    };
+    jarvisWakeRecognition.onerror = () => {};  // restarts via onend below regardless of the reason
+    jarvisWakeRecognition.onend = () => {
+      jarvisWakeActive = false;
+      // Only auto-restart if still unmuted and not mid-command -- otherwise
+      // this would immediately re-listen right through a command capture.
+      if (!jarvisIsMuted() && !jarvisWakeTriggered) jarvisStartWakeListening();
+    };
+    jarvisWakeRecognition.start();
+    _jarvisSetWakeStatus('Say "Jarvis" or "Hey Jarvis" any time — unmuted');
+  } catch (e) { jarvisWakeActive = false; }
+}
+
+function jarvisStopWakeListening() {
+  if (jarvisWakeRecognition) { try { jarvisWakeRecognition.stop(); } catch (e) { /* fine */ } }
+  jarvisWakeRecognition = null;
+  jarvisWakeActive = false;
+}
+
+/** Wake word heard -> capture the actual command through the RELIABLE path
+ *  (same as the mic button), auto-ending on a pause instead of a button
+ *  release, then hand it to jarvisSend and resume listening for the name. */
+async function _jarvisHandleWakeTrigger() {
+  jarvisPlayGestureChime();
+  _jarvisSetWakeStatus("Listening for your command…");
+  await jarvisStartRecording();
+
+  // Silence detection on the SAME stream jarvisStartRecording just opened --
+  // reading its volume rather than opening a second mic connection.
+  let stopped = false;
+  const finish = () => {
+    if (stopped) return;
+    stopped = true;
+    try { cleanup(); } catch (e) { /* fine */ }
+    jarvisStopRecording();
+  };
+  let cleanup = () => {};
+  let hardCap = setTimeout(finish, SILENCE_MAX_MS);
+  try {
+    if (jarvisMediaStream) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = ctx.createMediaStreamSource(jarvisMediaStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let silenceTimer = null;
+      let heardSpeech = false;
+      const tick = () => {
+        if (stopped) return;
+        analyser.getByteTimeDomainData(data);
+        let sumSq = 0;
+        for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sumSq += v * v; }
+        const rms = Math.sqrt(sumSq / data.length);
+        if (rms > 0.02) {
+          heardSpeech = true;
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        } else if (heardSpeech && !silenceTimer) {
+          silenceTimer = setTimeout(finish, SILENCE_STOP_MS);
+        }
+        if (!stopped) requestAnimationFrame(tick);
+      };
+      tick();
+      cleanup = () => { clearTimeout(silenceTimer); try { ctx.close(); } catch (e) {} };
+    }
+  } catch (e) { /* silence detection is best-effort; the hard cap still applies */ }
+
+  // jarvisStopRecording() (called by finish()) drives the rest of the
+  // existing pipeline (transcribe -> jarvisSend -> reply) exactly like the
+  // mic button already does. Once Jarvis is done talking, resume listening.
+  const waitForIdle = () => new Promise((resolve) => {
+    const check = () => { if (!jarvisBusy && !jarvisRecording) resolve(); else setTimeout(check, 300); };
+    setTimeout(check, 500);
+  });
+  await waitForIdle();
+  clearTimeout(hardCap);
+  jarvisWakeTriggered = false;
+  if (!jarvisIsMuted()) jarvisStartWakeListening();
+}
+
+function jarvisSetMuted(muted) {
+  try { localStorage.setItem(JARVIS_MUTED_KEY, muted ? "true" : "false"); } catch (e) { /* fine */ }
+  const btn = document.getElementById("jarvis-wake-toggle");
+  if (muted) {
+    jarvisStopWakeListening();
+    if (btn) { btn.textContent = "🔇"; btn.title = "Unmute (tap to start always-listening)"; }
+    _jarvisSetWakeStatus("Muted — tap 🔇 to start listening again");
+  } else {
+    if (btn) { btn.textContent = "🔊"; btn.title = "Mute always-listening mode"; }
+    jarvisStartWakeListening();
+  }
+}
+
+function jarvisSetupWakeWord() {
+  const btn = document.getElementById("jarvis-wake-toggle");
+  if (btn) {
+    const muted = jarvisIsMuted();
+    btn.textContent = muted ? "🔇" : "🔊";
+    btn.addEventListener("click", () => jarvisSetMuted(!jarvisIsMuted()));
+  }
+  jarvisSetMuted(jarvisIsMuted());  // starts listening immediately if not muted
+}
+
 function jarvisStopListening() {
   jarvisKeyHeld = false;  // lets a since-fired onend finalize instead of restarting
   // The actual "sometimes waits too long" gap is the browser's own speech
@@ -3138,9 +3285,11 @@ async function renderJarvisPanel(body) {
 
       <div class="jarvis-searchbox">
         <input type="text" id="jarvis-text-input" placeholder="Ask Jarvis…"/>
-        <button class="icon-btn" id="jarvis-mic" title="Hold to talk" style="width:28px;height:28px">🎤</button>
+        <button class="icon-btn" id="jarvis-mic" title="Hold to talk (manual, optional)" style="width:28px;height:28px">🎤</button>
+        <button class="icon-btn" id="jarvis-wake-toggle" title="Mute/unmute always-listening mode" style="width:28px;height:28px">🔊</button>
         <button class="icon-btn" id="jarvis-send" title="Send" style="width:28px;height:28px">➤</button>
       </div>
+      <div class="jarvis-wake-status" id="jarvis-wake-status" style="font-size:10px;opacity:0.65;margin-top:2px">Say "Jarvis" or "Hey Jarvis" any time — unmuted</div>
       <div class="jarvis-mic-row" style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;opacity:0.8">
         <span style="white-space:nowrap">🎙️ Mic:</span>
         <select id="jarvis-mic-device" title="Choose your microphone (including Bluetooth)" style="flex:1;min-width:0;background:rgba(255,255,255,0.06);color:inherit;border:1px solid rgba(120,170,255,0.3);border-radius:6px;padding:3px 6px;font-size:11px">
@@ -3331,6 +3480,12 @@ async function renderJarvisPanel(body) {
     window.addEventListener("pointercancel", micUp);
     window.addEventListener("blur", () => { if (jarvisRecording) jarvisStopRecording(); });
   }
+
+  // Always-listening wake word ("Jarvis" / "Hey Jarvis") -- no push-to-talk
+  // required. Safe to call every time this panel mounts: jarvisStartWakeListening
+  // no-ops if already running, so navigating away and back doesn't stack up
+  // duplicate listeners.
+  jarvisSetupWakeWord();
 
   // Microphone device picker (lets you choose a Bluetooth mic).
   const micDevice = document.getElementById("jarvis-mic-device");

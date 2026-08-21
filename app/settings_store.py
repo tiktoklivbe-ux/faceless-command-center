@@ -89,6 +89,16 @@ KNOWN_KEYS = {
     # this server. The companion authenticates its poll/result calls with
     # this shared secret; nothing else can pull tasks off the queue.
     "local_agent_secret": True,
+
+    # Lets Jarvis commit + push a website code change it made (see
+    # app/routers/deploy.py). A GitHub Personal Access Token scoped to just
+    # this one repo's contents (read+write) -- Settings -> Developer settings
+    # -> Personal access tokens -> Fine-grained -> repository access limited
+    # to this repo only, Contents permission: Read and write. Never grant
+    # more than that one repo.
+    "github_repo_token": True,
+    "github_repo_url": False,  # e.g. "github.com/tiktoklivbe-ux/faceless-command-center" (no https://)
+    "render_deploy_hook_url": True,  # triggers a real deploy after Jarvis pushes a change; secret (embeds an API key)
 }
 
 

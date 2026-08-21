@@ -163,6 +163,24 @@ class ComputerTask(Base):
     stdout = Column(Text, default="")
     stderr = Column(Text, default="")
     exit_code = Column(Integer, nullable=True)
+
+
+class DeployTask(Base):
+    """One website code change Jarvis wants to ship -- ALWAYS confirm-gated
+    (unlike ComputerTask, there's no 'safe, run it now' branch: pushing to the
+    live, revenue-generating site is never treated as routine). Jarvis writes
+    the file(s) via its existing write_project_file tool first, then proposes
+    a deploy here; nothing reaches git or the live site until the user
+    confirms in chat."""
+    __tablename__ = "deploy_tasks"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    summary = Column(Text, default="")            # what changed / why, shown to the user
+    status = Column(String, default="awaiting_confirmation")
+    # "awaiting_confirmation" | "done" | "error" | "cancelled"
+    output = Column(Text, default="")             # git/deploy output, or the error
     allowed = Column(Boolean, default=True)       # False = whitelist blocked it
     result = Column(Text, default="")             # what happened / why it was blocked
     user_message = Column(Text, default="")       # the request that triggered this, for context

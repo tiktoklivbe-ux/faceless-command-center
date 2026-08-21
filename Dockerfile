@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
 # ffmpeg is a hard requirement for the Assembly Agent (Ken Burns clips, concat, subtitle burn-in).
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# git is needed so Jarvis can commit/push a website change it made (see
+# app/deploy_utils.py) -- without it here, there's no way to ship code from
+# inside the running container at all.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

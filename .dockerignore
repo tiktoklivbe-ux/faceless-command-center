@@ -4,4 +4,8 @@ storage/jobs/*
 __pycache__/
 *.pyc
 .env
-.git/
+# .git/ used to be excluded here. Now shipped deliberately so Jarvis can
+# commit/push a website change from inside the running container (see
+# app/deploy_utils.py) -- checked git history first, confirmed no secrets
+# were ever committed to a file (all API keys/tokens go through the
+# encrypted Settings store at runtime, never into a tracked file).

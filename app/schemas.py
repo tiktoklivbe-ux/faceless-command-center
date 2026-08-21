@@ -95,3 +95,6 @@ class SettingsIn(BaseModel):
     min_hours_between_videos: Optional[str] = None
     schedule_shorts_only: Optional[str] = None           # "true" = every slot is a short; long-form never runs
     local_agent_secret: Optional[str] = None              # shared secret for the user's local computer-companion agent
+    github_repo_token: Optional[str] = None                # GitHub PAT, repo-scoped, for Jarvis to commit/push a website change
+    github_repo_url: Optional[str] = None                   # e.g. "github.com/owner/repo" (no https://)
+    render_deploy_hook_url: Optional[str] = None             # triggers a real deploy after Jarvis pushes

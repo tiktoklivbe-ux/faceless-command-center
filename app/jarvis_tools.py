@@ -279,6 +279,30 @@ TOOLS = [
             "required": ["task_id"],
         },
     },
+    {
+        "name": "propose_website_deploy",
+        "description": "After using write_project_file to make one or more website code "
+                        "changes, call this to ship them to the LIVE site. ALWAYS asks for "
+                        "confirmation first -- never deploys immediately, no matter how the "
+                        "user phrased the request. Relay the confirmation question verbatim, "
+                        "and call confirm_website_deploy once they say yes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"summary": {"type": "string", "description": "One line: what changed and why."}},
+            "required": ["summary"],
+        },
+    },
+    {
+        "name": "confirm_website_deploy",
+        "description": "The user just said yes/confirmed to a pending propose_website_deploy "
+                        "-- actually commit, push, and deploy it now. Use the deploy_id from "
+                        "that earlier call.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"deploy_id": {"type": "string"}},
+            "required": ["deploy_id"],
+        },
+    },
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
@@ -582,6 +606,40 @@ def _await_computer_task(db, task, timeout_seconds: float = 18.0):
             "message": "Still running on their machine -- ask again in a moment to check on it."}
 
 
+# ---------------------------------------------------------------- website self-deploy
+# Jarvis writing a file (write_project_file, above) never reaches the live
+# site on its own -- nothing redeploys from a file write alone. These two
+# tools are the ONLY path from "Jarvis edited a file" to "that change is
+# live", and unlike run_on_my_computer, there's no safe/unsafe split: EVERY
+# deploy to the live, revenue-generating site is confirm-gated, always.
+def propose_website_deploy(db, summary):
+    summary = (summary or "").strip()
+    if not summary:
+        return {"error": "Need a one-line summary of what changed."}
+    task = models.DeployTask(summary=summary, status="awaiting_confirmation")
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return {
+        "ok": True, "needs_confirmation": True, "deploy_id": task.id,
+        "message": f"Ready to ship this to your LIVE site: {summary}. Say yes to deploy it for real.",
+    }
+
+
+def confirm_website_deploy(db, deploy_id):
+    task = db.get(models.DeployTask, deploy_id)
+    if not task:
+        return {"error": "Unknown deploy -- it may have already run or expired."}
+    if task.status != "awaiting_confirmation":
+        return {"error": f"That deploy is already '{task.status}', nothing to confirm."}
+    from . import deploy_utils
+    ok, output = deploy_utils.commit_and_push(db, task.summary)
+    task.status = "done" if ok else "error"
+    task.output = output[:4000]
+    db.commit()
+    return {"ok": ok, "deploy_id": task.id, "output": output}
+
+
 # ---------------------------------------------------------------- notes
 # "A plain notes folder Jarvis manages itself" -- not an OS app, just simple
 # text files under the project's own notes/ folder, using the same
@@ -773,6 +831,8 @@ DISPATCH = {
     "write_project_file": write_project_file,
     "run_on_my_computer": run_on_my_computer,
     "confirm_computer_action": confirm_computer_action,
+    "propose_website_deploy": propose_website_deploy,
+    "confirm_website_deploy": confirm_website_deploy,
 }
 
 
