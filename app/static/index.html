@@ -18,17 +18,6 @@
     <div class="boot-skip" id="boot-skip">skip ▸</div>
   </div>
 
-  <!-- The village IS the home view now. The old starfield/orbit constellation
-       has been removed entirely rather than hidden -- it was a second full
-       renderer competing for the same frame budget. -->
-  <div id="village-home">
-    <div id="village-stage"></div>
-    <!-- The room you step into when you enter a building. Full-screen, over
-         the village, so entering feels like going inside rather than
-         opening a dialog on top of the map. -->
-    <div id="interior-host"></div>
-  </div>
-
   <!-- top HUD -->
   <div class="hud" id="topbar">
     <div class="brandmark">
@@ -44,57 +33,51 @@
     </div>
   </div>
 
-  <!-- Navigation lives in the left sidebar only. There used to be a second
-       icon-only toolbar on the right with the exact same five destinations,
-       which just made it unclear which one to use. -->
-  <div id="sidebar">
-    <button class="side-item active" id="side-orbit" title="Back to the village">
-      <span class="side-icon">🏘️</span><span class="side-label">Village</span>
-    </button>
-    <button class="side-item" id="side-missioncontrol" title="Mission Control">
-      <span class="side-icon">🛰️</span><span class="side-label">Mission Control</span>
-    </button>
-    <button class="side-item" id="side-jobs" title="Video Library">
-      <span class="side-icon">🎬</span><span class="side-label">Videos</span>
-    </button>
-    <button class="side-item" id="side-channels" title="Channels">
-      <span class="side-icon">📺</span><span class="side-label">Channels</span>
-    </button>
-    <button class="side-item" id="side-settings" title="Settings">
-      <span class="side-icon">⚙️</span><span class="side-label">Settings</span>
-    </button>
-    <button class="side-item" id="side-jarvis" title="Jarvis">
-      <span class="side-icon">🎙️</span><span class="side-label">Jarvis</span>
-    </button>
+  <!-- Scroll-driven navigation: each full-viewport <section> is a "scene".
+       Mouse-wheel/trackpad scroll moves between them with native scroll-snap
+       (smooth, no hand-rolled physics); a slim dot-nav on the right is the
+       click-to-jump alternative for keyboard/pointer users. This replaces
+       BOTH the old sidebar tabs and the 3D village -- there's no separate
+       "home" renderer competing for frame budget any more, Overview is just
+       the first scene in the same scroll track as everything else. -->
+  <div id="scene-track">
+    <section class="scene" id="scene-overview" data-scene="overview">
+      <div class="scene-body" id="scene-body-overview"></div>
+    </section>
+    <section class="scene" id="scene-missioncontrol" data-scene="missioncontrol">
+      <div class="scene-body" id="scene-body-missioncontrol"></div>
+    </section>
+    <section class="scene" id="scene-jobs" data-scene="jobs">
+      <div class="scene-body" id="scene-body-jobs"></div>
+    </section>
+    <section class="scene" id="scene-channels" data-scene="channels">
+      <div class="scene-body" id="scene-body-channels"></div>
+    </section>
+    <section class="scene" id="scene-settings" data-scene="settings">
+      <div class="scene-body" id="scene-body-settings"></div>
+    </section>
+    <section class="scene" id="scene-jarvis" data-scene="jarvis">
+      <div class="scene-body" id="scene-body-jarvis"></div>
+    </section>
   </div>
 
-  <!-- The floating rituals/activity/telemetry panels are gone. They were
-       leftovers from the space theme, sat permanently on top of the world,
-       and are exactly the overlap problem -- that information belongs in
-       Mission Control, not hovering over the village. -->
-
-  <!-- command console -->
-  <div id="console">
-    <div id="console-shell">
-      <span class="console-orb"></span>
-      <input id="cmd" autocomplete="off" placeholder="Ask AETHER anything, or say &quot;make a video about black holes&quot;…"/>
-      <button id="cmd-send" title="Send">▸</button>
-    </div>
-    <div id="console-hint">press <b>/</b> to focus · <b>WASD</b> or drag to fly · scroll to zoom · click any agent</div>
+  <!-- dot-nav: click-to-jump alternative to scrolling -->
+  <div id="dot-nav">
+    <button class="dot" data-jump="overview" title="Overview"><span>Overview</span></button>
+    <button class="dot" data-jump="missioncontrol" title="Mission Control"><span>Mission Control</span></button>
+    <button class="dot" data-jump="jobs" title="Videos"><span>Videos</span></button>
+    <button class="dot" data-jump="channels" title="Channels"><span>Channels</span></button>
+    <button class="dot" data-jump="settings" title="Settings"><span>Settings</span></button>
+    <button class="dot" data-jump="jarvis" title="Jarvis"><span>Jarvis</span></button>
   </div>
 
   <!-- agent detail flyout -->
   <div id="agent-detail"></div>
 
-  <!-- big slide panel -->
-  <div id="bigpanel"><div id="bigpanel-inner"></div></div>
-
   <!-- toasts -->
   <div id="toasts"></div>
 
   <script src="/assets/lock.js"></script>
-  <script src="/assets/interior.js"></script>
-  <script src="/assets/village.js"></script>
   <script src="/assets/command-center.js"></script>
   <script src="/assets/mouse-fx.js"></script>
   <script src="/assets/easter-eggs.js"></script>

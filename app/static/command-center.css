@@ -1,27 +1,122 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  /* Monochrome palette. Every accent in the app resolves through these
-     variables, so the whole interface shifts together rather than needing
-     each component restyled. Hue is stripped out entirely -- what used to be
-     cyan/violet/pink/green now differ only in brightness, which is what gives
-     the terminal-like look. Red is kept as the single exception because
-     failure states genuinely need to be distinguishable at a glance. */
-  --cyan: #e8ecef;      /* primary accent -- near-white */
-  --violet: #a8b0b8;    /* secondary -- mid grey */
-  --pink: #cfd6dc;      /* highlight -- light grey */
-  --green: #b8c0c6;     /* success -- soft grey */
-  --amber: #8d959c;     /* warning -- dim grey */
-  --red: #d16a6a;       /* failure -- the one retained hue */
-  --ink: #e4e8eb;
-  --muted: #7d858c;
-  --panel: rgba(14, 15, 17, 0.78);
-  --panel-solid: #0c0d0f;
-  --border: rgba(232, 236, 239, 0.18);
-  --border-soft: rgba(232, 236, 239, 0.09);
-  --font-head: 'Orbitron', sans-serif;
-  --font-body: 'Rajdhani', sans-serif;
-  --font-mono: 'Share Tech Mono', monospace;
+  /* Clean modern SaaS palette (Linear/Stripe/Vercel-adjacent) -- a real,
+     restrained accent hue instead of monochrome, plus genuine semantic
+     colors for success/warning/failure so status reads at a glance. Every
+     accent in the app still resolves through these SAME variable names, so
+     this one block re-themes the whole interface (including every existing
+     panel's internal styling) without those panels needing individual
+     changes -- same reasoning as before, just pointed at a different palette.
+     Variable names kept as-is (--cyan etc.) rather than renamed, since
+     thousands of lines of existing CSS/JS already reference them. */
+  --cyan: #5b8cff;      /* primary accent -- indigo/blue */
+  --violet: #8b93ff;    /* secondary */
+  --pink: #7aa5ff;      /* highlight */
+  --green: #4ade80;     /* success -- genuine green now */
+  --amber: #fbbf24;     /* warning -- genuine amber */
+  --red: #f87171;       /* failure */
+  --ink: #eef1f5;
+  --muted: #8a93a3;
+  --panel: rgba(20, 22, 27, 0.82);
+  --panel-solid: #12141a;
+  --border: rgba(238, 241, 245, 0.12);
+  --border-soft: rgba(238, 241, 245, 0.06);
+  --font-head: 'Inter', -apple-system, sans-serif;
+  --font-body: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ============================================================ SCENE NAVIGATION
+   Scroll-wheel-driven navigation: each full-viewport section is a "scene",
+   snapped with native CSS scroll-snap (smooth, GPU-composited, no hand-rolled
+   scroll physics needed) -- this replaces both the old sidebar tabs and the
+   3D village. A scene fades/lifts in as it crosses into view (.in-view,
+   toggled by the IntersectionObserver in command-center.js) for the
+   "cinematic glide" feel, rather than a hard cut. */
+#scene-track {
+  position: fixed; inset: 0;
+  overflow-y: scroll; overflow-x: hidden;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+  background: #08090a;
+  z-index: 1;
+}
+.scene {
+  min-height: 100vh;
+  width: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  display: flex;
+  flex-direction: column;
+  padding: 84px 48px 48px;
+  opacity: 0.35;
+  transform: translateY(14px) scale(0.99);
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.scene.in-view { opacity: 1; transform: translateY(0) scale(1); }
+.scene-body { width: 100%; max-width: 1180px; margin: 0 auto; flex: 1; }
+/* Carried forward from the old #bigpanel-scoped rules -- render functions
+   still emit bare <h1> / class="bp-sub" for their headers, this just
+   re-scopes that same styling to the new container. */
+.scene-body h1 { font-family: var(--font-head); font-weight: 700; font-size: 26px; letter-spacing: -0.01em; margin-bottom: 6px; }
+.scene-body .bp-sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+
+#dot-nav {
+  position: fixed; right: 22px; top: 50%; transform: translateY(-50%);
+  z-index: 30; display: flex; flex-direction: column; gap: 14px;
+}
+#dot-nav .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: rgba(238, 241, 245, 0.18); border: none; cursor: pointer;
+  padding: 0; position: relative; transition: background 0.2s, transform 0.2s;
+}
+#dot-nav .dot:hover { background: rgba(238, 241, 245, 0.4); transform: scale(1.2); }
+#dot-nav .dot.active { background: var(--cyan); transform: scale(1.3); }
+#dot-nav .dot span {
+  position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; white-space: nowrap; color: var(--ink);
+  background: var(--panel-solid); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 9px; opacity: 0; pointer-events: none; transition: opacity 0.15s;
+}
+#dot-nav .dot:hover span { opacity: 1; }
+
+/* ---------------- Overview scene ---------------- */
+.ov-wrap { padding-top: 4vh; }
+.ov-loading { color: var(--muted); font-size: 14px; }
+.ov-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 32px; }
+.ov-greeting { font-family: var(--font-head); font-size: 34px; font-weight: 800; letter-spacing: -0.02em; }
+.ov-uplink { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; text-transform: uppercase; }
+.ov-uplink-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.ov-uplink.stable .ov-uplink-dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.ov-uplink.awaiting_first_run .ov-uplink-dot { background: var(--amber); }
+
+.ov-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 36px; }
+.ov-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
+.ov-stat-val { font-family: var(--font-head); font-size: 26px; font-weight: 700; }
+.ov-stat-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.ov-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 36px; }
+.ov-card {
+  text-align: left; background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+  padding: 22px; cursor: pointer; color: var(--ink); font-family: var(--font-body);
+  transition: border-color 0.2s, transform 0.2s, background 0.2s;
+}
+.ov-card:hover { border-color: var(--cyan); transform: translateY(-3px); background: rgba(91, 140, 255, 0.06); }
+.ov-card-icon { font-size: 26px; margin-bottom: 10px; }
+.ov-card-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+.ov-card-blurb { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+
+.ov-activity { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; margin-bottom: 24px; }
+.ov-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 12px; }
+.ov-activity-row { font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--border-soft); color: var(--ink); }
+.ov-activity-row:last-child { border-bottom: none; }
+
+@media (max-width: 760px) {
+  .scene { padding: 78px 20px 32px; }
+  .ov-stats { grid-template-columns: repeat(2, 1fr); }
+  #dot-nav { right: 10px; }
+  #dot-nav .dot span { display: none; }
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

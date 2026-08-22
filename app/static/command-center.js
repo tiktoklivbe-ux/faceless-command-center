@@ -290,48 +290,85 @@ const sparkData = {};
 
 
 // ============================================================ BIG PANELS (reuse API)
+// ============================================================ SCENE NAVIGATION
+// The 3D village and the slide-in overlay panels are both gone -- replaced by
+// one continuous scroll track of full-viewport "scenes" (see index.html),
+// snapped with native CSS scroll-snap so the glide between them is smooth
+// without any hand-rolled scroll physics. openBigPanel/closeBigPanel keep
+// their EXACT original names and signature deliberately: every existing
+// caller (Jarvis's nav tool, gesture actions, the teach-a-task recorder, the
+// quick-access panel, the job banner's "Open" button) already calls these,
+// so the whole rest of the app didn't need to change to get the new shell --
+// only what happens INSIDE these two functions did.
+let jarvisCurrentScene = "overview";
+const SCENE_NAMES = ["overview", "missioncontrol", "jobs", "channels", "settings", "jarvis"];
+const SCENE_RENDERERS = {
+  overview: (body) => renderOverviewScene(body),
+  missioncontrol: (body) => renderMissionControlPanel(body),
+  jobs: (body) => renderJobsPanel(body),
+  channels: (body) => renderChannelsPanel(body),
+  settings: (body) => renderSettingsPanel(body),
+  jarvis: (body) => renderJarvisPanel(body),
+};
+let _jarvisSceneObserver = null;
+let _jarvisSceneNavGuard = false;  // true while a programmatic scroll is in flight, so the observer doesn't double-activate mid-glide
+
 function stopAllPanelPolls() {
-  if (villagePoll) { clearInterval(villagePoll); villagePoll = null; }
-  if (window.VillageView) VillageView.unmount();
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
   if (mcPoll) { clearInterval(mcPoll); mcPoll = null; }
 }
-// Each panel enters from a different side, so switching tabs doesn't feel
-// like one interchangeable cut repeated five times -- Mission Control drops
-// in like a HUD, Videos rises like a reel, Channels swings in from the left,
-// Settings slides in from the right (the original direction, kept because it
-// already reads as "a control drawer").
-const PANEL_DIR = { missioncontrol: "top", jobs: "bottom", channels: "left", settings: "right" };
+
+/** The one place a scene actually becomes "live": tears down whatever the
+ *  previous scene had running, then (re)renders this one fresh into its own
+ *  persistent body -- same full-refresh-on-visit behavior the old overlay
+ *  panels had, so job statuses etc. are never stale when you arrive. Shared
+ *  by both navigation paths (a real scroll gesture via the IntersectionObserver,
+ *  and a programmatic jump via openBigPanel) so there's exactly one code path
+ *  that owns "what does entering a scene actually do". */
+function _jarvisActivateScene(which) {
+  if (which === jarvisCurrentScene) return;
+  jarvisCurrentScene = which;
+  stopAllPanelPolls();
+  setActiveSideItem(which === "overview" ? null : which);
+  const body = document.getElementById(`scene-body-${which}`);
+  const fn = SCENE_RENDERERS[which];
+  if (body && fn) fn(body);
+}
+
+function _jarvisSetupSceneObserver() {
+  const track = document.getElementById("scene-track");
+  if (!track) return;
+  _jarvisSceneObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      const el = entry.target;
+      el.classList.toggle("in-view", entry.isIntersecting);
+      // The most-visible scene crossing the midpoint is "arrived" -- ignore
+      // events while a programmatic jump's own smooth-scroll is still
+      // settling, so a fast jump doesn't also fire for every scene it glides past.
+      if (entry.isIntersecting && entry.intersectionRatio > 0.55 && !_jarvisSceneNavGuard) {
+        _jarvisActivateScene(el.dataset.scene);
+      }
+    });
+  }, { root: track, threshold: [0, 0.55, 1] });
+  document.querySelectorAll(".scene").forEach((el) => _jarvisSceneObserver.observe(el));
+}
 
 async function openBigPanel(which) {
   // If a "teach a task" recording is in progress, capture the navigation as a
   // step -- whether it came from a nav button, the side menu, or a gesture,
   // it all funnels through here, so this is the one place that sees them all.
   jarvisRecordStep({ type: "nav", which });
-  // If the village is on screen, let its camera pull back and dim first --
-  // otherwise a panel opening while the world instantly vanishes underneath
-  // it feels like a hard cut instead of a single continuous camera move.
-  const stage = document.getElementById("village-stage");
-  const villageVisible = stage && stage.offsetParent !== null && window.VillageView;
-  if (villageVisible) {
-    await new Promise((resolve) => VillageView.pullBack(resolve));
-  }
-
-  stopAllPanelPolls();
-  const bp = $("#bigpanel"), inner = $("#bigpanel-inner");
-  inner.innerHTML = `<button class="icon-btn bp-close" onclick="closeBigPanel()">✕</button><div id="bp-body"></div>`;
-  inner.classList.toggle("wide", which === "missioncontrol");
-  inner.classList.toggle("fullpage", which === "jarvis");
-  inner.classList.remove("dir-top", "dir-bottom", "dir-left", "dir-right");
-  inner.classList.add(`dir-${PANEL_DIR[which] || "right"}`);
-  bp.classList.add("open");
-  const body = $("#bp-body");
-  if (which === "settings") return renderSettingsPanel(body);
-  if (which === "channels") return renderChannelsPanel(body);
-  if (which === "jobs") return renderJobsPanel(body);
-  if (which === "missioncontrol") return renderMissionControlPanel(body);
-  if (which === "jarvis") return renderJarvisPanel(body);
+  const el = document.getElementById(`scene-${which}`);
+  if (!el) return;
+  _jarvisSceneNavGuard = true;
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+  _jarvisActivateScene(which);
+  // scrollIntoView's smooth glide takes a moment; release the guard once it's
+  // reasonably settled so a normal scroll-wheel nudge right after still works.
+  clearTimeout(window._jarvisSceneNavGuardTimer);
+  window._jarvisSceneNavGuardTimer = setTimeout(() => { _jarvisSceneNavGuard = false; }, 700);
 }
+
 const SIDE_MAP = {
   "side-missioncontrol": "missioncontrol",
   "side-jobs": "jobs",
@@ -340,28 +377,87 @@ const SIDE_MAP = {
   "side-jarvis": "jarvis",
 };
 function setActiveSideItem(panelName) {
-  document.querySelectorAll("#sidebar .side-item").forEach((el) => el.classList.remove("active"));
-  if (panelName === null) {
-    const orbitBtn = $("#side-orbit");
-    if (orbitBtn) orbitBtn.classList.add("active");
-    return;
-  }
-  const id = Object.keys(SIDE_MAP).find((k) => SIDE_MAP[k] === panelName);
-  if (id) { const el = document.getElementById(id); if (el) el.classList.add("active"); }
+  document.querySelectorAll("#dot-nav .dot").forEach((el) => el.classList.remove("active"));
+  const id = panelName || "overview";
+  const el = document.querySelector(`#dot-nav .dot[data-jump="${id}"]`);
+  if (el) el.classList.add("active");
 }
 window.closeBigPanel = () => {
   jarvisRecordStep({ type: "nav", which: "orbit" });  // "go home" is a task step too
-  stopAllPanelPolls();
-  $("#bigpanel").classList.remove("open");
-  setActiveSideItem(null);
-  // stopAllPanelPolls() -> VillageView.unmount() cancels the village's own
-  // render loop and NOTHING used to restart it -- mountVillageHome() only
-  // ever ran once, at page load. That's why the village went permanently
-  // blank and unclickable the moment you visited any panel and came back:
-  // the canvas just sat there frozen on its last frame forever. Remounting
-  // here is what actually brings it back to life.
-  mountVillageHome();
+  openBigPanel("overview");
 };
+
+// ============================================================ OVERVIEW SCENE
+// The new home -- replaces the 3D village. A real summary (live totals, a
+// quick-jump card per section, recent activity), not a decorative landing
+// screen, so arriving here is actually useful rather than just pretty.
+const OVERVIEW_CARDS = [
+  { key: "missioncontrol", icon: "🛰️", title: "Mission Control", blurb: "Live agent status, channel health, the uplink." },
+  { key: "jobs", icon: "🎬", title: "Videos", blurb: "Every render -- in progress, published, or failed." },
+  { key: "channels", icon: "📺", title: "Channels", blurb: "Niches, automation, and platform connections." },
+  { key: "settings", icon: "⚙️", title: "Settings", blurb: "API keys, schedule, and the control panel." },
+  { key: "jarvis", icon: "🎙️", title: "Jarvis", blurb: "Talk to it, watch it work, hand it a task." },
+];
+
+async function renderOverviewScene(body) {
+  body.innerHTML = `<div class="ov-wrap"><div class="ov-loading">Loading overview…</div></div>`;
+  let data = { channels: [], totals: {}, uplink: "…" };
+  let activity = [];
+  try {
+    [data, activity] = await Promise.all([
+      API("/api/missioncontrol/overview"),
+      API("/api/missioncontrol/activity?limit=8").catch(() => []),
+    ]);
+  } catch (e) { /* show whatever we got -- an empty overview beats a crash */ }
+
+  const t = data.totals || {};
+  // Feed the topbar's own stat cluster from the same call -- these elements
+  // existed in the markup before this rewrite but nothing was ever wiring
+  // them (a pre-existing gap, not something this change introduced).
+  const setStat = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  setStat("stat-videos", t.videos_total ?? 0);
+  setStat("stat-published", t.videos_total ?? 0);
+  setStat("stat-today", t.videos_today ?? 0);
+  setStat("stat-progress", t.agents_live ?? 0);
+
+  const hour = new Date().getHours();
+  const greeting = hour < 5 ? "Still up" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+
+  body.innerHTML = `
+    <div class="ov-wrap">
+      <div class="ov-head">
+        <div class="ov-greeting">${greeting}.</div>
+        <div class="ov-uplink ${String(data.uplink).toLowerCase()}"><span class="ov-uplink-dot"></span>${escapeHtml(String(data.uplink || "—"))}</div>
+      </div>
+
+      <div class="ov-stats">
+        <div class="ov-stat"><div class="ov-stat-val">${(t.subscribers ?? 0).toLocaleString()}</div><div class="ov-stat-label">Subscribers</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${(t.views ?? 0).toLocaleString()}</div><div class="ov-stat-label">Views</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${(t.videos_total ?? 0).toLocaleString()}</div><div class="ov-stat-label">Videos made</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${t.videos_today ?? 0}</div><div class="ov-stat-label">Today</div></div>
+      </div>
+
+      <div class="ov-cards">
+        ${OVERVIEW_CARDS.map((c) => `
+          <button class="ov-card" data-jump="${c.key}">
+            <div class="ov-card-icon">${c.icon}</div>
+            <div class="ov-card-title">${c.title}</div>
+            <div class="ov-card-blurb">${c.blurb}</div>
+          </button>
+        `).join("")}
+      </div>
+
+      ${activity.length ? `
+        <div class="ov-activity">
+          <div class="ov-section-label">Recent activity</div>
+          ${activity.slice(0, 8).map((a) => `<div class="ov-activity-row">${escapeHtml(String(a.text || a))}</div>`).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
+  body.querySelectorAll(".ov-card").forEach((c) =>
+    c.addEventListener("click", () => openBigPanel(c.dataset.jump)));
+}
 
 async function renderChannelsPanel(body) {
   body.innerHTML = `<h1>Channels</h1><div class="bp-sub">Each channel is its own faceless brand — niche, voice, and platform links.</div><div id="ch-list"></div>`;
@@ -3850,42 +3946,32 @@ function updateVillage(agentList) {
 
 // ============================================================ INIT
 async function init() {
-  // The village is the home view. The starfield, orbit camera and
-  // constellation renderer are gone entirely -- keeping them would mean a
-  // second full-screen animation loop running behind an opaque village for
-  // no benefit, which is exactly what made the old app lag.
-  initConsole();
+  // The 3D village is gone entirely -- it was a second full-screen animation
+  // loop competing for frame budget, which is exactly what made the old app
+  // lag. Overview is now just the first scene in the same scroll track as
+  // everything else (see index.html + the SCENE NAVIGATION block above).
   initClock();
-  mountVillageHome();
   pollActiveJob();
   bannerPoll = pollInterval(pollActiveJob, 5000);
   const skip = $("#boot-skip");
   if (skip) skip.addEventListener("click", endBoot);
 
-  // toolbar buttons
-  // Navigation is the left sidebar only -- the duplicate right-hand toolbar
-  // was removed since every button led to the same place as a sidebar item.
-
-  // left sidebar -- same destinations as the toolbar icons, just labeled.
-  // "Orbit" is the one that closes any open panel and returns to the
-  // starfield/constellation view rather than opening a panel.
-  Object.entries(SIDE_MAP).forEach(([id, panel]) => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener("click", () => {
-      openBigPanel(panel); setActiveSideItem(panel);
-      // A clicked <button> keeps keyboard focus by default. Left as-is,
-      // pressing Enter for push-to-talk right after opening Jarvis ALSO
-      // fires the browser's native "Enter activates the focused button"
-      // behavior -- re-clicking this same nav button, which re-opens
-      // (fully re-mounts) the panel mid-recording. That's the actual
-      // cause of "the second I say hey jarvis it cuts off and restarts" --
-      // synthetic test events never caught it because only a real,
-      // physical keypress triggers that native default action.
+  // Scroll-driven navigation: a real scroll gesture activates a scene via
+  // the IntersectionObserver; the dot-nav is the click-to-jump alternative
+  // (same destinations the old sidebar had, same openBigPanel/closeBigPanel
+  // every other feature already calls -- see the SCENE NAVIGATION block).
+  _jarvisSetupSceneObserver();
+  document.querySelectorAll("#dot-nav .dot").forEach((el) => {
+    el.addEventListener("click", () => {
+      const which = el.dataset.jump;
+      if (which === "overview") closeBigPanel(); else openBigPanel(which);
+      // A clicked <button> keeps keyboard focus by default, which used to
+      // make Enter (push-to-talk) re-click the last-focused nav button
+      // instead of starting a recording -- blurring closes that off.
       el.blur();
     });
   });
-  $("#side-orbit").addEventListener("click", () => { closeBigPanel(); });
-  setActiveSideItem(null);
+  _jarvisActivateScene("overview");  // render the home scene immediately, don't wait on the observer's first fire
   jarvisSetupGlobalPushToTalk();
   // Browsers sometimes pause speechSynthesis (not the ElevenLabs <audio>
   // path -- real <audio> elements aren't affected) when a tab goes to the
@@ -3910,8 +3996,6 @@ async function init() {
     const btn = e.target.closest("button");
     if (btn) btn.blur();
   });
-  $("#bigpanel").addEventListener("click", (e) => { if (e.target.id === "bigpanel") closeBigPanel(); });
-
   // Deliberately NOT awaited. The boot animation used to wait for this
   // network round-trip to finish before it even started playing -- on
   // localhost that request is sub-millisecond so it was never noticed, but
