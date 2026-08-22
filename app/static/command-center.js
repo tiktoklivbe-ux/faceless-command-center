@@ -215,7 +215,7 @@ async function runCommand(text) {
       // Show the banner immediately rather than waiting up to 5s for the
       // next poll -- the whole point is that starting a video is obvious.
       renderJobBanner({ title: res.topic, status: "queued", stage_log: "" });
-      toast("Video started — watch the village.");
+      toast("Video started — watch it in Mission Control.");
       pollActiveJob();
       refreshAll();
     }
@@ -543,7 +543,7 @@ async function renderJobsPanel(body) {
   // firing and overwrites the library with the previous job's detail view --
   // which looks like the tab going blank when you reopen it.
   if (jobPoll) { clearInterval(jobPoll); jobPoll = null; }
-  body.innerHTML = `<h1>Video Library</h1><div class="bp-sub">Every video the constellation has produced.</div><div id="jb-list"></div>`;
+  body.innerHTML = `<h1>Video Library</h1><div class="bp-sub">Every video this channel has produced.</div><div id="jb-list"></div>`;
   const [jobs, channels] = await Promise.all([API("/api/jobs"), API("/api/channels")]);
   const list = $("#jb-list");
   if (!jobs.length) list.innerHTML = `<div class="card">No videos yet. Ask AETHER to "make a video about…"</div>`;
@@ -741,7 +741,7 @@ async function renderMissionControlPanel(body) {
         <button class="msc-nav-item" data-nav="channels">Channels</button>
         <button class="msc-nav-item" data-nav="jobs">Video Library</button>
         <button class="msc-nav-item" data-nav="settings">Control Panel</button>
-        <button class="msc-nav-item" id="msc-nav-orbit">← Back to Orbit</button>
+        <button class="msc-nav-item" id="msc-nav-orbit">← Back to Overview</button>
       </nav>
       <div class="msc-main">
         <h1 style="margin-bottom:2px">Mission Control</h1>
@@ -2236,7 +2236,7 @@ function jarvisMatchTrainedGesture(landmarks, gestures) {
 // capability. "nav:" opens one of the app's real panels; everything else
 // goes through the same jarvisCameraDockAction used by Jarvis's own tool.
 const JARVIS_GESTURE_ACTIONS = [
-  { value: "nav:orbit", label: "Open Village (home)" },
+  { value: "nav:orbit", label: "Open Overview (home)" },
   { value: "nav:missioncontrol", label: "Open Mission Control" },
   { value: "nav:jobs", label: "Open Videos" },
   { value: "nav:channels", label: "Open Channels" },
@@ -3370,7 +3370,7 @@ async function renderJarvisPanel(body) {
       </div>
 
       <div class="jarvis-nav-stack" id="jarvis-nav-stack">
-        <button class="jarvis-nav-item" data-nav="orbit">🏘️ Village</button>
+        <button class="jarvis-nav-item" data-nav="orbit">◈ Overview</button>
         <button class="jarvis-nav-item" data-nav="missioncontrol">🛰️ Mission Control</button>
         <button class="jarvis-nav-item" data-nav="jobs">🎬 Videos</button>
         <button class="jarvis-nav-item" data-nav="channels">📺 Channels</button>
