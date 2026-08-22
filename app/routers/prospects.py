@@ -10,12 +10,14 @@ router = APIRouter(prefix="/api/prospects", tags=["prospects"])
 
 
 @router.get("/search")
-def search_businesses(term: str, location: str, db: Session = Depends(get_db)):
-    """Free lead search (OpenStreetMap) -- see business_search.py. Doesn't
-    touch the Prospect table at all; results are added as prospects
-    explicitly, one click at a time, from the frontend."""
-    if not term.strip() or not location.strip():
-        raise HTTPException(400, "Need both a search term and a location.")
+def search_businesses(location: str, term: str = "", db: Session = Depends(get_db)):
+    """Free lead search (OpenStreetMap) -- see business_search.py. Term is
+    optional now: leave it blank for 'find me really anything nearby' rather
+    than requiring a specific category guess. Doesn't touch the Prospect
+    table at all; results are added as prospects explicitly, one click at a
+    time, from the frontend."""
+    if not location.strip():
+        raise HTTPException(400, "Need a location to search near.")
     try:
         return business_search.search_businesses(term.strip(), location.strip())
     except Exception as e:

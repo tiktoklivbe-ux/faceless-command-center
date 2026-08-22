@@ -55,7 +55,7 @@ def search_businesses(term: str, location: str, radius_m: int = 4000, limit: int
     if not coords:
         return {"error": f"Couldn't find a location matching '{location}'.", "results": []}
     lat, lon = coords
-    t = _esc(term)
+    t = _esc((term or "").strip())
     # Dropped the unfiltered node["name"~...] clause that was here -- proven
     # live to be what actually caused the timeouts: it has to scan every
     # named node in the whole radius with no category to narrow by first,
@@ -67,13 +67,25 @@ def search_businesses(term: str, location: str, radius_m: int = 4000, limit: int
     # gives it a bit more real room; the outer request timeout below is set
     # with enough margin over this to let it actually finish rather than
     # getting cut off by OUR side first.
-    query = f"""
-    [out:json][timeout:15];
-    (
+    if t:
+        clauses = f"""
       node["shop"~"{t}",i](around:{radius_m},{lat},{lon});
       node["amenity"~"{t}",i](around:{radius_m},{lat},{lon});
       node["craft"~"{t}",i](around:{radius_m},{lat},{lon});
-      node["office"~"{t}",i](around:{radius_m},{lat},{lon});
+      node["office"~"{t}",i](around:{radius_m},{lat},{lon});"""
+    else:
+        # No term at all -- "find me really anything to email": match ANY
+        # node carrying one of these tags, no value filter, so it's genuinely
+        # "any business nearby" rather than requiring a category guess.
+        clauses = f"""
+      node["shop"](around:{radius_m},{lat},{lon});
+      node["amenity"](around:{radius_m},{lat},{lon});
+      node["craft"](around:{radius_m},{lat},{lon});
+      node["office"](around:{radius_m},{lat},{lon});"""
+    query = f"""
+    [out:json][timeout:15];
+    (
+      {clauses}
     );
     out body {limit};
     """

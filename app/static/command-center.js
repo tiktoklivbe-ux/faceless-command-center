@@ -520,10 +520,17 @@ async function renderBusinessScene(body) {
         <div class="ov-stat"><div class="ov-stat-val">${counts.won || 0}</div><div class="ov-stat-label">Won</div></div>
       </div>
 
+      ${(counts.new || 0) > 0 ? `
+        <button class="ov-card" id="biz-draft-all" style="cursor:pointer;margin-bottom:16px;padding:12px 18px">
+          ✎ Draft outreach for all ${counts.new} undrafted prospect${counts.new === 1 ? "" : "s"}
+        </button>
+        <div class="ov-stat-label" style="margin-bottom:16px">Each gets its own AI-written email based on that specific business -- never the same wording twice, even sent to similar businesses. Still your click to actually send any of them.</div>
+      ` : ""}
+
       <div class="biz-search-box">
         <div class="ov-section-label">Find businesses</div>
         <div class="biz-search-row">
-          <input id="biz-search-term" placeholder="e.g. plumber, salon, restaurant"/>
+          <input id="biz-search-term" placeholder="What kind (optional -- leave blank for anything nearby)"/>
           <input id="biz-search-location" placeholder="City, state or zip"/>
           <button class="ov-card" id="biz-search-btn" style="cursor:pointer;padding:9px 16px">Search</button>
         </div>
@@ -575,12 +582,27 @@ async function renderBusinessScene(body) {
     renderBusinessScene(body);
   });
 
+  const draftAllBtn = document.getElementById("biz-draft-all");
+  if (draftAllBtn) draftAllBtn.addEventListener("click", async () => {
+    const undrafted = prospects.filter((x) => x.status === "new");
+    if (!confirm(`Draft outreach emails for ${undrafted.length} prospect${undrafted.length === 1 ? "" : "s"}? `
+      + `This makes ${undrafted.length} real AI call${undrafted.length === 1 ? "" : "s"} -- one per business, each independently written.`)) return;
+    for (let i = 0; i < undrafted.length; i++) {
+      draftAllBtn.textContent = `Drafting ${i + 1} of ${undrafted.length}…`;
+      try {
+        await API(`/api/prospects/${undrafted[i].id}/draft-outreach`, { method: "POST" });
+      } catch (err) { toast(`Couldn't draft for ${undrafted[i].business_name}: ${err.message}`); }
+    }
+    toast(`Drafted ${undrafted.length} email${undrafted.length === 1 ? "" : "s"}.`);
+    renderBusinessScene(body);
+  });
+
   const searchBtn = document.getElementById("biz-search-btn");
   const searchResults = document.getElementById("biz-search-results");
   if (searchBtn) searchBtn.addEventListener("click", async () => {
     const term = document.getElementById("biz-search-term").value.trim();
     const location = document.getElementById("biz-search-location").value.trim();
-    if (!term || !location) { toast("Enter both what to search for and where."); return; }
+    if (!location) { toast("Enter a location to search near."); return; }
     searchBtn.textContent = "Searching…";
     searchResults.innerHTML = "";
     try {
