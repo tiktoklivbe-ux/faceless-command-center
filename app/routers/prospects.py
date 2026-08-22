@@ -51,6 +51,22 @@ def get_prospect(prospect_id: str, db: Session = Depends(get_db)):
     return p
 
 
+@router.patch("/{prospect_id}", response_model=schemas.ProspectOut)
+def update_prospect(prospect_id: str, payload: schemas.ProspectIn, db: Session = Depends(get_db)):
+    """Edit a prospect's own info -- exists specifically because search
+    results often arrive with no email (OSM rarely has one): this is how you
+    fill it in later once you actually find it (a phone call, their website,
+    wherever), rather than being stuck with whatever was there at creation."""
+    p = db.get(models.Prospect, prospect_id)
+    if not p:
+        raise HTTPException(404, "Prospect not found")
+    for k, v in payload.model_dump().items():
+        setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
 @router.delete("/{prospect_id}")
 def delete_prospect(prospect_id: str, db: Session = Depends(get_db)):
     p = db.get(models.Prospect, prospect_id)

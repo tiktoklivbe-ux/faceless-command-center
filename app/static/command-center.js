@@ -674,11 +674,14 @@ async function renderBusinessScene(body) {
 function _bizRenderDetail(detail, p, row, sceneBody) {
   detail.innerHTML = `
     <div class="biz-detail-grid">
-      <div>
-        ${p.contact_email ? `<div class="ov-stat-label">Email: ${escapeHtml(p.contact_email)}</div>` : ""}
-        ${p.phone ? `<div class="ov-stat-label">Phone: ${escapeHtml(p.phone)}</div>` : ""}
-        ${p.website ? `<div class="ov-stat-label">Web: ${escapeHtml(p.website)}</div>` : ""}
-        ${p.notes ? `<div class="ov-stat-label" style="margin-top:6px">${escapeHtml(p.notes)}</div>` : ""}
+      <div class="biz-contact-edit">
+        <div class="ov-section-label">Contact info -- fill in / update whenever you actually find it (a call, their site, wherever)</div>
+        <input class="biz-edit-email" placeholder="Email -- not on file yet" value="${escapeHtml(p.contact_email)}"/>
+        <input class="biz-edit-phone" placeholder="Phone -- not on file yet" value="${escapeHtml(p.phone)}"/>
+        ${p.phone ? `<a class="biz-tel-link" href="tel:${escapeHtml(p.phone.replace(/[^0-9+]/g, ""))}">📞 Call ${escapeHtml(p.phone)}</a>` : ""}
+        <button class="ov-card biz-btn-save-contact" style="cursor:pointer;padding:6px 12px;display:inline-block;margin-top:4px">Save contact info</button>
+        ${p.website ? `<div class="ov-stat-label" style="margin-top:8px">Web: ${escapeHtml(p.website)}</div>` : ""}
+        ${p.notes ? `<div class="ov-stat-label" style="margin-top:4px">${escapeHtml(p.notes)}</div>` : ""}
       </div>
       <div class="biz-actions">
         <button class="ov-card biz-btn-draft" style="cursor:pointer;padding:8px 14px">✎ Draft outreach email</button>
@@ -693,8 +696,9 @@ function _bizRenderDetail(detail, p, row, sceneBody) {
         <div class="ov-section-label">Outreach draft</div>
         <div class="biz-draft-subject">${escapeHtml(p.draft_subject)}</div>
         <div class="biz-draft-body">${escapeHtml(p.draft_body)}</div>
-        <a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none"
-           href="${_bizMailto(p.contact_email, p.draft_subject, p.draft_body)}">✉ Open in email client &amp; send</a>
+        ${p.contact_email
+          ? `<a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none" href="${_bizMailto(p.contact_email, p.draft_subject, p.draft_body)}">✉ Open in email client &amp; send</a>`
+          : `<div class="ov-stat-label">No email on file yet -- add one above, or copy this text and send it however you reach them.</div>`}
       </div>
     ` : ""}
     <div class="biz-reply">
@@ -706,8 +710,9 @@ function _bizRenderDetail(detail, p, row, sceneBody) {
       <div class="biz-draft">
         <div class="ov-section-label">Response draft</div>
         <div class="biz-draft-body">${escapeHtml(p.response_draft)}</div>
-        <a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none"
-           href="${_bizMailto(p.contact_email, 'Re: ' + p.draft_subject, p.response_draft)}">✉ Open in email client &amp; send</a>
+        ${p.contact_email
+          ? `<a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none" href="${_bizMailto(p.contact_email, 'Re: ' + p.draft_subject, p.response_draft)}">✉ Open in email client &amp; send</a>`
+          : `<div class="ov-stat-label">No email on file yet -- add one above, or copy this text and send it however you reach them.</div>`}
       </div>
     ` : ""}
   `;
@@ -728,6 +733,17 @@ function _bizRenderDetail(detail, p, row, sceneBody) {
   };
   const fullRefresh = () => renderBusinessScene(sceneBody);  // only for delete, where the row itself must disappear
 
+  detail.querySelector(".biz-btn-save-contact").addEventListener("click", async (e) => {
+    const email = detail.querySelector(".biz-edit-email").value.trim();
+    const phone = detail.querySelector(".biz-edit-phone").value.trim();
+    e.target.textContent = "Saving…";
+    await API(`/api/prospects/${p.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ business_name: p.business_name, contact_name: p.contact_name, contact_email: email, phone, website: p.website, notes: p.notes }),
+    });
+    toast("Contact info saved.");
+    refreshInPlace();
+  });
   detail.querySelector(".biz-btn-draft").addEventListener("click", async (e) => {
     e.target.textContent = "Drafting…";
     try {

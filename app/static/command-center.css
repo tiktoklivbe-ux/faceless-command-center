@@ -158,6 +158,13 @@
 
 .biz-detail { padding: 4px 18px 18px; border-top: 1px solid var(--border-soft); }
 .biz-detail-grid { display: flex; justify-content: space-between; gap: 20px; padding-top: 14px; flex-wrap: wrap; }
+.biz-contact-edit { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+.biz-contact-edit input {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 10px; color: var(--ink); font-family: var(--font-body); font-size: 13px; width: 100%;
+}
+.biz-tel-link { color: var(--green); font-size: 13px; text-decoration: none; }
+.biz-tel-link:hover { text-decoration: underline; }
 .biz-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .biz-draft { background: rgba(91,140,255,0.05); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
 .biz-draft-subject { font-weight: 700; margin-bottom: 6px; }
