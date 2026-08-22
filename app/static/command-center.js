@@ -300,7 +300,12 @@ const sparkData = {};
 // quick-access panel, the job banner's "Open" button) already calls these,
 // so the whole rest of the app didn't need to change to get the new shell --
 // only what happens INSIDE these two functions did.
-let jarvisCurrentScene = "overview";
+// null, not "overview" -- _jarvisActivateScene short-circuits when `which`
+// already equals the current scene, so defaulting this to "overview" made
+// the very first activation on boot ("go to overview") a no-op: it looked
+// identical to the already-there case, and nothing ever rendered. Caught by
+// actually loading the page rather than trusting static checks alone.
+let jarvisCurrentScene = null;
 const SCENE_NAMES = ["overview", "missioncontrol", "jobs", "channels", "settings", "jarvis"];
 const SCENE_RENDERERS = {
   overview: (body) => renderOverviewScene(body),
