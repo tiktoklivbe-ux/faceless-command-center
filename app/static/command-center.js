@@ -594,13 +594,13 @@ async function renderBusinessScene(body) {
       expandBtn.textContent = opening ? "Close ▴" : "Open ▾";
       if (opening && !detail.dataset.rendered) {
         detail.dataset.rendered = "1";
-        _bizRenderDetail(detail, p, body);
+        _bizRenderDetail(detail, p, row, body);
       }
     });
   });
 }
 
-function _bizRenderDetail(detail, p, sceneBody) {
+function _bizRenderDetail(detail, p, row, sceneBody) {
   detail.innerHTML = `
     <div class="biz-detail-grid">
       <div>
@@ -641,30 +641,45 @@ function _bizRenderDetail(detail, p, sceneBody) {
     ` : ""}
   `;
 
-  const refresh = () => renderBusinessScene(sceneBody);
+  // Re-fetch just this one prospect and redraw the row + its still-open
+  // detail panel in place -- the original version called a full scene
+  // refresh here, which rebuilds every row from scratch and collapses them
+  // all back down, so generating a draft immediately hid the draft you just
+  // made. Caught by actually testing the flow, not just reading the code.
+  const refreshInPlace = async () => {
+    const fresh = await API(`/api/prospects/${p.id}`);
+    const badge = row.querySelector(".biz-status");
+    if (badge) {
+      badge.className = `biz-status biz-status-${fresh.status}`;
+      badge.textContent = PROSPECT_STATUS_LABEL[fresh.status] || fresh.status;
+    }
+    _bizRenderDetail(detail, fresh, row, sceneBody);
+  };
+  const fullRefresh = () => renderBusinessScene(sceneBody);  // only for delete, where the row itself must disappear
+
   detail.querySelector(".biz-btn-draft").addEventListener("click", async (e) => {
     e.target.textContent = "Drafting…";
     try {
       await API(`/api/prospects/${p.id}/draft-outreach`, { method: "POST" });
-      refresh();
+      refreshInPlace();
     } catch (err) { toast(`Couldn't draft it: ${err.message}`); e.target.textContent = "✎ Draft outreach email"; }
   });
   detail.querySelector(".biz-btn-contacted").addEventListener("click", async () => {
     await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "contacted" }) });
-    refresh();
+    refreshInPlace();
   });
   detail.querySelector(".biz-btn-won").addEventListener("click", async () => {
     await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "won" }) });
-    refresh();
+    refreshInPlace();
   });
   detail.querySelector(".biz-btn-lost").addEventListener("click", async () => {
     await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "lost" }) });
-    refresh();
+    refreshInPlace();
   });
   detail.querySelector(".biz-btn-delete").addEventListener("click", async () => {
     if (!confirm(`Delete ${p.business_name}? This can't be undone.`)) return;
     await API(`/api/prospects/${p.id}`, { method: "DELETE" });
-    refresh();
+    fullRefresh();
   });
   detail.querySelector(".biz-btn-reply").addEventListener("click", async (e) => {
     const text = detail.querySelector(".biz-reply-input").value.trim();
@@ -672,7 +687,7 @@ function _bizRenderDetail(detail, p, sceneBody) {
     e.target.textContent = "Drafting…";
     try {
       await API(`/api/prospects/${p.id}/draft-reply`, { method: "POST", body: JSON.stringify({ reply_text: text }) });
-      refresh();
+      refreshInPlace();
     } catch (err) { toast(`Couldn't draft it: ${err.message}`); e.target.textContent = "✎ Draft my response"; }
   });
 }
