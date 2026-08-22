@@ -111,6 +111,15 @@ def search_businesses(term: str, location: str, radius_m: int = 4000, limit: int
 
 _EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _GENERIC_LOCAL_PARTS = {"info", "contact", "hello", "sales", "office", "admin", "support"}
+# "logo@2x.png" / "icon@3x.jpg" -- the standard retina/high-DPI image naming
+# convention -- structurally matches a valid-looking email (word@word.ext),
+# and it's genuinely common enough in real page HTML that it showed up on
+# the very first live test. Filtered out by extension, not by the @Nx part
+# specifically, since any word.<these> is a file reference, never an email.
+_NON_EMAIL_EXTENSIONS = {
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif",
+    "css", "js", "mjs", "woff", "woff2", "ttf", "eot", "otf", "map",
+}
 
 
 def find_contact_email(website: str) -> str:
@@ -132,7 +141,8 @@ def find_contact_email(website: str) -> str:
         return ""
     if resp.status_code != 200:
         return ""
-    emails = set(_EMAIL_PATTERN.findall(resp.text))
+    candidates = set(_EMAIL_PATTERN.findall(resp.text))
+    emails = {e for e in candidates if e.rsplit(".", 1)[-1].lower() not in _NON_EMAIL_EXTENSIONS}
     if not emails:
         return ""
     # Prefer a generic contact-style address over a personal-looking one if
