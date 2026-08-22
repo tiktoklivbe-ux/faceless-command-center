@@ -50,20 +50,30 @@ def _esc(term: str) -> str:
     return re.sub(r'[\\"]', "", term)[:80]
 
 
-def search_businesses(term: str, location: str, radius_m: int = 6000, limit: int = 25) -> dict:
+def search_businesses(term: str, location: str, radius_m: int = 4000, limit: int = 25) -> dict:
     coords = geocode_location(location)
     if not coords:
         return {"error": f"Couldn't find a location matching '{location}'.", "results": []}
     lat, lon = coords
     t = _esc(term)
+    # Dropped the unfiltered node["name"~...] clause that was here -- proven
+    # live to be what actually caused the timeouts: it has to scan every
+    # named node in the whole radius with no category to narrow by first,
+    # which is a much heavier query than the other four (each scoped to one
+    # indexed tag key). Radius also brought down from 6km to 4km (less area
+    # to scan). Overpass's own [timeout:N] is best-effort, not a hard wall --
+    # a live test at timeout:10 still ran ~11.4s and got cut off mid-query
+    # (returned partial real results plus a truncation "remark"), so this
+    # gives it a bit more real room; the outer request timeout below is set
+    # with enough margin over this to let it actually finish rather than
+    # getting cut off by OUR side first.
     query = f"""
-    [out:json][timeout:25];
+    [out:json][timeout:15];
     (
       node["shop"~"{t}",i](around:{radius_m},{lat},{lon});
       node["amenity"~"{t}",i](around:{radius_m},{lat},{lon});
       node["craft"~"{t}",i](around:{radius_m},{lat},{lon});
       node["office"~"{t}",i](around:{radius_m},{lat},{lon});
-      node["name"~"{t}",i](around:{radius_m},{lat},{lon});
     );
     out body {limit};
     """
@@ -73,7 +83,7 @@ def search_businesses(term: str, location: str, radius_m: int = 6000, limit: int
     # other request/health check with it. Confirmed live: a 30s timeout
     # produced a genuine platform-level 502 on the whole site while this one
     # request was stuck. Failing fast beats hanging everything else.
-    resp = requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=12)
+    resp = requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=20)
     resp.raise_for_status()
     elements = resp.json().get("elements", [])
 
