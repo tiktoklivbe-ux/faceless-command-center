@@ -113,7 +113,9 @@
 .ov-activity-row:last-child { border-bottom: none; }
 
 /* ---------------- Business scene (Part 2: prospect outreach) ---------------- */
-.biz-pitch-nudge { background: var(--panel); border: 1px solid var(--amber); border-radius: 14px; padding: 18px 20px; margin-bottom: 24px; font-size: 13.5px; }
+.biz-pitch-nudge { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px 20px; margin-bottom: 24px; font-size: 13.5px; }
+.biz-pitch-nudge.needs-pitch { border-color: var(--amber); }
+.biz-pitch-toggle { background: none; border: none; color: var(--cyan); cursor: pointer; font-size: 13px; font-family: var(--font-body); padding: 0; }
 .biz-pitch-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .biz-pitch-form textarea { min-height: 80px; }
 

@@ -502,16 +502,16 @@ async function renderBusinessScene(body) {
         <div class="ov-greeting">Business</div>
       </div>
 
-      ${!pitchSet ? `
-        <div class="biz-pitch-nudge">
-          <b>Set your pitch first</b> -- what you're selling, so drafts are actually about your real offer, not generic filler.
-          <div class="biz-pitch-form">
-            <textarea id="biz-pitch-input" placeholder="e.g. I build AI automation systems for small businesses -- content pipelines, customer follow-up, scheduling. Typically saves 10-15 hrs/week of manual work.">${escapeHtml(sval("business_pitch"))}</textarea>
-            <input id="biz-sender-input" placeholder="Sign emails as… (your name)" value="${escapeHtml(sval("business_sender_name"))}"/>
-            <button class="ov-card" id="biz-save-pitch" style="cursor:pointer;padding:10px 18px;display:inline-block">Save pitch</button>
-          </div>
+      <div class="biz-pitch-nudge${pitchSet ? "" : " needs-pitch"}">
+        ${pitchSet
+          ? `<button class="biz-pitch-toggle" id="biz-pitch-toggle">✎ Edit your pitch</button>`
+          : `<b>Set your pitch first</b> -- what you're selling, so drafts are actually about your real offer, not generic filler.`}
+        <div class="biz-pitch-form" id="biz-pitch-form" style="${pitchSet ? "display:none" : ""}">
+          <textarea id="biz-pitch-input" placeholder="e.g. I build AI automation systems for small businesses -- content pipelines, customer follow-up, scheduling. Typically saves 10-15 hrs/week of manual work.">${escapeHtml(sval("business_pitch"))}</textarea>
+          <input id="biz-sender-input" placeholder="Sign emails as… (your name)" value="${escapeHtml(sval("business_sender_name"))}"/>
+          <button class="ov-card" id="biz-save-pitch" style="cursor:pointer;padding:10px 18px;display:inline-block">Save pitch</button>
         </div>
-      ` : ""}
+      </div>
 
       <div class="ov-stats">
         <div class="ov-stat"><div class="ov-stat-val">${prospects.length}</div><div class="ov-stat-label">Prospects</div></div>
@@ -549,6 +549,11 @@ async function renderBusinessScene(body) {
     </div>
   `;
 
+  const pitchToggle = document.getElementById("biz-pitch-toggle");
+  if (pitchToggle) pitchToggle.addEventListener("click", () => {
+    const form = document.getElementById("biz-pitch-form");
+    form.style.display = form.style.display === "none" ? "flex" : "none";
+  });
   const savePitchBtn = document.getElementById("biz-save-pitch");
   if (savePitchBtn) savePitchBtn.addEventListener("click", async () => {
     const pitch = document.getElementById("biz-pitch-input").value.trim();
