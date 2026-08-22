@@ -98,3 +98,36 @@ class SettingsIn(BaseModel):
     github_repo_token: Optional[str] = None                # GitHub PAT, repo-scoped, for Jarvis to commit/push a website change
     github_repo_url: Optional[str] = None                   # e.g. "github.com/owner/repo" (no https://)
     render_deploy_hook_url: Optional[str] = None             # triggers a real deploy after Jarvis pushes
+    business_pitch: Optional[str] = None                      # what you're selling, used as AI context for outreach drafts
+    business_sender_name: Optional[str] = None                # how drafted emails are signed
+
+
+class ProspectIn(BaseModel):
+    business_name: str
+    contact_name: str = ""
+    contact_email: str = ""
+    phone: str = ""
+    website: str = ""
+    notes: str = ""
+
+
+class ProspectStatusIn(BaseModel):
+    status: str  # "new" | "drafted" | "contacted" | "replied" | "won" | "lost"
+
+
+class ProspectReplyIn(BaseModel):
+    reply_text: str
+
+
+class ProspectOut(ProspectIn):
+    id: str
+    status: str
+    draft_subject: str = ""
+    draft_body: str = ""
+    last_reply_text: str = ""
+    response_draft: str = ""
+    created_at: datetime
+    contacted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

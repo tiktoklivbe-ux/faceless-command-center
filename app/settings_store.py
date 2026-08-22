@@ -99,6 +99,12 @@ KNOWN_KEYS = {
     "github_repo_token": True,
     "github_repo_url": False,  # e.g. "github.com/tiktoklivbe-ux/faceless-command-center" (no https://)
     "render_deploy_hook_url": True,  # triggers a real deploy after Jarvis pushes a change; secret (embeds an API key)
+
+    # Business/outreach module (Part 2): what you're actually selling, used
+    # as context every time an outreach or reply-response email is drafted.
+    # Not secret -- it's a sales pitch, not a credential.
+    "business_pitch": False,
+    "business_sender_name": False,  # how you sign off drafted emails
 }
 
 

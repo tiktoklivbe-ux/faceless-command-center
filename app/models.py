@@ -181,6 +181,32 @@ class DeployTask(Base):
     status = Column(String, default="awaiting_confirmation")
     # "awaiting_confirmation" | "done" | "error" | "cancelled"
     output = Column(Text, default="")             # git/deploy output, or the error
-    allowed = Column(Boolean, default=True)       # False = whitelist blocked it
-    result = Column(Text, default="")             # what happened / why it was blocked
-    user_message = Column(Text, default="")       # the request that triggered this, for context
+
+
+class Prospect(Base):
+    """One business the user is trying to sell AI automation services to.
+    The 'auto contactor' business-development pipeline: add a prospect, get
+    an AI-drafted outreach email personalized with the user's own pitch
+    (settings_store's 'business_pitch'), open it ready-to-send in the user's
+    own email client (a mailto: link -- the actual send is always their
+    click, same reasoning as everywhere else this app touches messaging),
+    then when they reply, paste that reply in and get an AI-drafted response
+    the same way. Nothing here ever sends anything itself."""
+    __tablename__ = "prospects"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    business_name = Column(String, nullable=False)
+    contact_name = Column(String, default="")
+    contact_email = Column(String, default="")
+    phone = Column(String, default="")
+    website = Column(String, default="")
+    notes = Column(Text, default="")
+    status = Column(String, default="new")
+    # "new" | "drafted" | "contacted" | "replied" | "won" | "lost"
+    draft_subject = Column(Text, default="")      # most recent AI-drafted outreach email
+    draft_body = Column(Text, default="")
+    last_reply_text = Column(Text, default="")    # what the prospect wrote back (pasted in by the user)
+    response_draft = Column(Text, default="")     # AI's suggested reply to that
+    contacted_at = Column(DateTime, nullable=True)

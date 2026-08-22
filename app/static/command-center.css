@@ -112,11 +112,52 @@
 .ov-activity-row { font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--border-soft); color: var(--ink); }
 .ov-activity-row:last-child { border-bottom: none; }
 
+/* ---------------- Business scene (Part 2: prospect outreach) ---------------- */
+.biz-pitch-nudge { background: var(--panel); border: 1px solid var(--amber); border-radius: 14px; padding: 18px 20px; margin-bottom: 24px; font-size: 13.5px; }
+.biz-pitch-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.biz-pitch-form textarea { min-height: 80px; }
+
+.biz-add-form { flex-direction: column; gap: 10px; margin-bottom: 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+.biz-pitch-form input, .biz-pitch-form textarea,
+.biz-add-form input, .biz-add-form textarea,
+.biz-reply-input {
+  width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 12px; color: var(--ink); font-family: var(--font-body); font-size: 13.5px;
+}
+.biz-add-form textarea, .biz-reply-input { min-height: 60px; resize: vertical; }
+
+.biz-list { display: flex; flex-direction: column; gap: 10px; }
+.biz-row { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.biz-row-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; }
+.biz-expand-btn {
+  background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer; font-family: var(--font-body);
+}
+.biz-expand-btn:hover { border-color: var(--cyan); color: var(--ink); }
+
+.biz-status { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 5px; margin-right: 10px; }
+.biz-status-new { background: rgba(138,147,163,0.18); color: var(--muted); }
+.biz-status-drafted { background: rgba(91,140,255,0.15); color: var(--cyan); }
+.biz-status-contacted { background: rgba(251,191,36,0.15); color: var(--amber); }
+.biz-status-replied { background: rgba(139,147,255,0.18); color: var(--violet); }
+.biz-status-won { background: rgba(74,222,128,0.15); color: var(--green); }
+.biz-status-lost { background: rgba(248,113,113,0.15); color: var(--red); }
+
+.biz-detail { padding: 4px 18px 18px; border-top: 1px solid var(--border-soft); }
+.biz-detail-grid { display: flex; justify-content: space-between; gap: 20px; padding-top: 14px; flex-wrap: wrap; }
+.biz-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.biz-draft { background: rgba(91,140,255,0.05); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
+.biz-draft-subject { font-weight: 700; margin-bottom: 6px; }
+.biz-draft-body { white-space: pre-wrap; font-size: 13px; color: var(--ink); line-height: 1.5; margin-bottom: 10px; }
+.biz-reply { margin-top: 18px; }
+.biz-reply-input { min-height: 70px; margin-bottom: 8px; }
+
 @media (max-width: 760px) {
   .scene { padding: 78px 20px 32px; }
   .ov-stats { grid-template-columns: repeat(2, 1fr); }
   #dot-nav { right: 10px; }
   #dot-nav .dot span { display: none; }
+  .biz-detail-grid { flex-direction: column; }
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

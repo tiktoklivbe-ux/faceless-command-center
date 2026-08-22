@@ -306,7 +306,7 @@ const sparkData = {};
 // identical to the already-there case, and nothing ever rendered. Caught by
 // actually loading the page rather than trusting static checks alone.
 let jarvisCurrentScene = null;
-const SCENE_NAMES = ["overview", "missioncontrol", "jobs", "channels", "settings", "jarvis"];
+const SCENE_NAMES = ["overview", "missioncontrol", "jobs", "channels", "settings", "jarvis", "business"];
 const SCENE_RENDERERS = {
   overview: (body) => renderOverviewScene(body),
   missioncontrol: (body) => renderMissionControlPanel(body),
@@ -314,6 +314,7 @@ const SCENE_RENDERERS = {
   channels: (body) => renderChannelsPanel(body),
   settings: (body) => renderSettingsPanel(body),
   jarvis: (body) => renderJarvisPanel(body),
+  business: (body) => renderBusinessScene(body),
 };
 let _jarvisSceneObserver = null;
 let _jarvisSceneNavGuard = false;  // true while a programmatic scroll is in flight, so the observer doesn't double-activate mid-glide
@@ -402,6 +403,7 @@ const OVERVIEW_CARDS = [
   { key: "channels", icon: "📺", title: "Channels", blurb: "Niches, automation, and platform connections." },
   { key: "settings", icon: "⚙️", title: "Settings", blurb: "API keys, schedule, and the control panel." },
   { key: "jarvis", icon: "🎙️", title: "Jarvis", blurb: "Talk to it, watch it work, hand it a task." },
+  { key: "business", icon: "💼", title: "Business", blurb: "Prospects, AI-drafted outreach, and replies." },
 ];
 
 async function renderOverviewScene(body) {
@@ -462,6 +464,217 @@ async function renderOverviewScene(body) {
   `;
   body.querySelectorAll(".ov-card").forEach((c) =>
     c.addEventListener("click", () => openBigPanel(c.dataset.jump)));
+}
+
+// ============================================================ BUSINESS SCENE (Part 2)
+// The prospect/outreach pipeline: add a business, get an AI-drafted first
+// email personalized to your own pitch, open it ready-to-send in your own
+// email client (a mailto: link -- nothing here ever sends anything itself),
+// then when they reply, paste it in and get a drafted response the same way.
+const PROSPECT_STATUS_LABEL = {
+  new: "New", drafted: "Drafted", contacted: "Contacted",
+  replied: "Replied", won: "Won", lost: "Lost",
+};
+
+function _bizMailto(email, subject, body) {
+  const params = new URLSearchParams({ subject: subject || "", body: body || "" });
+  return `mailto:${encodeURIComponent(email || "")}?${params.toString().replace(/\+/g, "%20")}`;
+}
+
+async function renderBusinessScene(body) {
+  body.innerHTML = `<div class="ov-wrap"><div class="ov-loading">Loading…</div></div>`;
+  let prospects = [], settings = {};
+  try {
+    [prospects, settings] = await Promise.all([
+      API("/api/prospects").catch(() => []),
+      API("/api/settings").catch(() => ({})),
+    ]);
+  } catch (e) { /* show what we got */ }
+
+  const sval = (k) => { const v = settings[k]; return v && typeof v === "object" ? (v.value || "") : (v || ""); };
+  const pitchSet = !!sval("business_pitch");
+  const counts = {};
+  prospects.forEach((p) => { counts[p.status] = (counts[p.status] || 0) + 1; });
+
+  body.innerHTML = `
+    <div class="ov-wrap">
+      <div class="ov-head">
+        <div class="ov-greeting">Business</div>
+      </div>
+
+      ${!pitchSet ? `
+        <div class="biz-pitch-nudge">
+          <b>Set your pitch first</b> -- what you're selling, so drafts are actually about your real offer, not generic filler.
+          <div class="biz-pitch-form">
+            <textarea id="biz-pitch-input" placeholder="e.g. I build AI automation systems for small businesses -- content pipelines, customer follow-up, scheduling. Typically saves 10-15 hrs/week of manual work.">${escapeHtml(sval("business_pitch"))}</textarea>
+            <input id="biz-sender-input" placeholder="Sign emails as… (your name)" value="${escapeHtml(sval("business_sender_name"))}"/>
+            <button class="ov-card" id="biz-save-pitch" style="cursor:pointer;padding:10px 18px;display:inline-block">Save pitch</button>
+          </div>
+        </div>
+      ` : ""}
+
+      <div class="ov-stats">
+        <div class="ov-stat"><div class="ov-stat-val">${prospects.length}</div><div class="ov-stat-label">Prospects</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${counts.contacted || 0}</div><div class="ov-stat-label">Contacted</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${counts.replied || 0}</div><div class="ov-stat-label">Replied</div></div>
+        <div class="ov-stat"><div class="ov-stat-val">${counts.won || 0}</div><div class="ov-stat-label">Won</div></div>
+      </div>
+
+      <button class="ov-card" id="biz-add-toggle" style="cursor:pointer;margin-bottom:16px;padding:14px 18px">+ Add a prospect</button>
+      <div class="biz-add-form" id="biz-add-form" style="display:none">
+        <input id="biz-new-name" placeholder="Business name *"/>
+        <input id="biz-new-contact" placeholder="Contact name"/>
+        <input id="biz-new-email" placeholder="Email"/>
+        <input id="biz-new-phone" placeholder="Phone"/>
+        <input id="biz-new-website" placeholder="Website"/>
+        <textarea id="biz-new-notes" placeholder="Notes -- anything worth remembering"></textarea>
+        <button class="ov-card" id="biz-new-save" style="cursor:pointer;padding:10px 18px;display:inline-block">Add</button>
+      </div>
+
+      <div class="biz-list" id="biz-list">
+        ${prospects.length ? prospects.map((p) => `
+          <div class="biz-row" data-id="${p.id}">
+            <div class="biz-row-head">
+              <div>
+                <span class="biz-status biz-status-${p.status}">${PROSPECT_STATUS_LABEL[p.status] || p.status}</span>
+                <b>${escapeHtml(p.business_name)}</b>
+                ${p.contact_name ? `<span class="ov-stat-label"> · ${escapeHtml(p.contact_name)}</span>` : ""}
+              </div>
+              <button class="biz-expand-btn">Open ▾</button>
+            </div>
+            <div class="biz-detail" style="display:none"></div>
+          </div>
+        `).join("") : `<div class="ov-loading">No prospects yet -- add your first one above.</div>`}
+      </div>
+    </div>
+  `;
+
+  const savePitchBtn = document.getElementById("biz-save-pitch");
+  if (savePitchBtn) savePitchBtn.addEventListener("click", async () => {
+    const pitch = document.getElementById("biz-pitch-input").value.trim();
+    const sender = document.getElementById("biz-sender-input").value.trim();
+    if (!pitch) { toast("Write your pitch first."); return; }
+    await API("/api/settings", { method: "POST", body: JSON.stringify({ business_pitch: pitch, business_sender_name: sender }) });
+    toast("Pitch saved.");
+    renderBusinessScene(body);
+  });
+
+  const addToggle = document.getElementById("biz-add-toggle");
+  const addForm = document.getElementById("biz-add-form");
+  if (addToggle) addToggle.addEventListener("click", () => {
+    addForm.style.display = addForm.style.display === "none" ? "flex" : "none";
+  });
+  const addSave = document.getElementById("biz-new-save");
+  if (addSave) addSave.addEventListener("click", async () => {
+    const business_name = document.getElementById("biz-new-name").value.trim();
+    if (!business_name) { toast("Business name is required."); return; }
+    await API("/api/prospects", {
+      method: "POST",
+      body: JSON.stringify({
+        business_name,
+        contact_name: document.getElementById("biz-new-contact").value.trim(),
+        contact_email: document.getElementById("biz-new-email").value.trim(),
+        phone: document.getElementById("biz-new-phone").value.trim(),
+        website: document.getElementById("biz-new-website").value.trim(),
+        notes: document.getElementById("biz-new-notes").value.trim(),
+      }),
+    });
+    toast(`Added ${business_name}.`);
+    renderBusinessScene(body);
+  });
+
+  body.querySelectorAll(".biz-row").forEach((row) => {
+    const id = row.dataset.id;
+    const p = prospects.find((x) => x.id === id);
+    const expandBtn = row.querySelector(".biz-expand-btn");
+    const detail = row.querySelector(".biz-detail");
+    expandBtn.addEventListener("click", () => {
+      const opening = detail.style.display === "none";
+      detail.style.display = opening ? "block" : "none";
+      expandBtn.textContent = opening ? "Close ▴" : "Open ▾";
+      if (opening && !detail.dataset.rendered) {
+        detail.dataset.rendered = "1";
+        _bizRenderDetail(detail, p, body);
+      }
+    });
+  });
+}
+
+function _bizRenderDetail(detail, p, sceneBody) {
+  detail.innerHTML = `
+    <div class="biz-detail-grid">
+      <div>
+        ${p.contact_email ? `<div class="ov-stat-label">Email: ${escapeHtml(p.contact_email)}</div>` : ""}
+        ${p.phone ? `<div class="ov-stat-label">Phone: ${escapeHtml(p.phone)}</div>` : ""}
+        ${p.website ? `<div class="ov-stat-label">Web: ${escapeHtml(p.website)}</div>` : ""}
+        ${p.notes ? `<div class="ov-stat-label" style="margin-top:6px">${escapeHtml(p.notes)}</div>` : ""}
+      </div>
+      <div class="biz-actions">
+        <button class="ov-card biz-btn-draft" style="cursor:pointer;padding:8px 14px">✎ Draft outreach email</button>
+        <button class="ov-card biz-btn-contacted" style="cursor:pointer;padding:8px 14px">Mark contacted</button>
+        <button class="ov-card biz-btn-won" style="cursor:pointer;padding:8px 14px">Mark won</button>
+        <button class="ov-card biz-btn-lost" style="cursor:pointer;padding:8px 14px">Mark lost</button>
+        <button class="ov-card biz-btn-delete" style="cursor:pointer;padding:8px 14px;color:var(--red)">Delete</button>
+      </div>
+    </div>
+    ${p.draft_subject ? `
+      <div class="biz-draft">
+        <div class="ov-section-label">Outreach draft</div>
+        <div class="biz-draft-subject">${escapeHtml(p.draft_subject)}</div>
+        <div class="biz-draft-body">${escapeHtml(p.draft_body)}</div>
+        <a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none"
+           href="${_bizMailto(p.contact_email, p.draft_subject, p.draft_body)}">✉ Open in email client &amp; send</a>
+      </div>
+    ` : ""}
+    <div class="biz-reply">
+      <div class="ov-section-label">They replied? Paste it here</div>
+      <textarea class="biz-reply-input" placeholder="Paste what they wrote back…">${escapeHtml(p.last_reply_text || "")}</textarea>
+      <button class="ov-card biz-btn-reply" style="cursor:pointer;padding:8px 14px;display:inline-block">✎ Draft my response</button>
+    </div>
+    ${p.response_draft ? `
+      <div class="biz-draft">
+        <div class="ov-section-label">Response draft</div>
+        <div class="biz-draft-body">${escapeHtml(p.response_draft)}</div>
+        <a class="ov-card biz-mailto" style="cursor:pointer;padding:8px 14px;display:inline-block;text-decoration:none"
+           href="${_bizMailto(p.contact_email, 'Re: ' + p.draft_subject, p.response_draft)}">✉ Open in email client &amp; send</a>
+      </div>
+    ` : ""}
+  `;
+
+  const refresh = () => renderBusinessScene(sceneBody);
+  detail.querySelector(".biz-btn-draft").addEventListener("click", async (e) => {
+    e.target.textContent = "Drafting…";
+    try {
+      await API(`/api/prospects/${p.id}/draft-outreach`, { method: "POST" });
+      refresh();
+    } catch (err) { toast(`Couldn't draft it: ${err.message}`); e.target.textContent = "✎ Draft outreach email"; }
+  });
+  detail.querySelector(".biz-btn-contacted").addEventListener("click", async () => {
+    await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "contacted" }) });
+    refresh();
+  });
+  detail.querySelector(".biz-btn-won").addEventListener("click", async () => {
+    await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "won" }) });
+    refresh();
+  });
+  detail.querySelector(".biz-btn-lost").addEventListener("click", async () => {
+    await API(`/api/prospects/${p.id}/status`, { method: "POST", body: JSON.stringify({ status: "lost" }) });
+    refresh();
+  });
+  detail.querySelector(".biz-btn-delete").addEventListener("click", async () => {
+    if (!confirm(`Delete ${p.business_name}? This can't be undone.`)) return;
+    await API(`/api/prospects/${p.id}`, { method: "DELETE" });
+    refresh();
+  });
+  detail.querySelector(".biz-btn-reply").addEventListener("click", async (e) => {
+    const text = detail.querySelector(".biz-reply-input").value.trim();
+    if (!text) { toast("Paste in their reply first."); return; }
+    e.target.textContent = "Drafting…";
+    try {
+      await API(`/api/prospects/${p.id}/draft-reply`, { method: "POST", body: JSON.stringify({ reply_text: text }) });
+      refresh();
+    } catch (err) { toast(`Couldn't draft it: ${err.message}`); e.target.textContent = "✎ Draft my response"; }
+  });
 }
 
 async function renderChannelsPanel(body) {
