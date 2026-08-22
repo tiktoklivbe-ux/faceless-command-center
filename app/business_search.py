@@ -34,7 +34,7 @@ def geocode_location(location: str) -> tuple[float, float] | None:
         NOMINATIM_URL,
         params={"q": location, "format": "json", "limit": 1},
         headers={"User-Agent": USER_AGENT},
-        timeout=15,
+        timeout=8,
     )
     resp.raise_for_status()
     results = resp.json()
@@ -67,7 +67,13 @@ def search_businesses(term: str, location: str, radius_m: int = 6000, limit: int
     );
     out body {limit};
     """
-    resp = requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=30)
+    # Kept short deliberately -- a slow response here (Overpass is a free,
+    # shared public service and does have slow/overloaded moments) used to
+    # block the whole app for the full timeout window, taking down every
+    # other request/health check with it. Confirmed live: a 30s timeout
+    # produced a genuine platform-level 502 on the whole site while this one
+    # request was stuck. Failing fast beats hanging everything else.
+    resp = requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=12)
     resp.raise_for_status()
     elements = resp.json().get("elements", [])
 
