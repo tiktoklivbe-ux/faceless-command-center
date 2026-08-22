@@ -3,10 +3,30 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .. import models, schemas, business_utils
+from .. import models, schemas, business_utils, business_search
 from ..database import get_db
 
 router = APIRouter(prefix="/api/prospects", tags=["prospects"])
+
+
+@router.get("/search")
+def search_businesses(term: str, location: str, db: Session = Depends(get_db)):
+    """Free lead search (OpenStreetMap) -- see business_search.py. Doesn't
+    touch the Prospect table at all; results are added as prospects
+    explicitly, one click at a time, from the frontend."""
+    if not term.strip() or not location.strip():
+        raise HTTPException(400, "Need both a search term and a location.")
+    try:
+        return business_search.search_businesses(term.strip(), location.strip())
+    except Exception as e:
+        raise HTTPException(502, f"Search failed: {e}")
+
+
+@router.get("/find-email")
+def find_email(website: str):
+    """Best-effort: check a business's own public website for a contact
+    email. Returns '' if nothing found -- optional enrichment, not required."""
+    return {"email": business_search.find_contact_email(website)}
 
 
 @router.get("", response_model=list[schemas.ProspectOut])

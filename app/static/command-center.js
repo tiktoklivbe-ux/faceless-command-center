@@ -520,7 +520,18 @@ async function renderBusinessScene(body) {
         <div class="ov-stat"><div class="ov-stat-val">${counts.won || 0}</div><div class="ov-stat-label">Won</div></div>
       </div>
 
-      <button class="ov-card" id="biz-add-toggle" style="cursor:pointer;margin-bottom:16px;padding:14px 18px">+ Add a prospect</button>
+      <div class="biz-search-box">
+        <div class="ov-section-label">Find businesses</div>
+        <div class="biz-search-row">
+          <input id="biz-search-term" placeholder="e.g. plumber, salon, restaurant"/>
+          <input id="biz-search-location" placeholder="City, state or zip"/>
+          <button class="ov-card" id="biz-search-btn" style="cursor:pointer;padding:9px 16px">Search</button>
+        </div>
+        <div class="ov-stat-label" style="margin-top:6px">Free lookup via OpenStreetMap -- coverage varies by area; emails aren't in the directory, but "Find email" checks the business's own website for one.</div>
+        <div id="biz-search-results"></div>
+      </div>
+
+      <button class="ov-card" id="biz-add-toggle" style="cursor:pointer;margin-bottom:16px;padding:14px 18px">+ Add a prospect manually</button>
       <div class="biz-add-form" id="biz-add-form" style="display:none">
         <input id="biz-new-name" placeholder="Business name *"/>
         <input id="biz-new-contact" placeholder="Contact name"/>
@@ -562,6 +573,61 @@ async function renderBusinessScene(body) {
     await API("/api/settings", { method: "POST", body: JSON.stringify({ business_pitch: pitch, business_sender_name: sender }) });
     toast("Pitch saved.");
     renderBusinessScene(body);
+  });
+
+  const searchBtn = document.getElementById("biz-search-btn");
+  const searchResults = document.getElementById("biz-search-results");
+  if (searchBtn) searchBtn.addEventListener("click", async () => {
+    const term = document.getElementById("biz-search-term").value.trim();
+    const location = document.getElementById("biz-search-location").value.trim();
+    if (!term || !location) { toast("Enter both what to search for and where."); return; }
+    searchBtn.textContent = "Searching…";
+    searchResults.innerHTML = "";
+    try {
+      const data = await API(`/api/prospects/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}`);
+      if (data.error) { toast(data.error); return; }
+      if (!data.results.length) { searchResults.innerHTML = `<div class="ov-loading">No matches -- try a broader term or a nearby city.</div>`; return; }
+      searchResults.innerHTML = data.results.map((r, i) => `
+        <div class="biz-search-result" data-idx="${i}">
+          <div>
+            <b>${escapeHtml(r.name)}</b>
+            ${r.category ? `<span class="ov-stat-label"> · ${escapeHtml(r.category)}</span>` : ""}
+            <div class="ov-stat-label">${[r.address, r.phone, r.website].filter(Boolean).map(escapeHtml).join(" · ") || "No contact details listed"}</div>
+            <div class="biz-found-email"></div>
+          </div>
+          <div class="biz-search-result-actions">
+            ${r.website ? `<button class="ov-card biz-find-email-btn" style="cursor:pointer;padding:6px 12px">Find email</button>` : ""}
+            <button class="ov-card biz-add-result-btn" style="cursor:pointer;padding:6px 12px">+ Add</button>
+          </div>
+        </div>
+      `).join("");
+      searchResults.querySelectorAll(".biz-search-result").forEach((row) => {
+        const r = data.results[Number(row.dataset.idx)];
+        const findBtn = row.querySelector(".biz-find-email-btn");
+        if (findBtn) findBtn.addEventListener("click", async () => {
+          findBtn.textContent = "Checking…";
+          const res = await API(`/api/prospects/find-email?website=${encodeURIComponent(r.website)}`).catch(() => ({ email: "" }));
+          if (res.email) { r.email = res.email; row.querySelector(".biz-found-email").textContent = `Found: ${res.email}`; findBtn.remove(); }
+          else { findBtn.textContent = "No email found"; findBtn.disabled = true; }
+        });
+        row.querySelector(".biz-add-result-btn").addEventListener("click", async (e) => {
+          await API("/api/prospects", {
+            method: "POST",
+            body: JSON.stringify({
+              business_name: r.name, contact_email: r.email || "",
+              phone: r.phone || "", website: r.website || "",
+              notes: r.category ? `Found via search: ${r.category}` : "",
+            }),
+          });
+          toast(`Added ${r.name}.`);
+          e.target.textContent = "Added ✓"; e.target.disabled = true;
+        });
+      });
+    } catch (err) {
+      toast(`Search failed: ${err.message}`);
+    } finally {
+      searchBtn.textContent = "Search";
+    }
   });
 
   const addToggle = document.getElementById("biz-add-toggle");

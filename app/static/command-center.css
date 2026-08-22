@@ -128,6 +128,17 @@
 }
 .biz-add-form textarea, .biz-reply-input { min-height: 60px; resize: vertical; }
 
+.biz-search-box { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin-bottom: 20px; }
+.biz-search-row { display: flex; gap: 10px; margin-top: 10px; }
+.biz-search-row input {
+  flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 12px; color: var(--ink); font-family: var(--font-body); font-size: 13.5px;
+}
+#biz-search-results { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.biz-search-result { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; background: rgba(0,0,0,0.2); border-radius: 10px; }
+.biz-search-result-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.biz-found-email { font-size: 11.5px; color: var(--green); margin-top: 2px; }
+
 .biz-list { display: flex; flex-direction: column; gap: 10px; }
 .biz-row { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
 .biz-row-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; }
