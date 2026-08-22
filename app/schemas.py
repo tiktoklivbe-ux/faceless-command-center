@@ -100,6 +100,10 @@ class SettingsIn(BaseModel):
     render_deploy_hook_url: Optional[str] = None             # triggers a real deploy after Jarvis pushes
     business_pitch: Optional[str] = None                      # what you're selling, used as AI context for outreach drafts
     business_sender_name: Optional[str] = None                # how drafted emails are signed
+    business_auto_enabled: Optional[str] = None                # "true" to enable the daily auto-search/auto-draft
+    business_auto_location: Optional[str] = None               # required for automation to run
+    business_auto_term: Optional[str] = None                   # optional category filter for automation
+    business_auto_daily_limit: Optional[str] = None            # max new prospects/day, default 5
 
 
 class ProspectIn(BaseModel):

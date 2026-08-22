@@ -105,6 +105,15 @@ KNOWN_KEYS = {
     # Not secret -- it's a sales pitch, not a credential.
     "business_pitch": False,
     "business_sender_name": False,  # how you sign off drafted emails
+
+    # Daily automation (business_automation.py): opt-in, runs once/day via
+    # the scheduler tick, self-gated on business_auto_last_run_date. None of
+    # this is secret.
+    "business_auto_enabled": False,       # "true" to turn on
+    "business_auto_location": False,      # required -- where to search near
+    "business_auto_term": False,          # optional -- blank = "anything nearby"
+    "business_auto_daily_limit": False,   # default 5, capped at 20
+    "business_auto_last_run_date": False, # internal bookkeeping, not user-facing
 }
 
 

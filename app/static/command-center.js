@@ -538,6 +538,21 @@ async function renderBusinessScene(body) {
         <div id="biz-search-results"></div>
       </div>
 
+      <div class="biz-search-box" style="margin-top:16px">
+        <div class="ov-section-label">Daily automation</div>
+        <div class="ov-stat-label" style="margin-bottom:10px">Once a day, automatically search near a location, add new businesses as prospects, and AI-draft an outreach email for each. It never sends anything -- drafts wait in the list for your click, same as always. You'll get a notification when it finds something.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
+          <input type="checkbox" id="biz-auto-enabled" ${sval("business_auto_enabled") === "true" ? "checked" : ""}/>
+          <span>Enable daily automation</span>
+        </label>
+        <div class="biz-search-row">
+          <input id="biz-auto-location" placeholder="City, state or zip *" value="${escapeHtml(sval("business_auto_location"))}"/>
+          <input id="biz-auto-term" placeholder="Category (optional -- blank = anything nearby)" value="${escapeHtml(sval("business_auto_term"))}"/>
+          <input id="biz-auto-limit" type="number" min="1" max="20" placeholder="Max/day" value="${escapeHtml(sval("business_auto_daily_limit") || "5")}" style="max-width:90px"/>
+        </div>
+        <button class="ov-card" id="biz-auto-save" style="cursor:pointer;margin-top:10px;padding:9px 16px">Save automation settings</button>
+      </div>
+
       <button class="ov-card" id="biz-add-toggle" style="cursor:pointer;margin-bottom:16px;padding:14px 18px">+ Add a prospect manually</button>
       <div class="biz-add-form" id="biz-add-form" style="display:none">
         <input id="biz-new-name" placeholder="Business name *"/>
@@ -595,6 +610,22 @@ async function renderBusinessScene(body) {
     }
     toast(`Drafted ${undrafted.length} email${undrafted.length === 1 ? "" : "s"}.`);
     renderBusinessScene(body);
+  });
+
+  const autoSaveBtn = document.getElementById("biz-auto-save");
+  if (autoSaveBtn) autoSaveBtn.addEventListener("click", async () => {
+    const enabled = document.getElementById("biz-auto-enabled").checked;
+    const location = document.getElementById("biz-auto-location").value.trim();
+    const term = document.getElementById("biz-auto-term").value.trim();
+    const limit = document.getElementById("biz-auto-limit").value.trim() || "5";
+    if (enabled && !location) { toast("Enter a location for the automation to search near."); return; }
+    await API("/api/settings", { method: "POST", body: JSON.stringify({
+      business_auto_enabled: enabled ? "true" : "false",
+      business_auto_location: location,
+      business_auto_term: term,
+      business_auto_daily_limit: limit,
+    }) });
+    toast(enabled ? "Automation enabled -- runs once a day." : "Automation settings saved.");
   });
 
   const searchBtn = document.getElementById("biz-search-btn");

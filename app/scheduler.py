@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from . import models, ntfy_utils, render_gate, twilio_utils
+from . import models, ntfy_utils, render_gate, twilio_utils, business_automation
 from .database import SessionLocal
 from .pipeline import orchestrator
 from .settings_store import get_setting, set_setting
@@ -520,6 +520,11 @@ def _tick():
             check_and_send_alerts(db)
         except Exception:
             log.exception("Chronos: proactive-alert check failed")
+
+        try:
+            business_automation.check_business_automation(db)
+        except Exception:
+            log.exception("Chronos: business automation check failed")
 
         # Nothing else to do while a render is in flight -- creating or
         # dispatching more work now is what caused the pile-up that kept
