@@ -496,8 +496,48 @@ def _slot_schedule_due(db: Session):
             .filter(models.VideoJob.created_at >= slot_utc)
             .count()
         )
-        if already == 0:
-            return channel, kind, (is_longform and extended_today)
+        if already > 0:
+            continue
+
+        # Failed attempts DON'T count as "fulfilled" above -- on purpose, so a
+        # one-off transient failure gets retried rather than silently skipping
+        # a whole slot. But with no cap, a PERSISTENT failure (dead OAuth
+        # token, etc.) retries forever, every 5 minutes, all day -- confirmed
+        # live 2026-08-28: 40+ failed jobs in 4 hours for one broken channel.
+        # Cap it: after a few tries this tick, stop for the rest of this slot
+        # and ping once instead of spamming failed jobs.
+        SLOT_RETRY_CAP = 3
+        failed_attempts = (
+            db.query(models.VideoJob)
+            .filter(models.VideoJob.channel_id == channel.id)
+            .filter(models.VideoJob.kind == kind)
+            .filter(models.VideoJob.status == models.JobStatus.FAILED)
+            .filter(models.VideoJob.created_at >= slot_utc)
+            .count()
+        )
+        if failed_attempts >= SLOT_RETRY_CAP:
+            # Once retries stop, failed_attempts sits at the cap forever for
+            # this slot (no new failed job ever gets created to move it past
+            # the cap) -- so gate the notification on a stored per-slot flag,
+            # not on the count itself, or it would fire every single tick for
+            # the rest of the day.
+            notify_key = f"slot_giveup_notified:{channel.id}:{kind}:{slot_utc.isoformat()}"
+            if get_setting(db, notify_key, "") != "true":
+                set_setting(db, notify_key, "true", is_secret=False)
+                topic = get_setting(db, "ntfy_topic", "")
+                if topic:
+                    try:
+                        ntfy_utils.send_ntfy_message(
+                            topic,
+                            f"'{channel.name}' has failed {SLOT_RETRY_CAP}x in a row for its {slot_local.strftime('%H:%M')} slot "
+                            f"and I've stopped retrying it for now -- check Jobs for the error.",
+                            title="Video slot stopped retrying",
+                        )
+                    except Exception:
+                        log.exception("Chronos: slot-giveup notification failed")
+            continue
+
+        return channel, kind, (is_longform and extended_today)
     return None, None, False
 
 
