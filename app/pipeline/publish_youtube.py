@@ -121,6 +121,37 @@ def fetch_channel_stats(access_token: str) -> dict:
         return {"subscribers": 0, "views": 0, "video_count": 0, "hidden_subs": False}
 
 
+def fetch_video_stats(access_token: str, video_ids: list[str]) -> dict[str, dict]:
+    """Real view/like counts for a batch of this channel's own videos --
+    powers the 'lean into what's working' topic steering in orchestrator.py.
+    Uses youtube.readonly (already-granted scope, no new reconnect needed).
+    videos.list accepts up to 50 ids per call. Returns {} entries silently
+    skipped on any single-video failure rather than raising -- this feeds a
+    ranking heuristic, not a pipeline-critical step."""
+    if not video_ids:
+        return {}
+    out = {}
+    for i in range(0, len(video_ids), 50):
+        batch = video_ids[i:i + 50]
+        try:
+            resp = requests.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={"part": "statistics", "id": ",".join(batch)},
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            for item in resp.json().get("items", []):
+                stats = item.get("statistics", {})
+                out[item["id"]] = {
+                    "views": int(stats.get("viewCount", 0)),
+                    "likes": int(stats.get("likeCount", 0)),
+                }
+        except Exception:
+            continue
+    return out
+
+
 def check_video_status(access_token: str, video_id: str) -> dict:
     """Read-only: what a video's privacyStatus ACTUALLY is right now, straight
     from Google -- not what was requested at upload time. The upload call only

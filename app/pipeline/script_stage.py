@@ -146,12 +146,25 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
 """).strip()
 
 
-def _user_prompt(niche: str, topic: str, style_notes: str, avoid_topics: list[str] | None = None) -> str:
+def _user_prompt(niche: str, topic: str, style_notes: str, avoid_topics: list[str] | None = None,
+                  top_performers: list[str] | None = None) -> str:
     parts = [f"Channel niche: {niche or 'general faceless shorts channel'}"]
     if topic:
         parts.append(f"Topic for this specific video: {topic}")
     else:
         parts.append("No specific topic given -- pick a fresh, engaging one that fits the niche.")
+    if top_performers:
+        # Real signal from THIS channel's own audience, not a guess -- these
+        # are titles of recent videos that got disproportionately more views
+        # per day than the channel's average. Steer toward similar angles/
+        # subject matter, but this is a bias on topic SELECTION, not a
+        # license to rehash -- avoid_topics below still rules out repeats.
+        perf = "; ".join(top_performers)
+        parts.append(
+            f"These recent videos on this channel performed noticeably better than average with "
+            f"this audience -- lean toward similar subject matter, angle, or type of hook, without "
+            f"repeating any of them: {perf}"
+        )
     if avoid_topics:
         # Auto-created jobs leave topic blank every time, so with no memory
         # of what's already been made the model has repeatedly landed on the
@@ -346,9 +359,10 @@ def _template_fallback(niche: str, topic: str) -> dict:
 
 
 def generate_script(db: Session, niche: str, topic: str, style_notes: str, kind: str = "short",
-                     avoid_topics: list[str] | None = None, extended: bool = False) -> dict:
+                     avoid_topics: list[str] | None = None, extended: bool = False,
+                     top_performers: list[str] | None = None) -> dict:
     provider = get_setting(db, "llm_provider", "anthropic")
-    prompt = _user_prompt(niche, topic, style_notes, avoid_topics)
+    prompt = _user_prompt(niche, topic, style_notes, avoid_topics, top_performers)
     if kind == "longform":
         # The extended variant is the same long-form format, just a longer
         # target -- a 10-13 minute video instead of 7-9. Built by swapping the

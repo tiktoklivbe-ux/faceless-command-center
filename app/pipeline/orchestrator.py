@@ -13,7 +13,7 @@ import re
 import time
 import traceback
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -245,6 +245,54 @@ def run_job(job_id: str):
         render_gate.release(job_id)
 
 
+def _top_performing_titles(db: Session, channel, limit: int = 5) -> list[str]:
+    """'Lean into what's working': titles of this channel's own best-performing
+    published videos (views per day since publish, so a 2-week-old video isn't
+    unfairly favored over one from yesterday), used to steer future script
+    topics toward similar angles -- not to duplicate them (avoid_topics already
+    handles that), just to bias topic *selection* toward what this audience has
+    actually responded to instead of picking blind every time.
+
+    Best-effort: returns [] on any failure (no connection, API hiccup, not
+    enough data yet) -- this is a ranking nicety, never something that should
+    block script generation."""
+    if not channel.youtube_connected or not channel.youtube_refresh_token_enc:
+        return []
+    try:
+        from .. import crypto
+        jobs = (
+            db.query(models.VideoJob.title, models.VideoJob.youtube_video_id, models.VideoJob.created_at)
+            .filter(models.VideoJob.channel_id == channel.id)
+            .filter(models.VideoJob.youtube_video_id.isnot(None))
+            .filter(models.VideoJob.youtube_video_id != "")
+            # Give views at least a day to accumulate before trusting them as
+            # a signal -- a video from an hour ago will always look like a
+            # "flop" next to anything older, that's not a real signal yet.
+            .filter(models.VideoJob.created_at <= datetime.utcnow() - timedelta(days=1))
+            .order_by(models.VideoJob.created_at.desc())
+            .limit(60)
+            .all()
+        )
+        # Not enough aged data yet for the ranking to mean anything over noise.
+        if len(jobs) < 5:
+            return []
+        access_token = publish_youtube.refresh_access_token(db, crypto.decrypt(channel.youtube_refresh_token_enc))
+        stats = publish_youtube.fetch_video_stats(access_token, [vid for _, vid, _ in jobs])
+        scored = []
+        now = datetime.utcnow()
+        for title, vid, created_at in jobs:
+            s = stats.get(vid)
+            if not s or not title:
+                continue
+            days_up = max(1.0, (now - created_at).total_seconds() / 86400)
+            scored.append((s["views"] / days_up, title))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [t for _, t in scored[:limit]]
+    except Exception:
+        log.exception("Chronos: top-performing-titles lookup failed (non-fatal, skipping)")
+        return []
+
+
 def _preflight(db: Session, channel, will_auto_publish: bool = False) -> list[str]:
     """Check configuration BEFORE burning time on a render.
 
@@ -364,9 +412,14 @@ def _run_job_inner(job_id: str):
                 .limit(60)
                 .all()
             ]
+            # Only worth the extra API calls for auto-created videos with no
+            # specific topic already given -- an explicit topic means the
+            # caller already decided what this video is about.
+            top_performers = _top_performing_titles(db, channel) if not job.topic else []
             script = script_stage.generate_script(
                 db, channel.niche, job.topic, channel.style_notes, kind=job.kind,
                 avoid_topics=recent_titles, extended=bool(getattr(job, "extended", False)),
+                top_performers=top_performers,
             )
             job.title = script.get("title", "")[:200]
             description = script.get("description", "")
