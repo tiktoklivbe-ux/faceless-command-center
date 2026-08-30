@@ -57,6 +57,14 @@ SYSTEM_PROMPT = textwrap.dedent("""
       unease, and things left unseen rather than gore, torture, graphic violence,
       or explicit descriptions of injury/death. Nothing gratuitously disturbing.
       Think "unsettling campfire story," not "shock content."
+    - The LAST segment must fold in a natural, on-brand ask to follow/subscribe --
+      never a bare "please subscribe" bolted onto an otherwise-finished thought.
+      Tie it to the story just told (e.g. "if stories like this get under your
+      skin, follow for the next one" / "there are stranger ones than this --
+      follow so you don't miss them"). It should read as the natural close of the
+      video, not an interruption after the real ending.
+    - "description" ends with one short line inviting the viewer to subscribe for
+      more of this channel's content, separate from the story summary above it.
     - Return ONLY valid JSON, no markdown fences, matching this shape:
     {
       "title": "...",
@@ -122,6 +130,12 @@ LONGFORM_SYSTEM_PROMPT = textwrap.dedent("""
       #networth #howmuch #finance #money, never a different channel's niche like
       horror/storytime). Mix a few broad discovery tags with several specific,
       on-topic ones. Each tag starts with # and has no spaces.
+    - The LAST segment must fold in a natural, on-brand ask to subscribe -- tied
+      to what the video actually covered (e.g. "if you want the real numbers
+      behind more everyday questions like this, subscribe for the next one"),
+      never a bare "please subscribe" bolted on after the real closing thought.
+    - "description" ends with one short line inviting the viewer to subscribe for
+      more of this channel's content, separate from the video summary above it.
     - Return ONLY valid JSON, no markdown fences, matching this shape:
     {
       "title": "...",
@@ -313,7 +327,8 @@ def _template_fallback(niche: str, topic: str) -> dict:
     return {
         "title": f"[DRAFT] {subject[:80]}",
         "description": f"An automatically generated placeholder video about {subject}. "
-                        f"Add an Anthropic or OpenAI API key in Settings to generate real scripts.",
+                        f"Add an Anthropic or OpenAI API key in Settings to generate real scripts.\n\n"
+                        f"Subscribe for more.",
         "hashtags": ["#fyp", "#viral", "#shorts", "#storytime", "#draft"],
         "segments": [
             {"narration": f"Here's something most people don't know about {subject}.",
@@ -324,7 +339,7 @@ def _template_fallback(niche: str, topic: str) -> dict:
              "visual_prompt": "a wide shot revealing new context, dramatic"},
             {"narration": "And that's the part almost nobody talks about.",
              "visual_prompt": "a symbolic image representing a hidden truth"},
-            {"narration": "So next time you hear about this, you'll know the real story.",
+            {"narration": "So if stories like this get under your skin, follow for the next one.",
              "visual_prompt": "a hopeful, resolving final shot"},
         ],
     }
